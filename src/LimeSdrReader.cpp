@@ -1,7 +1,7 @@
 // OBECA - Open Broadcast Edge Cache Appliance
 // Receive Process
 //
-// Copyright (C) 2021 Österreichische Rundfunksender GmbH & Co KG
+// Copyright (C) 2021 Klaus Kühnhammer (Österreichische Rundfunksender GmbH & Co KG)
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as published by
