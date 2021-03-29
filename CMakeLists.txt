@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project (rp VERSION 1.0.991)
+project (rp VERSION 1.0.0)
 
 include(CTest)
 include(FindPkgConfig)
