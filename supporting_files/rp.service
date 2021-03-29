@@ -1,0 +1,18 @@
+[Unit]
+Description=rp - OBECA Receive Process
+After=rc-local.service
+Before=getty.target
+
+[Service]
+EnvironmentFile=-/etc/default/obeca
+ExecStartPre=+/usr/share/obeca/pre_rp.sh 
+ExecStart=/usr/bin/rp 
+Type=idle
+User=ofr
+Group=ofr
+Restart=always
+StartLimitInterval=2
+StartLimitBurst=20
+
+[Install]
+WantedBy=basic.target

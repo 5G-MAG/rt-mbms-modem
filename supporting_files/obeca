@@ -1,0 +1,6 @@
+# The tun interface to be created for the receive process
+RP_TUN_INTERFACE="rp_tun"
+
+# Automatically set up multicast packet routing from the tun interface to a network interface
+ENABLE_MCAST_ROUTING=true
+MCAST_ROUTE_TARGET="eno1"

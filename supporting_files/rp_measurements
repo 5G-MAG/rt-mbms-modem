@@ -1,0 +1,6 @@
+/tmp/rp_measurements.csv {
+  daily
+  compress
+  missingok
+  rotate 30
+}

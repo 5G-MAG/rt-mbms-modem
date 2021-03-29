@@ -1,0 +1,6 @@
+#!/bin/sh
+
+set -e
+sudo setcap 'cap_sys_nice=eip' /usr/bin/rp
+sudo systemctl enable rp
+sudo systemctl restart rp

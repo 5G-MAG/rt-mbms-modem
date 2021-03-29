@@ -1,0 +1,29 @@
+OBECA Receive Process uses the following open source software:
+
+- srsLTE - Open Source LTE by Software Radio Systems (SRS)
+  available at https://github.com/srsLTE/srsLTE
+  Licensed under AGPL-3.0 terms (https://github.com/srsLTE/srsLTE/blob/master/LICENSE)
+
+- Linear Ringbuffer by Benno Evers
+  available at https://github.com/lava/linear_ringbuffer
+  Licensed under AGPL-3.0 terms (https://github.com/lava/linear_ringbuffer/blob/master/LICENSE)
+
+- Thread Pool by Ethan Margaillan
+  available at https://github.com/Ethan13310/Thread-Pool-Cpp
+  Licensed under MIT terms (https://github.com/Ethan13310/Thread-Pool-Cpp/blob/master/LICENSE)
+
+- spdlog by Gabi Melman
+  available at https://github.com/gabime/spdlog
+  Licensed under MIT terms (https://github.com/gabime/spdlog/blob/v1.x/LICENSE)
+
+- libconfig by Mark Lindner
+  available at https://github.com/hyperrealm/libconfig
+  Licensed under LGPL-2.1 terms (https://github.com/hyperrealm/libconfig/blob/master/LICENSE)
+
+- cpprestsdk by Microsoft
+  available at https://github.com/microsoft/cpprestsdk
+  Licensed under MIT terms (https://github.com/microsoft/cpprestsdk/blob/master/license.txt)
+
+- libgps by the GPSD project / Eric S. Raymond
+  available at https://gpsd.gitlab.io/gpsd/
+  Licensed under BSD-2 terms (https://gitlab.com/gpsd/gpsd/-/blob/master/COPYING)
