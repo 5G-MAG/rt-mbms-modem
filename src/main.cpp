@@ -237,7 +237,7 @@ auto main(int argc, char **argv) -> int {
   spdlog::set_pattern("[%H:%M:%S.%f %z] [%^%l%$] [thr %t] %v");
 
   spdlog::set_default_logger(syslog_logger);
-  spdlog::info("ofr-lrp v{}.{} starting up", VERSION_MAJOR, VERSION_MINOR);
+  spdlog::info("OBECA rp v{}.{}.{} starting up", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
 
 
   // Init and tune the SDR
