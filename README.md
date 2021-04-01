@@ -65,7 +65,7 @@ To enable automatic start at each boot:
 
 ## Running the application manually
 
-To set up networking and multitasking, it's easiest to run the application though systemd once:
+To set up networking and multicast routing, it's easiest to run the application though systemd once:
 ```` 
 sudo systemctl start rp 
 sudo systemctl stop rp  
