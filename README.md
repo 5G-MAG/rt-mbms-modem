@@ -71,7 +71,7 @@ sudo systemctl start rp
 sudo systemctl stop rp  
 ````
 
-After this, you can start it manully from the _build_ directory created in the prvious step, e.g.:
+After this, you can start it manually from the _build_ directory created in the prvious step, e.g.:
 
 `` ./rp -l 2 ``
 
