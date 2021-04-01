@@ -71,7 +71,12 @@ sudo systemctl start rp
 sudo systemctl stop rp  
 ````
 
-After this, you can start it manually from the _build_ directory created in the prvious step, e.g.:
+To allow the application to run at realtime scheduling without superuser privileges, set its capabilites 
+accordingly. Alternatively, you can run it with superuser rights (``sudo ./rp``).
+
+`` sudo setcap 'cap_sys_nice=eip' ./rp ``
+
+After this, you can start rp manually from the _build_ directory created in the prvious step, e.g.:
 
 `` ./rp -l 2 ``
 
