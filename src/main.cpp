@@ -159,6 +159,7 @@ void print_version(FILE *stream, struct argp_state * /*state*/) {
 static Config cfg;  /**< Global configuration object. */
 
 static unsigned sample_rate = 7680000;  /**< Sample rate of the SDR */
+static unsigned search_sample_rate = 7680000;  /**< Sample rate of the SDR */
 static unsigned frequency = 667000000;  /**< Center freqeuncy the SDR is tuned to */
 static uint32_t bandwidth = 10000000;   /**< Low pass filter bandwidth for the SDR */
 static double gain = 0.9;               /**< Overall system gain for the SDR */
@@ -250,6 +251,7 @@ auto main(int argc, char **argv) -> int {
   }
 
   cfg.lookupValue("sdr.search_sample_rate_hz", sample_rate);
+  search_sample_rate = sample_rate;
   cfg.lookupValue("sdr.center_frequency_hz", frequency);
   cfg.lookupValue("sdr.normalized_gain", gain);
   cfg.lookupValue("sdr.antenna", antenna);
@@ -460,12 +462,15 @@ auto main(int argc, char **argv) -> int {
             }
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
-            state = searching;
-            sleep(1);
-
+            lime.stop();
+            sample_rate = search_sample_rate;  // sample rate for searching
             lime.tune(frequency, sample_rate, bandwidth, gain, antenna);
+            lime.start();
             rrc.reset();
             phy.reset();
+
+            sleep(1);
+            state = searching;
           }
         } else {
           // All other frames in FeMBMS dedicated mode are MBSFN frames.
@@ -499,9 +504,12 @@ auto main(int argc, char **argv) -> int {
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
-            state = searching;
+            lime.stop();
+            sample_rate = search_sample_rate;  // sample rate for searching
             lime.tune(frequency, sample_rate, bandwidth, gain, antenna);
+            lime.start();
 
+            state = searching;
             sleep(1);
             rrc.reset();
             phy.reset();
