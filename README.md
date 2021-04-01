@@ -65,13 +65,18 @@ To enable automatic start at each boot:
 
 ## Running the application manually
 
-To set up networking and multitasking, it's easiest to run the application though systemd once:
+To set up networking and multicast routing, it's easiest to run the application though systemd once:
 ```` 
 sudo systemctl start rp 
 sudo systemctl stop rp  
 ````
 
-After this, you can start it manully from the _build_ directory created in the prvious step, e.g.:
+To allow the application to run at realtime scheduling without superuser privileges, set its capabilites 
+accordingly. Alternatively, you can run it with superuser rights (``sudo ./rp``).
+
+`` sudo setcap 'cap_sys_nice=eip' ./rp ``
+
+After this, you can start rp manually from the _build_ directory created in the prvious step, e.g.:
 
 `` ./rp -l 2 ``
 
