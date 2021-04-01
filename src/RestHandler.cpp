@@ -176,8 +176,7 @@ void RestHandler::get(http_request message) {
       auto cestream = Concurrency::streams::bytestream::open_istream(_mch[idx].GetData());
       message.reply(status_codes::OK, cestream);
     } else if (paths[0] == "log") {
-      std::string logfile = "/tmp/ofr.log";
-      _cfg.lookupValue("app.log_file", logfile);
+      std::string logfile = "/var/log/syslog";
 
       Concurrency::streams::file_stream<uint8_t>::open_istream(logfile).then(
           [message](const Concurrency::streams::basic_istream<unsigned char>&
