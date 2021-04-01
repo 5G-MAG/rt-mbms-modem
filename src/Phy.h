@@ -87,9 +87,11 @@ class Phy {
     bool get_next_frame(cf_t** buffer, uint32_t size);
 
     /**
-     * Get the current cell.
+     * Get the current cell (with params adjusted for MBSFN)
      */
-    srslte_cell_t cell() { return _cell; }
+    srslte_cell_t cell() { 
+      return _cell;
+    }
 
     /**
      * Get the current number of PRB.
@@ -146,6 +148,13 @@ class Phy {
      */
     void set_decode_mcch(bool d) { _decode_mcch = d; }
 
+    /**
+     * Get number of PRB in MBSFN/PMCH
+     */
+    uint8_t nof_mbsfn_prb() { return _cell.mbsfn_prb; }
+
+    void set_cell();
+
     typedef struct {
       std::string tmgi;
       std::string dest;
@@ -168,16 +177,16 @@ class Phy {
 
     SubcarrierSpacing mbsfn_subcarrier_spacing() {
       switch (_sib13.mbsfn_area_info_list[0].subcarrier_spacing) {
-        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_minus1dot25: return SubcarrierSpacing::df_1kHz25;
-        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_minus7dot5: return SubcarrierSpacing::df_7kHz5;
+        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return SubcarrierSpacing::df_1kHz25;
+        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5: return SubcarrierSpacing::df_7kHz5;
         default: return SubcarrierSpacing::df_15kHz;
       }
     }
 
     float mbsfn_subcarrier_spacing_khz() {
       switch (_sib13.mbsfn_area_info_list[0].subcarrier_spacing) {
-        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_minus1dot25: return 1.25;
-        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_minus7dot5: return 7.5;
+        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return 1.25;
+        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5: return 7.5;
         default: return 15;
       }
     }

@@ -80,6 +80,7 @@ CasFrameProcessor::~CasFrameProcessor() {
 
 void CasFrameProcessor::set_cell(srslte_cell_t cell) {
   _cell = cell;
+  spdlog::debug("CAS processor setting cell ({} PRB / {} MBSFN PRB).", cell.nof_prb, cell.mbsfn_prb);
   srslte_ue_dl_set_cell(&_ue_dl, cell);
 }
 

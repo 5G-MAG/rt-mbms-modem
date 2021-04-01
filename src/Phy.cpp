@@ -53,6 +53,7 @@ Phy::~Phy() {
 }
 
 auto Phy::synchronize_subframe() -> bool {
+
   int ret = srslte_ue_sync_zerocopy(&_ue_sync, _mib_buffer, _buffer_max_samples);  // NOLINT
   if (ret < 0) {
     spdlog::error("SYNC:  Error calling ue_sync_get_buffer.\n");
@@ -131,11 +132,13 @@ auto Phy::cell_search() -> bool {
     }
 
     _cell = new_cell;
-    if (srslte_ue_sync_set_cell(&_ue_sync, _cell) != 0) {
+    _cell.mbsfn_prb = _cell.nof_prb;
+
+    if (srslte_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
       spdlog::error("Phy: failed to set cell.\n");
       return false;
     }
-    if (srslte_ue_mib_set_cell(&_mib, _cell) != 0) {
+    if (srslte_ue_mib_set_cell(&_mib, cell()) != 0) {
       spdlog::error("Phy: Error setting UE MIB cell");
       return false;
     }
@@ -145,6 +148,15 @@ auto Phy::cell_search() -> bool {
 
   spdlog::error("Phy: failed to receive MIB\n");
   return false;
+}
+
+auto Phy::set_cell() -> void {
+    if (srslte_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
+      spdlog::error("Phy: failed to set cell.\n");
+    }
+    if (srslte_ue_mib_set_cell(&_mib, cell()) != 0) {
+      spdlog::error("Phy: Error setting UE MIB cell");
+    }
 }
 
 auto Phy::init() -> bool {
@@ -184,14 +196,25 @@ void Phy::set_mch_scheduling_info(const srslte::sib13_t& sib13) {
     spdlog::warn("SIB13 has {} MBSFN area info elements - only 1 supported", sib13.nof_mbsfn_area_info);
   }
 
+  if (sib13.mbsfn_area_info_list[0].pmch_bandwidth != 0) {
+    _cell.mbsfn_prb = sib13.mbsfn_area_info_list[0].pmch_bandwidth;
+  }
+
   if (sib13.nof_mbsfn_area_info > 0) {
     _sib13 = sib13;
 
     bzero(&_mcch_table[0], sizeof(uint8_t) * 10);
-    generate_mcch_table(
-        &_mcch_table[0],
-        static_cast<uint32_t>(
+    if (sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info_is_r16) {
+      generate_mcch_table_r16(
+          &_mcch_table[0],
+          static_cast<uint32_t>(
             sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info));
+    } else {
+      generate_mcch_table(
+          &_mcch_table[0],
+          static_cast<uint32_t>(
+            sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info));
+    }
 
     std::stringstream ss;
     ss << "|";

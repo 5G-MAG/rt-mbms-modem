@@ -101,7 +101,11 @@ void RestHandler::get(http_request message) {
           break;
       }
 
-      state["nof_prb"] = value(_phy.cell().nof_prb);
+      if (_phy.cell().nof_prb == _phy.cell().mbsfn_prb) {
+        state["nof_prb"] = value(_phy.cell().nof_prb);
+      } else {
+        state["nof_prb"] = value(_phy.cell().mbsfn_prb);
+      }
       state["cell_id"] = value(_phy.cell().id);
       state["cfo"] = value(_phy.cfo());
       state["subcarrier_spacing"] = value(_phy.mbsfn_subcarrier_spacing_khz());

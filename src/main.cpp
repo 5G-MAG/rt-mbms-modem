@@ -164,6 +164,9 @@ static uint32_t bandwidth = 10000000;   /**< Low pass filter bandwidth for the S
 static double gain = 0.9;               /**< Overall system gain for the SDR */
 static std::string antenna = "LNAW";    /**< Antenna input to be used */
 
+static unsigned mbsfn_nof_prb = 0;
+static unsigned cas_nof_prb = 0;
+
 /**
  * Restart flag. Setting this to true triggers resynchronization using the params set in the following parameters:
  * @see sample_rate
@@ -368,12 +371,13 @@ auto main(int argc, char **argv) -> int {
       if (cell_found) {
         // A cell has been found. We now know the required number of PRB = bandwidth of the carrier. Set the approproiate
         // sample rate...
-        unsigned new_srate = srslte_sampling_freq_hz(phy.nr_prb());
+        cas_nof_prb = mbsfn_nof_prb = phy.nr_prb();
+        unsigned new_srate = srslte_sampling_freq_hz(cas_nof_prb);
         spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
             phy.nr_prb() * 0.2);
         lime.stop();
 
-        bandwidth = (phy.nr_prb() * 200000) * 1.2;
+        bandwidth = (cas_nof_prb * 200000) * 1.2;
         lime.tune(frequency, new_srate, bandwidth, gain, antenna);
         lime.start();
         spdlog::debug("Synchronizing subframe");
@@ -435,6 +439,25 @@ auto main(int argc, char **argv) -> int {
             // Set constellation diagram data and rx params for CAS in the REST API handler
             rest_handler._ce_values = std::move(cas_processor.ce_values());
             rest_handler._pdsch.SetData(cas_processor.pdsch_data());
+
+            if (phy.nof_mbsfn_prb() != mbsfn_nof_prb)
+            {
+              mbsfn_nof_prb = phy.nof_mbsfn_prb();
+              // Adjust the sample rate to fit the wider MBSFN bandwidth
+              unsigned new_srate = srslte_sampling_freq_hz(mbsfn_nof_prb);
+              spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
+                  mbsfn_nof_prb * 0.2);
+              lime.stop();
+
+              bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
+              lime.tune(frequency, new_srate, bandwidth, gain, antenna);
+              lime.start();
+              spdlog::debug("Synchronizing subframe after PRB extension");
+              // ... and move to syncing state.
+              phy.set_cell();
+              cas_processor.set_cell(phy.cell());
+              state = syncing;
+            }
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
             state = searching;
@@ -460,7 +483,9 @@ auto main(int argc, char **argv) -> int {
                   case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSLTE_SCS_7KHZ5; break;
                   case Phy::SubcarrierSpacing::df_1kHz25: scs = SRSLTE_SCS_1KHZ25; break;
                 }
-                mbsfn_processors[mb_idx]->set_cell(phy.cell());
+                auto cell = phy.cell();
+                cell.nof_prb = cell.mbsfn_prb;
+                mbsfn_processors[mb_idx]->set_cell(cell);
                 mbsfn_processors[mb_idx]->configure_mbsfn(phy.mbsfn_area_id(), scs);
               }
               pool.push([ObjectPtr = mbsfn_processors[mb_idx], tti] {
