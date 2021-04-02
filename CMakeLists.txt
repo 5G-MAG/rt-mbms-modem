@@ -15,10 +15,12 @@ find_package(LimeSuite REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(cpprestsdk REQUIRED)
 
-set(ENABLE_SRSUE OFF)
-set(ENABLE_SRSENB OFF)
-set(ENABLE_SRSEPC OFF)
+set(ENABLE_SRSUE OFF CACHE BOOL "Build srsUE application")
+set(ENABLE_SRSENB OFF CACHE BOOL "Build srsENB application")
+set(ENABLE_SRSEPC OFF CACHE BOOL "Build srsEPC application")
 add_subdirectory(lib/srslte)
+
+file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/lib/include)
 
 include_directories(
     "${PROJECT_BINARY_DIR}"
@@ -29,7 +31,6 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/lib/srslte/lib/include
     ${PROJECT_BINARY_DIR}/lib/srslte/lib/include
     ${PROJECT_BINARY_DIR}/lib/include
-    ${PROJECT_BINARY_DIR}/lib/include/srslte
     ${PROJECT_SOURCE_DIR}/lib/include
     ${LIB_LIMESUITE_INCLUDE_DIRS}
     ${SPDLOG_INCLUDEDIR}
