@@ -366,6 +366,12 @@ auto main(int argc, char **argv) -> int {
   // Start the main processing loop
   for (;;) {
     if (state == searching) {
+      if (restart) {
+        lime.stop();
+        sample_rate = search_sample_rate;  // sample rate for searching
+        lime.tune(frequency, sample_rate, bandwidth, gain, antenna);
+        lime.start();
+      }
       // In searching state, clear the receive buffer and try to find a cell at the configured frequency and synchronize with it
       restart = false;
       lime.clear_buffer();
