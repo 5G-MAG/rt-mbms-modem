@@ -158,10 +158,12 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   if (mbsfn_cfg.is_mcch) {
     _rest._mcch.SetData(mch_data());
     _rest._mcch.mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
+    _rest._mcch.ber = _softbuffer.ber;
   } else {
     _rest._mch[area].SetData(mch_data());
     _rest._mch[area].mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
     _rest._mch[area].present = true;
+    _rest._mch[area].ber = _softbuffer.ber;
   }
 
   if (pmch_dec.crc) {

@@ -143,7 +143,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       _rest._pdsch.errors++;
     } else {
       spdlog::debug("Decoded PDSCH, BER {}", _softbuffer.ber);
-      _rest._pdsch.ber = 0;
+      _rest._pdsch.ber = _softbuffer.ber;
       for (int i = 0; i < SRSLTE_MAX_CODEWORDS; i++) {
         // .. and pass received PDUs to RLC for further processing
         if (pdsch_cfg->grant.tb[i].enabled) {
