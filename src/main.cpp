@@ -543,11 +543,11 @@ auto main(int argc, char **argv) -> int {
           spdlog::info("MCCH: MCS {}, BLER {}, BER {}",
               rest_handler._mcch.mcs,
               ((rest_handler._mcch.errors * 1.0) / (rest_handler._mcch.total * 1.0)),
-              "-");
+              rest_handler._mcch.ber);
 
           cols.push_back(std::to_string(rest_handler._mcch.mcs));
           cols.push_back(std::to_string(((rest_handler._mcch.errors * 1.0) / (rest_handler._mcch.total * 1.0))));
-          cols.emplace_back("-");
+          cols.push_back(std::to_string(rest_handler._mcch.ber));
 
           auto mch_info = phy.mch_info();
           int mch_idx = 0;
@@ -556,11 +556,11 @@ auto main(int argc, char **argv) -> int {
                   mch_idx,
                   mch.mcs,
                   (rest_handler._mch[mch_idx].errors * 1.0) / (rest_handler._mch[mch_idx].total * 1.0),
-                  "-");
+                  rest_handler._mch[mch_idx].ber);
               cols.push_back(std::to_string(mch_idx));
               cols.push_back(std::to_string(mch.mcs));
               cols.push_back(std::to_string((rest_handler._mch[mch_idx].errors * 1.0) / (rest_handler._mch[mch_idx].total * 1.0)));
-              cols.emplace_back("-");
+              cols.push_back(std::to_string(rest_handler._mch[mch_idx].ber));
 
               int mtch_idx = 0;
               std::for_each(std::begin(mch.mtchs), std::end(mch.mtchs), [&mtch_idx](Phy::mtch_info_t const& mtch) {
