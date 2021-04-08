@@ -108,6 +108,7 @@ void RestHandler::get(http_request message) {
       }
       state["cell_id"] = value(_phy.cell().id);
       state["cfo"] = value(_phy.cfo());
+      state["cinr_db"] = value(cinr_db());
       state["subcarrier_spacing"] = value(_phy.mbsfn_subcarrier_spacing_khz());
       message.reply(status_codes::OK, state);
     } else if (paths[0] == "sdr_params") {
@@ -215,4 +216,11 @@ void RestHandler::put(http_request message) {
       message.reply(status_codes::OK, answer);
     }
   }
+}
+
+void RestHandler::add_cinr_value( float cinr) {
+  if (_cinr_db.size() > CINR_RAVG_CNT) {
+    _cinr_db.erase(_cinr_db.begin());
+  }
+  _cinr_db.push_back(cinr);
 }
