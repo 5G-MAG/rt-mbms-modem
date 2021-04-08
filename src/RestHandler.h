@@ -38,6 +38,7 @@
 #include "cpprest/containerstream.h"
 #include "cpprest/producerconsumerstream.h"
 
+const int CINR_RAVG_CNT = 100;
 typedef enum { searching, syncing, processing } state_t;
 
 /**
@@ -109,7 +110,14 @@ class RestHandler {
      */
     std::map<uint32_t, ChannelInfo> _mch;
 
+    /**
+     *  Current CINR value
+     */
+    float cinr_db() { return (std::accumulate(_cinr_db.begin(), _cinr_db.end(), 0) / (_cinr_db.size() * 1.0)); };
+    void add_cinr_value( float cinr);
+
   private:
+    std::vector<float>  _cinr_db;
     void get(web::http::http_request message);
     void put(web::http::http_request message);
 
@@ -126,3 +134,4 @@ class RestHandler {
     bool _require_bearer_token = false;
     std::string _api_key;
 };
+
