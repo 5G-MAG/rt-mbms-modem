@@ -27,7 +27,7 @@
 #include "srslte/upper/rlc.h"
 #include "srslte/asn1/rrc_asn1.h"
 
-#include "LimeSdrReader.h"
+#include "SdrReader.h"
 #include "Phy.h"
 
 #include "cpprest/json.h"
@@ -57,11 +57,11 @@ class RestHandler {
      *  @param cfg Config singleton reference
      *  @param url URL to open the server on
      *  @param state Reference to the main loop sate
-     *  @param lime Reference to the LimeSDR reader
+     *  @param lime Reference to the SDR reader
      *  @param set_params Set parameters callback
      */
     RestHandler(const libconfig::Config& cfg, const std::string& url, state_t& state,
-        LimeSdrReader& lime, Phy& phy, set_params_t set_params);
+        SdrReader& lime, Phy& phy, set_params_t set_params);
     /**
      *  Default destructor.
      */
@@ -126,7 +126,7 @@ class RestHandler {
     std::unique_ptr<web::http::experimental::listener::http_listener> _listener;
 
     state_t& _state;
-    LimeSdrReader& _lime;
+    SdrReader& _lime;
     Phy& _phy;
 
     set_params_t _set_params;
