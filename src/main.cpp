@@ -35,7 +35,7 @@
 
 #include "CasFrameProcessor.h"
 #include "Gw.h"
-#include "LimeSdrReader.h"
+#include "SdrReader.h"
 #include "MbsfnFrameProcessor.h"
 #include "MeasurementFileWriter.h"
 #include "Phy.h"
@@ -90,6 +90,8 @@ static struct argp_option options[] = {  // NOLINT
      0},
     {"override_nof_prb", 'p', "# PRB", 0,
      "Override the number of PRB received in the MIB", 0},
+    {"sdr_devices", 'd', nullptr, 0,
+     "Prints a list of all available SDR devices", 0},
     {nullptr, 0, nullptr, 0, nullptr, 0}};
 
 /**
@@ -104,6 +106,7 @@ struct arguments {
   uint8_t file_bw = 5;           /**< bandwidth of the sample file */
   const char
       *write_sample_file = {};   /**< file path of the created sample file. */
+  bool list_sdr_devices = false;
 };
 
 /**
@@ -134,6 +137,9 @@ static auto parse_opt(int key, char *arg, struct argp_state *state) -> error_t {
     case 'p':
       arguments->override_nof_prb =
           static_cast<int8_t>(strtol(arg, nullptr, 10));
+      break;
+    case 'd':
+      arguments->list_sdr_devices = true;
       break;
     case ARGP_KEY_ARG:
       argp_usage(state);
@@ -231,7 +237,7 @@ auto main(int argc, char **argv) -> int {
 
   // Set up logging
   std::string ident = "rp";
-  auto syslog_logger = spdlog::syslog_logger_mt("syslog", ident, LOG_PID | LOG_PERROR);
+  auto syslog_logger = spdlog::syslog_logger_mt("syslog", ident, LOG_PID | LOG_PERROR | LOG_CONS );
 
   spdlog::set_level(
       static_cast<spdlog::level::level_enum>(arguments.log_level));
@@ -240,12 +246,17 @@ auto main(int argc, char **argv) -> int {
   spdlog::set_default_logger(syslog_logger);
   spdlog::info("OBECA rp v{}.{}.{} starting up", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
 
-
   // Init and tune the SDR
-  spdlog::info("Initialising LimeSDR");
-  LimeSdrReader lime(cfg);
+  spdlog::info("Initialising SDR");
+  SdrReader sdr(cfg);
+  if (arguments.list_sdr_devices) {
+    sdr.enumerateDevices();
+    exit(0);
+  }
 
-  if (!lime.init(0, arguments.sample_file, arguments.write_sample_file)) {
+  std::string sdr_dev = "driver=lime";
+  cfg.lookupValue("sdr.device_args", sdr_dev);
+  if (!sdr.init(sdr_dev, arguments.sample_file, arguments.write_sample_file)) {
     spdlog::error("Failed to initialize I/Q data source.");
     exit(1);
   }
@@ -256,7 +267,7 @@ auto main(int argc, char **argv) -> int {
   cfg.lookupValue("sdr.normalized_gain", gain);
   cfg.lookupValue("sdr.antenna", antenna);
 
-  if (!lime.tune(frequency, sample_rate, bandwidth, gain, antenna)) {
+  if (!sdr.tune(frequency, sample_rate, bandwidth, gain, antenna)) {
     spdlog::error("Failed to set initial center frequency. Exiting.");
     exit(1);
   }
@@ -290,7 +301,7 @@ auto main(int argc, char **argv) -> int {
   // Create the layer components: Phy, RLC, RRC and GW
   Phy phy(
       cfg,
-      std::bind(&LimeSdrReader::getSamples, &lime, _1, _2, _3),  // NOLINT
+      std::bind(&SdrReader::getSamples, &sdr, _1, _2, _3),  // NOLINT
       arguments.file_bw * 5,
       arguments.override_nof_prb);
 
@@ -331,7 +342,7 @@ auto main(int argc, char **argv) -> int {
   std::string uri = "http://0.0.0.0:3000/rp-api/";
   cfg.lookupValue("restful_api.uri", uri);
   spdlog::info("Starting RESTful API handler at {}", uri);
-  RestHandler rest_handler(cfg, uri, state, lime, phy, set_params);
+  RestHandler rest_handler(cfg, uri, state, sdr, phy, set_params);
 
   // Initialize one CAS and thered_cnt MBSFN frame processors
   CasFrameProcessor cas_processor(cfg, phy, rlc, rest_handler);
@@ -351,7 +362,7 @@ auto main(int argc, char **argv) -> int {
   }
 
   // Start receiving sample data
-  lime.start();
+  sdr.start();
 
   uint32_t tti = 0;
 
@@ -367,14 +378,14 @@ auto main(int argc, char **argv) -> int {
   for (;;) {
     if (state == searching) {
       if (restart) {
-        lime.stop();
+        sdr.stop();
         sample_rate = search_sample_rate;  // sample rate for searching
-        lime.tune(frequency, sample_rate, bandwidth, gain, antenna);
-        lime.start();
+        sdr.tune(frequency, sample_rate, bandwidth, gain, antenna);
+        sdr.start();
       }
       // In searching state, clear the receive buffer and try to find a cell at the configured frequency and synchronize with it
       restart = false;
-      lime.clear_buffer();
+      sdr.clear_buffer();
       bool cell_found = phy.cell_search();
       if (cell_found) {
         // A cell has been found. We now know the required number of PRB = bandwidth of the carrier. Set the approproiate
@@ -383,11 +394,11 @@ auto main(int argc, char **argv) -> int {
         unsigned new_srate = srslte_sampling_freq_hz(cas_nof_prb);
         spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
             phy.nr_prb() * 0.2);
-        lime.stop();
+        sdr.stop();
 
         bandwidth = (cas_nof_prb * 200000) * 1.2;
-        lime.tune(frequency, new_srate, bandwidth, gain, antenna);
-        lime.start();
+        sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
+        sdr.start();
         spdlog::debug("Synchronizing subframe");
         // ... and move to syncing state.
         state = syncing;
@@ -456,11 +467,11 @@ auto main(int argc, char **argv) -> int {
               unsigned new_srate = srslte_sampling_freq_hz(mbsfn_nof_prb);
               spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
                   mbsfn_nof_prb * 0.2);
-              lime.stop();
+              sdr.stop();
 
               bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
-              lime.tune(frequency, new_srate, bandwidth, gain, antenna);
-              lime.start();
+              sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
+              sdr.start();
               spdlog::debug("Synchronizing subframe after PRB extension");
               // ... and move to syncing state.
               phy.set_cell();
@@ -469,10 +480,10 @@ auto main(int argc, char **argv) -> int {
             }
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
-            lime.stop();
+            sdr.stop();
             sample_rate = search_sample_rate;  // sample rate for searching
-            lime.tune(frequency, sample_rate, bandwidth, gain, antenna);
-            lime.start();
+            sdr.tune(frequency, sample_rate, bandwidth, gain, antenna);
+            sdr.start();
             rrc.reset();
             phy.reset();
 
@@ -511,10 +522,10 @@ auto main(int argc, char **argv) -> int {
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
-            lime.stop();
+            sdr.stop();
             sample_rate = search_sample_rate;  // sample rate for searching
-            lime.tune(frequency, sample_rate, bandwidth, gain, antenna);
-            lime.start();
+            sdr.tune(frequency, sample_rate, bandwidth, gain, antenna);
+            sdr.start();
 
             state = searching;
             sleep(1);

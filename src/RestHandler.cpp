@@ -33,7 +33,7 @@ using web::http::experimental::listener::http_listener;
 using web::http::experimental::listener::http_listener_config;
 
 RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
-                         state_t& state, LimeSdrReader& lime, Phy& phy,
+                         state_t& state, SdrReader& lime, Phy& phy,
                          set_params_t set_params)
     : _cfg(cfg),
       _state(state),

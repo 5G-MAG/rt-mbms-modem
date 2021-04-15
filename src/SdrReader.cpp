@@ -16,18 +16,24 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-#include "LimeSdrReader.h"
+#include "SdrReader.h"
+#include <SoapySDR/Device.hpp>
+#include <SoapySDR/Types.hpp>
+#include <SoapySDR/Formats.hpp>
+
+#include <boost/algorithm/string/join.hpp>
 
 #include <chrono>
 #include <cmath>
 
 #include "spdlog/spdlog.h"
 
-LimeSdrReader:: ~LimeSdrReader() {
+SdrReader:: ~SdrReader() {
   if (_sdr != nullptr) {
-    LMS_StopStream(&_stream);
-    LMS_DestroyStream(_sdr, &_stream);
-    LMS_Close(_sdr);
+    auto sdr = (SoapySDR::Device*)_sdr;
+    sdr->deactivateStream((SoapySDR::Stream*)_stream, 0, 0);
+    sdr->closeStream((SoapySDR::Stream*)_stream);
+    SoapySDR::Device::unmake( sdr );
   }
 
   if (_reading_from_file) {
@@ -39,7 +45,24 @@ LimeSdrReader:: ~LimeSdrReader() {
   }
 }
 
-auto LimeSdrReader::init(uint8_t device_index, const char* sample_file,
+void SdrReader::enumerateDevices()
+{
+  auto results = SoapySDR::Device::enumerate();
+	SoapySDR::Kwargs::iterator it;
+
+	for( int i = 0; i < results.size(); ++i)
+	{
+		printf("Device #%d:\n", i);
+		for( it = results[i].begin(); it != results[i].end(); ++it)
+		{
+			printf("%s = %s\n", it->first.c_str(), it->second.c_str());
+		}
+		printf("\n\n");
+	}
+
+}
+
+auto SdrReader::init(const std::string& device_args, const char* sample_file,
                          const char* write_sample_file) -> bool {
   if (sample_file != nullptr) {
     if (0 == srslte_filesource_init(&file_source,
@@ -51,47 +74,6 @@ auto LimeSdrReader::init(uint8_t device_index, const char* sample_file,
       return false;
     }
   } else {
-    int device_count = LMS_GetDeviceList(nullptr);
-    if (device_count < 0) {
-      spdlog::error("LMS_GetDeviceList() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-
-    lms_info_str_t device_list[device_count];   // NOLINT
-    if (LMS_GetDeviceList(device_list) < 0) {
-      spdlog::error("LMS_GetDeviceList() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-
-    if (LMS_Open(&_sdr, device_list[device_index], nullptr) != 0) {
-      spdlog::error("LMS_Open() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-
-    if (LMS_Init(_sdr) != 0) {
-      spdlog::error("LMS_Init() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-    if (LMS_EnableChannel(_sdr, LMS_CH_RX, 0, true) != 0) {
-      spdlog::error("LMS_EnableChannel() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-
-    if (LMS_EnableChannel(_sdr, LMS_CH_TX, 0, true) != 0) {
-      spdlog::error("LMS_EnableChannel() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-
-    _stream.channel = 0;
-    _stream.fifoSize = 1024*1024;
-    _stream.throughputVsLatency = 1;
-    _stream.isTx = LMS_CH_RX;
-    _stream.dataFmt = lms_stream_t::LMS_FMT_F32;
-    if (LMS_SetupStream(_sdr, &_stream) != 0) {
-      spdlog::error("LMS_SetupStream() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-
     if (write_sample_file != nullptr) {
       if (0 == srslte_filesink_init(&file_sink,
                                     const_cast<char*>(write_sample_file),
@@ -101,6 +83,14 @@ auto LimeSdrReader::init(uint8_t device_index, const char* sample_file,
         spdlog::error("Could not open file {}", write_sample_file);
         return false;
       }
+    }
+
+    auto args = SoapySDR::KwargsFromString(device_args);
+    _sdr = SoapySDR::Device::make(args);
+    if (_sdr == nullptr)
+    {
+      spdlog::error("SoapySDR: failed to open device with args {}", device_args);
+      return false;
     }
   }
 
@@ -117,16 +107,16 @@ auto LimeSdrReader::init(uint8_t device_index, const char* sample_file,
   return true;
 }
 
-void LimeSdrReader::clear_buffer() {
+void SdrReader::clear_buffer() {
   _buffer.clear();
   _high_watermark_reached = false;
 }
 
-auto LimeSdrReader::setSampleRate(unsigned /*sample_rate*/) -> bool {
+auto SdrReader::setSampleRate(unsigned /*sample_rate*/) -> bool {
   return _sdr != nullptr;
 }
 
-auto LimeSdrReader::tune(uint32_t frequency, uint32_t sample_rate,
+auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
     uint32_t bandwidth, double gain, const std::string& antenna) -> bool {
   _antenna = antenna;
   _gain = gain;
@@ -145,102 +135,64 @@ auto LimeSdrReader::tune(uint32_t frequency, uint32_t sample_rate,
     return false;
   }
 
-  spdlog::info("Tuning Lime SDR Mini to {} MHz, filter bandwidth {} MHz, sample rate {}, gain {}, antenna path {}",
+  spdlog::info("Tuning to {} MHz, filter bandwidth {} MHz, sample rate {}, gain {}, antenna path {}",
       frequency/1000000.0, bandwidth/1000000.0, sample_rate/1000000.0, gain, antenna);
 
-  if (LMS_SetLOFrequency(_sdr, LMS_CH_RX, 0, frequency) != 0) {
-    spdlog::error("LMS_SetLOFrequency() : {}", LMS_GetLastErrorMessage());
-    return false;
-  }
-  double freq = NAN;
-  if ( LMS_GetLOFrequency(_sdr, LMS_CH_RX, 0, &freq) != 0 ) {
-    spdlog::error("LMS_GetLOFrequency() : {}", LMS_GetLastErrorMessage());
-    return false;
-  }
-  spdlog::info("LO frequency set to {} MHz", freq / 1e6);
+  auto sdr = (SoapySDR::Device*)_sdr;
 
-  sleep(2);
-
-  int nrAntennas = LMS_GetAntennaList(_sdr, false, 0, nullptr);
-  lms_name_t list[nrAntennas];   // NOLINT
-  LMS_GetAntennaList(_sdr, false, 0, list);
-  int antennaFound = 0;
-  for (int i = 0; i < nrAntennas; i++) {
-    if (strcmp(list[i], antenna.c_str()) == 0) {
-      antennaFound = 1;
-      if (LMS_SetAntenna(_sdr, false, 0, i) != 0) {
-        spdlog::error("LMS_SetAntenna() : {}", LMS_GetLastErrorMessage());
-        return false;
-      }
-      break;
-    }
-  }
-  if (antennaFound == 0) {
-    spdlog::error("Antenna not found: {}", LMS_GetLastErrorMessage());
+  auto antenna_list = sdr->listAntennas(SOAPY_SDR_RX, 0);
+  if (std::find(antenna_list.begin(), antenna_list.end(), antenna) != antenna_list.end()) {
+    sdr->setAntenna( SOAPY_SDR_RX, 0, antenna);
+  } else {
+    spdlog::error("Unknown antenna \"{}\". Available: {}.", antenna, boost::algorithm::join(antenna_list, ", ") );
     return false;
   }
 
-  if (LMS_SetSampleRate(_sdr, sample_rate, 0) != 0) {
-    spdlog::error("LMS_SetSampleRate() : {}", LMS_GetLastErrorMessage());
+  auto gain_range = sdr->getGainRange(SOAPY_SDR_RX, 0);
+  if (gain >= gain_range.minimum() && gain <= gain_range.maximum()) {
+    sdr->setGain( SOAPY_SDR_RX, 0, gain);
+  } else {
+    spdlog::error("Invalid gain setting {}. Allowed range is: {} - {}.", gain, gain_range.minimum(), gain_range.maximum());
     return false;
   }
 
-  double rf_rate = NAN;
-  if (LMS_GetSampleRate(_sdr, LMS_CH_RX, 0, &_sampleRate, &rf_rate) != 0) {
-    spdlog::error("LMS_GetSampleRate() : {}", LMS_GetLastErrorMessage());
+  sdr->setFrequency( SOAPY_SDR_RX, 0, frequency);
+  sdr->setBandwidth( SOAPY_SDR_RX, 0, bandwidth);
+  sdr->setSampleRate( SOAPY_SDR_RX, 0, sample_rate);
+
+  _antenna = sdr->getAntenna( SOAPY_SDR_RX, 0);
+  _gain = sdr->getGain( SOAPY_SDR_RX, 0);
+  _frequency = sdr->getFrequency( SOAPY_SDR_RX, 0);
+  bandwidth = sdr->getBandwidth( SOAPY_SDR_RX, 0);
+  _sampleRate = sdr->getSampleRate( SOAPY_SDR_RX, 0);
+
+  spdlog::info("SDR tuned to {} MHz, filter bandwidth {} MHz, sample rate {}, gain {}, antenna path {}",
+      _frequency/1000000.0, bandwidth/1000000.0, _sampleRate/1000000.0, _gain, _antenna);
+
+	_stream = sdr->setupStream( SOAPY_SDR_RX, SOAPY_SDR_CF32);
+	if( _stream == nullptr)
+	{
+    spdlog::error("Failed to set up RX stream");
+		SoapySDR::Device::unmake( sdr );
     return false;
-  }
-  spdlog::info("Sample rate on host interface {} MHz, RF ADC {} MHz", _sampleRate / 1e6, rf_rate / 1e6);
+	}
 
-
-
-
-  if (gain > 0) {
-    if (LMS_SetNormalizedGain(_sdr, LMS_CH_RX, 0, gain) != 0) {
-      spdlog::error("LMS_SetNormalizedGain() : {}", LMS_GetLastErrorMessage());
-      return false;
-    }
-  }
-
-  float_type setgain = NAN;  // normalized gain
-  unsigned int gaindB = 0;   // gain in dB
-  if (LMS_GetNormalizedGain(_sdr, LMS_CH_RX, 0, &setgain) != 0) {
-    spdlog::error("LMS_GetNr() : {}", LMS_GetLastErrorMessage());
-    return false;
-  }
-  if (LMS_GetGaindB(_sdr, LMS_CH_RX, 0, &gaindB) != 0) {
-    spdlog::error("LMS_GetGaindB(() : {}", LMS_GetLastErrorMessage());
-    return false;
-  }
-
-  spdlog::info("RX gain set to {} / {} dB", setgain, gaindB);
-
-  lms_range_t range;
-  if (LMS_GetLPFBWRange(_sdr, LMS_CH_RX, &range) != 0) {
-    spdlog::error("LMS_GetLPFBWRange() : {}", LMS_GetLastErrorMessage());
-    return false;
-  }
-  spdlog::debug("LPF BW range {} - {} MHz, step {} Hz", range.min / 1e6, range.max / 1e6, range.step);
-
-  if (LMS_SetLPFBW(_sdr, LMS_CH_RX, 0, bandwidth*1.2) != 0) {
-    spdlog::error("LMS_SetLPFBW() : {}", LMS_GetLastErrorMessage());
-    return false;
-  }
-
-  if (LMS_Calibrate(_sdr, LMS_CH_RX, 0, bandwidth, 0) != 0) {
-    spdlog::error("LMS_Calibrate() : {}", LMS_GetLastErrorMessage());
-    return false;
+  auto sensors = sdr->listSensors();
+  if (std::find(sensors.begin(), sensors.end(), "lms7_temp") != sensors.end()) {
+    _temp_sensor_available = true;
+    _temp_sensor_key = "lms7_temp";
   }
 
   return true;
 }
 
-void LimeSdrReader::start() {
+void SdrReader::start() {
+  auto sdr = (SoapySDR::Device*)_sdr;
+	sdr->activateStream( (SoapySDR::Stream*)_stream, 0, 0, 0);
   _running = true;
-  LMS_StartStream(&_stream);
 
   // Start the reader thread and elevate its priority to realtime
-  _readerThread = std::thread{&LimeSdrReader::read, this};
+  _readerThread = std::thread{&SdrReader::read, this};
   struct sched_param thread_param = {};
   thread_param.sched_priority = 50;
   _cfg.lookupValue("sdr.reader_thread_priority_rt", thread_param.sched_priority);
@@ -253,15 +205,17 @@ void LimeSdrReader::start() {
   }
 }
 
-void LimeSdrReader::stop() {
+void SdrReader::stop() {
   _running = false;
-  LMS_StopStream(&_stream);
+
+  auto sdr = (SoapySDR::Device*)_sdr;
+  sdr->deactivateStream((SoapySDR::Stream*)_stream, 0, 0);
 
   _readerThread.join();
   _buffer.clear();
 }
 
-void LimeSdrReader::read() {
+void SdrReader::read() {
   std::array<void*, SRSLTE_MAX_CHANNELS> radio_buffers = { nullptr };
   while (_running) {
     int toRead = ceil(_sampleRate / 1000.0);
@@ -289,8 +243,13 @@ void LimeSdrReader::read() {
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - entered));
         std::this_thread::sleep_for(sleep);
       } else {
-        read = LMS_RecvStream(&_stream, _buffer.write_head(), toRead, nullptr,
-                              1000);
+        auto sdr = (SoapySDR::Device*)_sdr;
+        int flags;
+        long long time_ns;
+        void *buffs[] = {_buffer.write_head()}; // NOLINT
+
+        read = sdr->readStream( (SoapySDR::Stream*)_stream, buffs, toRead, flags, time_ns);
+
         if (read> 0) {
           if (_writing_to_file) {
             srslte_filesink_write(&file_sink, _buffer.write_head(), read);
@@ -303,7 +262,7 @@ void LimeSdrReader::read() {
   spdlog::debug("Sample reader thread exited");
 }
 
-auto LimeSdrReader::getSamples(cf_t* data, uint32_t nsamples,
+auto SdrReader::getSamples(cf_t* data, uint32_t nsamples,
                                srslte_timestamp_t *
                                /*rx_time*/) -> int {
   std::chrono::steady_clock::time_point entered = {};
@@ -317,6 +276,7 @@ auto LimeSdrReader::getSamples(cf_t* data, uint32_t nsamples,
   }
 
   if (!_high_watermark_reached) {
+    spdlog::debug("size {}", _buffer.size() );
     while (_buffer.size() < (_sampleRate / 1000.0) * (_buffer_ms / 2.0) * sizeof(cf_t)) {
       std::this_thread::sleep_for(std::chrono::microseconds(500));
     }

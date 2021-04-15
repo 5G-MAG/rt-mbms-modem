@@ -8,10 +8,9 @@ include(FindPkgConfig)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-set(CMAKE_CXX_FLAGS_DEBUG_INIT "-Wall -Wextra -Werror -g3")
+set(CMAKE_CXX_FLAGS_DEBUG_INIT "-Wall -Wextra -Werror -g3  -fsanitize=leak")
 set(CMAKE_CXX_FLAGS_RELEASE_INIT "-Wall -O3")
 
-find_package(LimeSuite REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(cpprestsdk REQUIRED)
 
@@ -46,7 +45,7 @@ link_directories(
 
 set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,modernize*,performance*)
 
-add_executable(rp src/main.cpp src/LimeSdrReader.cpp src/Phy.cpp
+add_executable(rp src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp
     src/Gw.cpp src/RestHandler.cpp src/MeasurementFileWriter.cpp)
 add_test(rp_test rp --config=./ofr-lrp.conf)
@@ -58,12 +57,15 @@ target_link_libraries( rp
     srslte_mac
     srslte_upper
     rrc_asn1
-    LimeSuite
     config++
     cpprestsdk::cpprest
     gps
     ssl
     crypto
+    SoapySDR
+
+    debug
+    lsan
 )
 
 
