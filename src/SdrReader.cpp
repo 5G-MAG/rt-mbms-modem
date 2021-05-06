@@ -118,8 +118,6 @@ auto SdrReader::setSampleRate(unsigned /*sample_rate*/) -> bool {
 
 auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
     uint32_t bandwidth, double gain, const std::string& antenna) -> bool {
-  _antenna = antenna;
-  _gain = gain;
   _frequency = frequency;
   _filterBw = bandwidth;
 
@@ -143,6 +141,7 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
   auto antenna_list = sdr->listAntennas(SOAPY_SDR_RX, 0);
   if (std::find(antenna_list.begin(), antenna_list.end(), antenna) != antenna_list.end()) {
     sdr->setAntenna( SOAPY_SDR_RX, 0, antenna);
+    _antenna = sdr->getAntenna( SOAPY_SDR_RX, 0);
   } else {
     spdlog::error("Unknown antenna \"{}\". Available: {}.", antenna, boost::algorithm::join(antenna_list, ", ") );
     return false;
@@ -157,6 +156,7 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
   _max_gain = gain_range.maximum();
   if (gain >= gain_range.minimum() && gain <= gain_range.maximum()) {
     sdr->setGain( SOAPY_SDR_RX, 0, gain);
+    _gain = sdr->getGain( SOAPY_SDR_RX, 0);
   } else {
     spdlog::error("Invalid gain setting {}. Allowed range is: {} - {}.", gain, gain_range.minimum(), gain_range.maximum());
     return false;
@@ -166,8 +166,6 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
   sdr->setBandwidth( SOAPY_SDR_RX, 0, bandwidth);
   sdr->setSampleRate( SOAPY_SDR_RX, 0, sample_rate);
 
-  _antenna = sdr->getAntenna( SOAPY_SDR_RX, 0);
-  _gain = sdr->getGain( SOAPY_SDR_RX, 0);
   _frequency = sdr->getFrequency( SOAPY_SDR_RX, 0);
   bandwidth = sdr->getBandwidth( SOAPY_SDR_RX, 0);
   _sampleRate = sdr->getSampleRate( SOAPY_SDR_RX, 0);
