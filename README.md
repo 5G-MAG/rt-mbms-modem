@@ -13,29 +13,27 @@ sudo snap install cmake --classic
 sudo pip3 install cpplint
 ````
 
-## Installing LimeSuite
+## Installing SDR drivers
 
-Lime Suite needs to be built from source at a specific commit. Please follow these steps to do so:
-
+OBECA uses SoapySDR to interface with SDR hardware. Please install the library, the dev headers and the module that matches your hardware.
 ````
-cd ~
-git clone https://github.com/myriadrf/LimeSuite.git
-cd LimeSuite/
-git checkout 28031bfcffe1e8fa393c7db88d4fe370fb4c67ea
-mkdir buildir
-cd buildir
-cmake -G Ninja ..
-ninja
-sudo ninja install
-sudo ldconfig
+sudo apt install libsoapysdr-dev
+````
+
+You can find more info on device support at https://github.com/pothosware/SoapySDR/wiki
+
+Running ``apt search soapysdr-module`` lists all available modules.
+
+For, e.g., BladeRF the relevant package is named *soapysdr-module-bladerf*. Install it by running:
+````
+sudo apt install soapysdr-module-bladerf
 ````
 
 ## Getting the source code
 
 ````
 cd ~
-git clone --recurse-submodules git@github.com:Austrian-Broadcasting-Services/obeca-receive-process.git
-git checkout next
+git clone --branch next --recurse-submodules git@github.com:Austrian-Broadcasting-Services/obeca-receive-process.git
 
 cd obeca-receive-process
 
