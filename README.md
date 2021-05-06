@@ -35,6 +35,7 @@ sudo ldconfig
 ````
 cd ~
 git clone --recurse-submodules git@github.com:Austrian-Broadcasting-Services/obeca-receive-process.git
+git checkout next
 
 cd obeca-receive-process
 
