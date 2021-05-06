@@ -57,6 +57,8 @@ Alternatively, to configure a debug build:
 
 The application installs a systemd unit and some helper scripts for setting up the TUN network interface and multicast routing.
 
+Create a user named "ofr" for correct pre-configuration of receive process: `` sudo useradd ofr ``
+
 To start the application as a background daemon:
 `` sudo systemctl start rp ``
 
