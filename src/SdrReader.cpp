@@ -94,7 +94,7 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
     }
   }
 
-  _cfg.lookupValue("sdr.ringbuffer_size_ms", _buffer_ms);
+  _cfg.lookupValue("rp.sdr.ringbuffer_size_ms", _buffer_ms);
   unsigned int buffer_size = 16384/*15360*/ * _buffer_ms;
       // at 10MHz BW / 15.36Mhz sample rate
   int error = 0;
@@ -148,7 +148,13 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
     return false;
   }
 
+  if (sdr->hasGainMode(SOAPY_SDR_RX, 0)) {
+    spdlog::info("Disabling AGC");
+    sdr->setGainMode(SOAPY_SDR_RX, 0, false);
+  }
   auto gain_range = sdr->getGainRange(SOAPY_SDR_RX, 0);
+  _min_gain = gain_range.minimum();
+  _max_gain = gain_range.maximum();
   if (gain >= gain_range.minimum() && gain <= gain_range.maximum()) {
     sdr->setGain( SOAPY_SDR_RX, 0, gain);
   } else {
@@ -169,13 +175,6 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
   spdlog::info("SDR tuned to {} MHz, filter bandwidth {} MHz, sample rate {}, gain {}, antenna path {}",
       _frequency/1000000.0, bandwidth/1000000.0, _sampleRate/1000000.0, _gain, _antenna);
 
-	_stream = sdr->setupStream( SOAPY_SDR_RX, SOAPY_SDR_CF32);
-	if( _stream == nullptr)
-	{
-    spdlog::error("Failed to set up RX stream");
-		SoapySDR::Device::unmake( sdr );
-    return false;
-	}
 
   auto sensors = sdr->listSensors();
   if (std::find(sensors.begin(), sensors.end(), "lms7_temp") != sensors.end()) {
@@ -187,15 +186,24 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
 }
 
 void SdrReader::start() {
-  auto sdr = (SoapySDR::Device*)_sdr;
-	sdr->activateStream( (SoapySDR::Stream*)_stream, 0, 0, 0);
+  if (_sdr != nullptr) {
+    auto sdr = (SoapySDR::Device*)_sdr;
+    _stream = sdr->setupStream( SOAPY_SDR_RX, SOAPY_SDR_CF32);
+    if( _stream == nullptr)
+    {
+      spdlog::error("Failed to set up RX stream");
+      SoapySDR::Device::unmake( sdr );
+      return ;
+    }
+    sdr->activateStream( (SoapySDR::Stream*)_stream, 0, 0, 0);
+  }
   _running = true;
 
   // Start the reader thread and elevate its priority to realtime
   _readerThread = std::thread{&SdrReader::read, this};
   struct sched_param thread_param = {};
   thread_param.sched_priority = 50;
-  _cfg.lookupValue("sdr.reader_thread_priority_rt", thread_param.sched_priority);
+  _cfg.lookupValue("rp.sdr.reader_thread_priority_rt", thread_param.sched_priority);
 
   spdlog::debug("Launching sample reader thread with realtime scheduling priority {}", thread_param.sched_priority);
 
@@ -208,8 +216,11 @@ void SdrReader::start() {
 void SdrReader::stop() {
   _running = false;
 
-  auto sdr = (SoapySDR::Device*)_sdr;
-  sdr->deactivateStream((SoapySDR::Stream*)_stream, 0, 0);
+  if (_sdr != nullptr) {
+    auto sdr = (SoapySDR::Device*)_sdr;
+    sdr->deactivateStream((SoapySDR::Stream*)_stream, 0, 0);
+    sdr->closeStream((SoapySDR::Stream*)_stream);
+  }
 
   _readerThread.join();
   _buffer.clear();

@@ -131,6 +131,9 @@ class SdrReader {
      */
     uint32_t rssi() { return _rssi; }
 
+    double min_gain() { return _min_gain; }
+    double max_gain() { return _max_gain; }
+
  private:
     void read();
     void* _sdr = nullptr;
@@ -145,6 +148,8 @@ class SdrReader {
     double _frequency;
     unsigned _filterBw;
     double _gain;
+    double _min_gain;
+    double _max_gain;
     std::string _antenna;
     unsigned _overflows;
     unsigned _underflows;

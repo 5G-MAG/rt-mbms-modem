@@ -64,7 +64,7 @@ const char *argp_program_bug_address = "Austrian Broadcasting Services <obeca@or
 static char doc[] = "OBECA Receive Process";  // NOLINT
 
 static struct argp_option options[] = {  // NOLINT
-    {"config", 'c', "FILE", 0, "Configuration file (default: /etc/rp.conf)", 0},
+    {"config", 'c', "FILE", 0, "Configuration file (default: /etc/obeca.conf)", 0},
     {"log-level", 'l', "LEVEL", 0,
      "Log verbosity: 0 = trace, 1 = debug, 2 = info, 3 = warn, 4 = error, 5 = "
      "critical, 6 = none. Default: 2.",
@@ -199,8 +199,6 @@ void set_params(const std::string& ant, unsigned fc, double g, unsigned sr, unsi
   frequency = fc;
   bandwidth = bw;
   antenna = ant;
-  if (g > 1) { g = 1; }
-  if (g < 0) { g = 0; }
   gain = g;
   spdlog::info("RESTful API requesting new parameters: fc {}, bw {}, rate {}, gain {}, antenna {}",
       frequency, bandwidth, sample_rate, gain, antenna);
@@ -218,7 +216,7 @@ void set_params(const std::string& ant, unsigned fc, double g, unsigned sr, unsi
 auto main(int argc, char **argv) -> int {
   struct arguments arguments;
   /* Default values */
-  arguments.config_file = "/etc/rp.conf";
+  arguments.config_file = "/etc/obeca.conf";
   arguments.sample_file = nullptr;
   arguments.write_sample_file = nullptr;
   argp_parse(&argp, argc, argv, 0, nullptr, &arguments);
@@ -255,17 +253,17 @@ auto main(int argc, char **argv) -> int {
   }
 
   std::string sdr_dev = "driver=lime";
-  cfg.lookupValue("sdr.device_args", sdr_dev);
+  cfg.lookupValue("rp.sdr.device_args", sdr_dev);
   if (!sdr.init(sdr_dev, arguments.sample_file, arguments.write_sample_file)) {
     spdlog::error("Failed to initialize I/Q data source.");
     exit(1);
   }
 
-  cfg.lookupValue("sdr.search_sample_rate_hz", sample_rate);
+  cfg.lookupValue("rp.sdr.search_sample_rate_hz", sample_rate);
   search_sample_rate = sample_rate;
-  cfg.lookupValue("sdr.center_frequency_hz", frequency);
-  cfg.lookupValue("sdr.normalized_gain", gain);
-  cfg.lookupValue("sdr.antenna", antenna);
+  cfg.lookupValue("rp.sdr.center_frequency_hz", frequency);
+  cfg.lookupValue("rp.sdr.normalized_gain", gain);
+  cfg.lookupValue("rp.sdr.antenna", antenna);
 
   if (!sdr.tune(frequency, sample_rate, bandwidth, gain, antenna)) {
     spdlog::error("Failed to set initial center frequency. Exiting.");
@@ -277,15 +275,15 @@ auto main(int argc, char **argv) -> int {
 
   // Create a thread pool for the frame processors
   unsigned thread_cnt = 4;
-  cfg.lookupValue("phy.threads", thread_cnt);
+  cfg.lookupValue("rp.phy.threads", thread_cnt);
   int phy_prio = 10;
-  cfg.lookupValue("phy.thread_priority_rt", phy_prio);
+  cfg.lookupValue("rp.phy.thread_priority_rt", phy_prio);
   thread_pool pool{ thread_cnt + 1, phy_prio };
 
   // Elevate execution to real time scheduling
   struct sched_param thread_param = {};
   thread_param.sched_priority = 20;
-  cfg.lookupValue("phy.main_thread_priority_rt", thread_param.sched_priority);
+  cfg.lookupValue("rp.phy.main_thread_priority_rt", thread_param.sched_priority);
 
   spdlog::info("Raising main thread to realtime scheduling priority {}", thread_param.sched_priority);
 
@@ -295,7 +293,7 @@ auto main(int argc, char **argv) -> int {
   }
 
   bool enable_measurement_file = false;
-  cfg.lookupValue("measurement_file.enabled", enable_measurement_file);
+  cfg.lookupValue("rp.measurement_file.enabled", enable_measurement_file);
   MeasurementFileWriter measurement_file(cfg);
 
   // Create the layer components: Phy, RLC, RRC and GW
@@ -339,8 +337,8 @@ auto main(int argc, char **argv) -> int {
   state_t state = searching;
 
   // Create the RESTful API handler
-  std::string uri = "http://0.0.0.0:3000/rp-api/";
-  cfg.lookupValue("restful_api.uri", uri);
+  std::string uri = "http://0.0.0.0:3010/rp-api/";
+  cfg.lookupValue("rp.restful_api.uri", uri);
   spdlog::info("Starting RESTful API handler at {}", uri);
   RestHandler rest_handler(cfg, uri, state, sdr, phy, set_params);
 
@@ -367,7 +365,7 @@ auto main(int argc, char **argv) -> int {
   uint32_t tti = 0;
 
   uint32_t measurement_interval = 5;
-  cfg.lookupValue("measurement_file.interval_secs", measurement_interval);
+  cfg.lookupValue("rp.measurement_file.interval_secs", measurement_interval);
   measurement_interval *= 1000;
   uint32_t tick = 0;
 
