@@ -46,10 +46,10 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
     server_config.set_ssl_context_callback(
         [&](boost::asio::ssl::context& ctx) {
           std::string cert_file = "/usr/share/obeca/cert.pem";
-          cfg.lookupValue("restful_api.cert", cert_file);
+          cfg.lookupValue("rp.restful_api.cert", cert_file);
 
           std::string key_file = "/usr/share/obeca/key.pem";
-          cfg.lookupValue("restful_api.key", key_file);
+          cfg.lookupValue("rp.restful_api.key", key_file);
 
           ctx.set_options(boost::asio::ssl::context::default_workarounds);
           ctx.use_certificate_chain_file(cert_file);
@@ -57,10 +57,10 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
         });
   }
 
-  cfg.lookupValue("restful_api.api_key.enabled", _require_bearer_token);
+  cfg.lookupValue("rp.restful_api.api_key.enabled", _require_bearer_token);
   if (_require_bearer_token) {
     _api_key = "106cd60-76c8-4c37-944c-df21aa690c1e";
-    cfg.lookupValue("restful_api.api_key.key", _api_key);
+    cfg.lookupValue("rp.restful_api.api_key.key", _api_key);
   }
 
   _listener = std::make_unique<http_listener>(
@@ -204,14 +204,25 @@ void RestHandler::put(http_request message) {
     if (paths[0] == "sdr_params") {
       value answer;
 
-      const auto & jval = message.extract_json().get();
+      auto f = _lime.get_frequency();
+      auto g = _lime.get_gain();
+      auto bw = _lime.get_filter_bw();
+      auto a = _lime.get_antenna();
+      auto sr = _lime.get_sample_rate();
 
-      _set_params(
-          jval.at("antenna").as_string(),
-          jval.at("frequency").as_integer(),
-          jval.at("gain").as_double(),
-          jval.at("sample_rate").as_integer(),
-          jval.at("filter_bw").as_integer());
+      const auto & jval = message.extract_json().get();
+      spdlog::debug("Received JSON: {}", jval.serialize());
+
+      if (jval.has_field("antenna")) {
+        a = jval.at("antenna").as_string();
+      }
+      if (jval.has_field("frequency")) {
+        f = jval.at("frequency").as_integer();
+      }
+      if (jval.has_field("gain")) {
+        g = jval.at("gain").as_double();
+      }
+      _set_params( a, f, g, sr, bw);
 
       message.reply(status_codes::OK, answer);
     }
