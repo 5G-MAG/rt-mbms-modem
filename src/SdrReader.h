@@ -134,6 +134,16 @@ class SdrReader {
     double min_gain() { return _min_gain; }
     double max_gain() { return _max_gain; }
 
+    /**
+     * If sample file creation is enabled, writing samples starts after this call
+     */
+    void enableSampleFileWriting() { _write_samples = true; }
+
+    /**
+     * If sample file creation is enabled, writing samples stops after this call
+     */
+    void disableSampleFileWriting() { _write_samples = false; }
+
  private:
     void read();
     void* _sdr = nullptr;
@@ -168,6 +178,7 @@ class SdrReader {
     bool _buffer_ready = false;
     bool _reading_from_file = false;
     bool _writing_to_file = false;
+    bool _write_samples = false;
 
     uint32_t _rssi = 0;
 

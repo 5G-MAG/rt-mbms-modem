@@ -381,6 +381,10 @@ auto main(int argc, char **argv) -> int {
         sdr.tune(frequency, sample_rate, bandwidth, gain, antenna);
         sdr.start();
       }
+
+      // We're at the search sample rate, and there's no point in creating a sample file. Stop the sample writer, if enabled.
+      sdr.disableSampleFileWriting();
+      
       // In searching state, clear the receive buffer and try to find a cell at the configured frequency and synchronize with it
       restart = false;
       sdr.clear_buffer();
@@ -438,6 +442,9 @@ auto main(int argc, char **argv) -> int {
 
         // Ready to receive actual data. Go to processing state.
         state = processing;
+
+        // If sample file creation is enabled, start writing out samples now that we're at the target sample rate
+        sdr.enableSampleFileWriting();
       }
     } else {  // processing
       int mb_idx = 0;
