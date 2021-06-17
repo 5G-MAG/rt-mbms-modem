@@ -260,7 +260,7 @@ void SdrReader::read() {
         read = sdr->readStream( (SoapySDR::Stream*)_stream, buffs, toRead, flags, time_ns);
 
         if (read> 0) {
-          if (_writing_to_file) {
+          if (_writing_to_file && _write_samples) {
             srslte_filesink_write(&file_sink, _buffer.write_head(), read);
           }
           _buffer.commit( read * sizeof(cf_t) );
