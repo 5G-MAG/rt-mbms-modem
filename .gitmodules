@@ -1,4 +1,4 @@
 [submodule "lib/srslte"]
 	path = lib/srslte
 	url = git@github.com:Austrian-Broadcasting-Services/srsLTE.git
-	branch = main
+	branch = master
