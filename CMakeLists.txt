@@ -71,7 +71,7 @@ target_link_libraries( rp
 
 install(TARGETS rp DESTINATION bin LIBRARY DESTINATION lib)
 install(FILES supporting_files/rp.service DESTINATION /usr/lib/systemd/system)
-install(FILES supporting_files/rp.conf DESTINATION /etc)
+install(FILES supporting_files/obeca.conf DESTINATION /etc)
 install(FILES supporting_files/obeca DESTINATION /etc/default)
 install(FILES supporting_files/pre_rp.sh DESTINATION /usr/share/obeca
   PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
