@@ -76,6 +76,21 @@ Found device 0
 
 ````
 
+## Configuring the reverse path filter
+
+To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled.
+
+````
+echo 0 >  /proc/sys/net/ipv4/conf/all/rp_filter
+echo 0 >  /proc/sys/net/ipv4/conf/default/rp_filter
+````
+
+You can check if the values are set correctly by running:
+
+````
+sysctl -ar 'rp_filter'
+````
+
 ## Getting the source code
 
 ````
