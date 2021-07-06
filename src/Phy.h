@@ -19,7 +19,6 @@
 
 #pragma once
 
-#include <lime/LimeSuite.h>
 #include <functional>
 #include <cstdint>
 #include <string>

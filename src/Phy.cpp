@@ -20,6 +20,7 @@
 #include "Phy.h"
 
 #include <utility>
+#include <iomanip>
 
 #include "spdlog/spdlog.h"
 #include "srslte/asn1/rrc_asn1_utils.h"
@@ -239,11 +240,28 @@ void Phy::set_mbsfn_config(const srslte::mcch_msg_t& mcch) {
     for (uint32_t j = 0; j < _mcch.pmch_info_list[i].nof_mbms_session_info; j++) {
       mtch_info_t mtch_info;
       mtch_info.lcid = _mcch.pmch_info_list[i].mbms_session_info_list[j].lc_ch_id;
-      std::string tmgi;
-      for (int k = 1; k < 3; k++) {
-        tmgi += std::to_string(_mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.serviced_id[k]);
-      }
-      tmgi += _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.to_string();
+      char tmgi[20];
+      /* acc to  TS24.008 10.5.6.13:
+       * MCC 1,2,3: 901 ->   9, 0, 1
+       * MNC 3,1,2:  56 -> (F), 5, 6
+       * HEX 0x09F165
+       *
+       * -------------+-------------+---------
+       * MCC digit 2  | MCC digit 1 | Octet 6*
+       * -------------+-------------+---------
+       * MNC digit 3  | MCC digit 3 | Octet 7*
+       * -------------+-------------+---------
+       * MNC digit 2  | MNC digit 1 | Octet 8*
+       * -------------+-------------+---------
+       */
+      sprintf (tmgi, "%06x%02x%02x%02x",
+         _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.serviced_id[2] |
+         _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.serviced_id[1] << 8 |
+         _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.serviced_id[0] << 16 , 
+         _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mcc[1] << 4 | mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mcc[0],
+         ( _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.nof_mnc_digits == 2 ? 0xF : _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mnc[2] ) << 4 | _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mcc[2] ,
+         _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mnc[1] << 4 | _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mnc[0]
+         );
       mtch_info.tmgi = tmgi;
       mtch_info.dest = _dests[mch_info.mcs][mtch_info.lcid];
       mch_info.mtchs.push_back(mtch_info);
