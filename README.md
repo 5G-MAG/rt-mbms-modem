@@ -17,16 +17,63 @@ sudo pip3 install cpplint
 
 OBECA uses SoapySDR to interface with SDR hardware. Please install the library, the dev headers and the module that matches your hardware.
 ````
-sudo apt install libsoapysdr-dev
+sudo apt install libsoapysdr-dev soapysdr-tools
 ````
 
+
+### Using LimeSDR with Soapy
+
+Lime Suite needs to be built from source at a specific commit. *Do not* use the package available through apt, as the version it packages does not seem to work reliably with LimeSDR Minis and causes calibration errors and unreliable reception. Please follow these steps:
+
+````
+cd ~
+git clone https://github.com/myriadrf/LimeSuite.git
+cd LimeSuite/
+git checkout 28031bfcffe1e8fa393c7db88d4fe370fb4c67ea
+mkdir buildir
+cd buildir
+cmake -G Ninja ..
+ninja
+sudo ninja install
+sudo ldconfig
+````
+
+
+### Using BladeRF with Soapy
+For BladeRF the relevant package is named *soapysdr-module-bladerf*. Install it by running:
+````
+sudo apt install soapysdr-module-bladerf
+````
+
+### Other SDRs
+
+While we've only tested with Lime- and Blade-SDRs, Soapy supports a wide range of SDR devices, which should therefore also be usable with OBECA if the support the high bandwidth/sample rates required for FeMBMS decoding.
 You can find more info on device support at https://github.com/pothosware/SoapySDR/wiki
 
 Running ``apt search soapysdr-module`` lists all available modules.
 
-For, e.g., BladeRF the relevant package is named *soapysdr-module-bladerf*. Install it by running:
-````
-sudo apt install soapysdr-module-bladerf
+If you successfully (or unsuccessfully) try OBECA with another SDR, please let us know! 
+
+### Checking SoapySDR installation
+
+Before continuing, please verify that your SDR is detected by running ``SoapySDRUtil --find``
+
+The output should show your device, e.g.:
+
+```` 
+######################################################
+##     Soapy SDR -- the SDR abstraction library     ##
+######################################################
+
+Found device 0
+  addr = 24607:1027
+  driver = lime
+  label = LimeSDR Mini [USB 2.0] 1D587FCA09A966
+  media = USB 2.0
+  module = FT601
+  name = LimeSDR Mini
+  serial = 1D587FCA09A966
+
 ````
 
 ## Getting the source code
