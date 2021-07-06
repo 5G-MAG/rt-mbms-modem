@@ -57,11 +57,11 @@ class RestHandler {
      *  @param cfg Config singleton reference
      *  @param url URL to open the server on
      *  @param state Reference to the main loop sate
-     *  @param lime Reference to the SDR reader
+     *  @param sdr Reference to the SDR reader
      *  @param set_params Set parameters callback
      */
     RestHandler(const libconfig::Config& cfg, const std::string& url, state_t& state,
-        SdrReader& lime, Phy& phy, set_params_t set_params);
+        SdrReader& sdr, Phy& phy, set_params_t set_params);
     /**
      *  Default destructor.
      */
@@ -126,7 +126,7 @@ class RestHandler {
     std::unique_ptr<web::http::experimental::listener::http_listener> _listener;
 
     state_t& _state;
-    SdrReader& _lime;
+    SdrReader& _sdr;
     Phy& _phy;
 
     set_params_t _set_params;
