@@ -37,14 +37,14 @@ const uint32_t kMaxTimestringSize = 80;
 MeasurementFileWriter::MeasurementFileWriter(const libconfig::Config& cfg)
       : _cfg(cfg) {
   bool gps_enabled = false;
-  _cfg.lookupValue("measurement_file.gpsd.enabled", gps_enabled);
+  _cfg.lookupValue("rp.measurement_file.gpsd.enabled", gps_enabled);
 
   if (gps_enabled) {
     std::string host = "localhost";
-    _cfg.lookupValue("measurement_file.gpsd.host", host);
+    _cfg.lookupValue("rp.measurement_file.gpsd.host", host);
 
     std::string port = DEFAULT_GPSD_PORT;
-    _cfg.lookupValue("measurement_file.gpsd.port", port);
+    _cfg.lookupValue("rp.measurement_file.gpsd.port", port);
 
     _gps = std::make_unique<gpsmm>(host.c_str(), port.c_str());
 
@@ -121,7 +121,7 @@ void MeasurementFileWriter::WriteLogValues(
   }
 
   std::string file_loc = "/tmp/rp_measurements.csv";
-  _cfg.lookupValue("measurement_file.file_path", file_loc);
+  _cfg.lookupValue("rp.measurement_file.file_path", file_loc);
   std::ofstream file;
   file.open(file_loc, std::ios_base::app);
   file << line << std::endl;

@@ -33,11 +33,11 @@ using web::http::experimental::listener::http_listener;
 using web::http::experimental::listener::http_listener_config;
 
 RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
-                         state_t& state, LimeSdrReader& lime, Phy& phy,
+                         state_t& state, SdrReader& sdr, Phy& phy,
                          set_params_t set_params)
     : _cfg(cfg),
       _state(state),
-      _lime(lime),
+      _sdr(sdr),
       _phy(phy),
       _set_params(std::move(set_params)) {
 
@@ -46,10 +46,10 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
     server_config.set_ssl_context_callback(
         [&](boost::asio::ssl::context& ctx) {
           std::string cert_file = "/usr/share/obeca/cert.pem";
-          cfg.lookupValue("restful_api.cert", cert_file);
+          cfg.lookupValue("rp.restful_api.cert", cert_file);
 
           std::string key_file = "/usr/share/obeca/key.pem";
-          cfg.lookupValue("restful_api.key", key_file);
+          cfg.lookupValue("rp.restful_api.key", key_file);
 
           ctx.set_options(boost::asio::ssl::context::default_workarounds);
           ctx.use_certificate_chain_file(cert_file);
@@ -57,10 +57,10 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
         });
   }
 
-  cfg.lookupValue("restful_api.api_key.enabled", _require_bearer_token);
+  cfg.lookupValue("rp.restful_api.api_key.enabled", _require_bearer_token);
   if (_require_bearer_token) {
     _api_key = "106cd60-76c8-4c37-944c-df21aa690c1e";
-    cfg.lookupValue("restful_api.api_key.key", _api_key);
+    cfg.lookupValue("rp.restful_api.api_key.key", _api_key);
   }
 
   _listener = std::make_unique<http_listener>(
@@ -113,12 +113,14 @@ void RestHandler::get(http_request message) {
       message.reply(status_codes::OK, state);
     } else if (paths[0] == "sdr_params") {
       value sdr = value::object();
-      sdr["frequency"] = value(_lime.get_frequency());
-      sdr["gain"] = value(_lime.get_gain());
-      sdr["filter_bw"] = value(_lime.get_filter_bw());
-      sdr["antenna"] = value(_lime.get_antenna());
-      sdr["sample_rate"] = value(_lime.get_sample_rate());
-      sdr["buffer_level"] = value(_lime.get_buffer_level());
+      sdr["frequency"] = value(_sdr.get_frequency());
+      sdr["gain"] = value(_sdr.get_gain());
+      sdr["min_gain"] = value(_sdr.min_gain());
+      sdr["max_gain"] = value(_sdr.max_gain());
+      sdr["filter_bw"] = value(_sdr.get_filter_bw());
+      sdr["antenna"] = value(_sdr.get_antenna());
+      sdr["sample_rate"] = value(_sdr.get_sample_rate());
+      sdr["buffer_level"] = value(_sdr.get_buffer_level());
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "ce_values") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values);
@@ -204,14 +206,25 @@ void RestHandler::put(http_request message) {
     if (paths[0] == "sdr_params") {
       value answer;
 
-      const auto & jval = message.extract_json().get();
+      auto f = _sdr.get_frequency();
+      auto g = _sdr.get_gain();
+      auto bw = _sdr.get_filter_bw();
+      auto a = _sdr.get_antenna();
+      auto sr = _sdr.get_sample_rate();
 
-      _set_params(
-          jval.at("antenna").as_string(),
-          jval.at("frequency").as_integer(),
-          jval.at("gain").as_double(),
-          jval.at("sample_rate").as_integer(),
-          jval.at("filter_bw").as_integer());
+      const auto & jval = message.extract_json().get();
+      spdlog::debug("Received JSON: {}", jval.serialize());
+
+      if (jval.has_field("antenna")) {
+        a = jval.at("antenna").as_string();
+      }
+      if (jval.has_field("frequency")) {
+        f = jval.at("frequency").as_integer();
+      }
+      if (jval.has_field("gain")) {
+        g = jval.at("gain").as_double();
+      }
+      _set_params( a, f, g, sr, bw);
 
       message.reply(status_codes::OK, answer);
     }

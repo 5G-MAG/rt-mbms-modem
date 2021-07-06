@@ -2,7 +2,7 @@
 
 echo $RP_TUN_INTERFACE
 ip tuntap add mode tun $RP_TUN_INTERFACE
-ifconfig $RP_TUN_INTERFACE up
+ifconfig $RP_TUN_INTERFACE up $RP_TUN_ADDRESS
 sysctl -w net.ipv4.conf.$RP_TUN_INTERFACE.rp_filter=0
 if [ "$ENABLE_MCAST_ROUTING" = true ] ; then
 	smcroutectl restart

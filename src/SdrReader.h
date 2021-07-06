@@ -19,7 +19,7 @@
 
 #pragma once
 
-#include <lime/LimeSuite.h>
+
 #include <ring_buffer.h>
 #include <string>
 #include <thread>
@@ -28,19 +28,19 @@
 #include "srslte/srslte.h"
 
 /**
- *  Interface to LimeSDR via LimeSuite.
+ *  Interface to the SDR stick.
  *
  *  Sets up the SDR, reads samples from it, and handles a ringbuffer for 
  *  the received samples.
  */
-class LimeSdrReader {
+class SdrReader {
  public:
     /**
      *  Default constructor.
      *
      *  @param cfg Config singleton reference
      */
-    explicit LimeSdrReader(const libconfig::Config& cfg)
+    explicit SdrReader(const libconfig::Config& cfg)
       : _buffer(bev::linear_ringbuffer::delayed_init {})
       , _overflows(0)
       , _underflows(0)
@@ -50,12 +50,17 @@ class LimeSdrReader {
     /**
      *  Default destructor.
      */
-    virtual ~LimeSdrReader();
+    virtual ~SdrReader();
+
+    /**
+     * Prints a list of all available SDR devices
+     */
+    void enumerateDevices();
 
     /**
      * Initializes the SDR interface and creates a ring buffer according to the params from Cfg.
      */
-    bool init(uint8_t device_index, const char* sample_file, const char* write_sample_file);
+    bool init(const std::string& device_args, const char* sample_file, const char* write_sample_file);
 
     /**
      * Adjust the sample rate
@@ -126,12 +131,25 @@ class LimeSdrReader {
      */
     uint32_t rssi() { return _rssi; }
 
+    double min_gain() { return _min_gain; }
+    double max_gain() { return _max_gain; }
+
+    /**
+     * If sample file creation is enabled, writing samples starts after this call
+     */
+    void enableSampleFileWriting() { _write_samples = true; }
+
+    /**
+     * If sample file creation is enabled, writing samples stops after this call
+     */
+    void disableSampleFileWriting() { _write_samples = false; }
+
  private:
     void read();
     void* _sdr = nullptr;
+    void* _stream = nullptr;
 
     const libconfig::Config& _cfg;
-    lms_stream_t _stream;
     bev::linear_ringbuffer _buffer;
     std::thread _readerThread;
     bool _running;
@@ -140,6 +158,8 @@ class LimeSdrReader {
     double _frequency;
     unsigned _filterBw;
     double _gain;
+    double _min_gain;
+    double _max_gain;
     std::string _antenna;
     unsigned _overflows;
     unsigned _underflows;
@@ -158,6 +178,10 @@ class LimeSdrReader {
     bool _buffer_ready = false;
     bool _reading_from_file = false;
     bool _writing_to_file = false;
+    bool _write_samples = false;
 
     uint32_t _rssi = 0;
+
+    bool _temp_sensor_available = false;
+    std::string _temp_sensor_key = {};
 };

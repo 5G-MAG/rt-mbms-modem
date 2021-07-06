@@ -13,9 +13,17 @@ sudo snap install cmake --classic
 sudo pip3 install cpplint
 ````
 
-## Installing LimeSuite
+## Installing SDR drivers
 
-Lime Suite needs to be built from source at a specific commit. Please follow these steps to do so:
+OBECA uses SoapySDR to interface with SDR hardware. Please install the library, the dev headers and the module that matches your hardware.
+````
+sudo apt install libsoapysdr-dev soapysdr-tools
+````
+
+
+### Using LimeSDR with Soapy
+
+Lime Suite needs to be built from source at a specific commit. *Do not* use the package available through apt, as the version it packages does not seem to work reliably with LimeSDR Minis and causes calibration errors and unreliable reception. Please follow these steps:
 
 ````
 cd ~
@@ -30,11 +38,64 @@ sudo ninja install
 sudo ldconfig
 ````
 
+
+### Using BladeRF with Soapy
+For BladeRF the relevant package is named *soapysdr-module-bladerf*. Install it by running:
+````
+sudo apt install soapysdr-module-bladerf
+````
+
+### Other SDRs
+
+While we've only tested with Lime- and Blade-SDRs, Soapy supports a wide range of SDR devices, which should therefore also be usable with OBECA if the support the high bandwidth/sample rates required for FeMBMS decoding.
+You can find more info on device support at https://github.com/pothosware/SoapySDR/wiki
+
+Running ``apt search soapysdr-module`` lists all available modules.
+
+If you successfully (or unsuccessfully) try OBECA with another SDR, please let us know! 
+
+### Checking SoapySDR installation
+
+Before continuing, please verify that your SDR is detected by running ``SoapySDRUtil --find``
+
+The output should show your device, e.g.:
+
+```` 
+######################################################
+##     Soapy SDR -- the SDR abstraction library     ##
+######################################################
+
+Found device 0
+  addr = 24607:1027
+  driver = lime
+  label = LimeSDR Mini [USB 2.0] 1D587FCA09A966
+  media = USB 2.0
+  module = FT601
+  name = LimeSDR Mini
+  serial = 1D587FCA09A966
+
+````
+
+## Configuring the reverse path filter
+
+To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled.
+
+````
+echo 0 >  /proc/sys/net/ipv4/conf/all/rp_filter
+echo 0 >  /proc/sys/net/ipv4/conf/default/rp_filter
+````
+
+You can check if the values are set correctly by running:
+
+````
+sysctl -ar 'rp_filter'
+````
+
 ## Getting the source code
 
 ````
 cd ~
-git clone --recurse-submodules git@github.com:Austrian-Broadcasting-Services/obeca-receive-process.git
+git clone --branch next --recurse-submodules git@github.com:Austrian-Broadcasting-Services/obeca-receive-process.git
 
 cd obeca-receive-process
 
