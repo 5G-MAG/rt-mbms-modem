@@ -33,11 +33,11 @@ using web::http::experimental::listener::http_listener;
 using web::http::experimental::listener::http_listener_config;
 
 RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
-                         state_t& state, SdrReader& lime, Phy& phy,
+                         state_t& state, SdrReader& sdr, Phy& phy,
                          set_params_t set_params)
     : _cfg(cfg),
       _state(state),
-      _lime(lime),
+      _sdr(sdr),
       _phy(phy),
       _set_params(std::move(set_params)) {
 
@@ -113,12 +113,14 @@ void RestHandler::get(http_request message) {
       message.reply(status_codes::OK, state);
     } else if (paths[0] == "sdr_params") {
       value sdr = value::object();
-      sdr["frequency"] = value(_lime.get_frequency());
-      sdr["gain"] = value(_lime.get_gain());
-      sdr["filter_bw"] = value(_lime.get_filter_bw());
-      sdr["antenna"] = value(_lime.get_antenna());
-      sdr["sample_rate"] = value(_lime.get_sample_rate());
-      sdr["buffer_level"] = value(_lime.get_buffer_level());
+      sdr["frequency"] = value(_sdr.get_frequency());
+      sdr["gain"] = value(_sdr.get_gain());
+      sdr["min_gain"] = value(_sdr.min_gain());
+      sdr["max_gain"] = value(_sdr.max_gain());
+      sdr["filter_bw"] = value(_sdr.get_filter_bw());
+      sdr["antenna"] = value(_sdr.get_antenna());
+      sdr["sample_rate"] = value(_sdr.get_sample_rate());
+      sdr["buffer_level"] = value(_sdr.get_buffer_level());
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "ce_values") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values);
@@ -204,11 +206,11 @@ void RestHandler::put(http_request message) {
     if (paths[0] == "sdr_params") {
       value answer;
 
-      auto f = _lime.get_frequency();
-      auto g = _lime.get_gain();
-      auto bw = _lime.get_filter_bw();
-      auto a = _lime.get_antenna();
-      auto sr = _lime.get_sample_rate();
+      auto f = _sdr.get_frequency();
+      auto g = _sdr.get_gain();
+      auto bw = _sdr.get_filter_bw();
+      auto a = _sdr.get_antenna();
+      auto sr = _sdr.get_sample_rate();
 
       const auto & jval = message.extract_json().get();
       spdlog::debug("Received JSON: {}", jval.serialize());
