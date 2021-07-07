@@ -95,7 +95,7 @@ sysctl -ar 'rp_filter'
 
 ````
 cd ~
-git clone --branch next --recurse-submodules git@github.com:Austrian-Broadcasting-Services/obeca-receive-process.git
+git clone --recurse-submodules git@github.com:Austrian-Broadcasting-Services/obeca-receive-process.git
 
 cd obeca-receive-process
 
