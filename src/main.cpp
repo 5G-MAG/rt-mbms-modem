@@ -261,7 +261,23 @@ auto main(int argc, char **argv) -> int {
 
   cfg.lookupValue("rp.sdr.search_sample_rate_hz", sample_rate);
   search_sample_rate = sample_rate;
-  cfg.lookupValue("rp.sdr.center_frequency_hz", frequency);
+
+  unsigned long long center_frequency = frequency;
+  if (!cfg.lookupValue("rp.sdr.center_frequency_hz", center_frequency)) {
+    spdlog::error("Unable to parse center_frequency_hz - values must have a ‘L’ character appended");
+    exit(1);
+  }
+  // We needed unsigned long long for correct parsing,
+  // but unsigned is required
+  if (center_frequency <= UINT_MAX) {
+     frequency = static_cast<unsigned>(center_frequency);
+  } else {
+    spdlog::error("Configured center_frequency_hz is {}, maximal value supported is {}.",
+        center_frequency, UINT_MAX);
+    exit(1);
+  }
+
+
   cfg.lookupValue("rp.sdr.normalized_gain", gain);
   cfg.lookupValue("rp.sdr.antenna", antenna);
 
