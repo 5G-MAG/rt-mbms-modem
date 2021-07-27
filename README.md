@@ -1,6 +1,6 @@
 # Installation guide
 
-Installation of OBECA consits of 4 simple steps:
+Installation of OBECA consists of 4 simple steps:
 1. Install dependencies
 2. Install SDR drivers
 3. Building the Receive Process
