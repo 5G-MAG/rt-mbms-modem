@@ -78,7 +78,7 @@ Found device 0
 
 ## Configuring the reverse path filter
 
-To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled.
+To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled. This has to be done in root mode.
 
 ````
 echo 0 >  /proc/sys/net/ipv4/conf/all/rp_filter
@@ -89,6 +89,12 @@ You can check if the values are set correctly by running:
 
 ````
 sysctl -ar 'rp_filter'
+````
+
+The individual lines of the output should look like this:
+````
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
 ````
 
 ## Getting the source code
@@ -103,6 +109,8 @@ git submodule update
 
 mkdir build && cd build
 ````
+
+> **NOTE:** You need to have a GitHub user with a private/public key pair to clone the repository. For more details on private/public key go to your GitHub account -> Settings -> SSH and GPG keys
 
 ## Build setup
 `` cmake -DCMAKE_INSTALL_PREFIX=/usr -GNinja .. ``
