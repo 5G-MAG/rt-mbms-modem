@@ -118,11 +118,13 @@ Create an user named "ofr" for correct pre-configuration of receive process: `` 
 
 ### 4.2 Configuring the reverse path filter
 
-To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled. This has to be done in root mode.
+To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled. This has to be done in the file ``/etc/sysctl.conf``. Uncomment the two lines for reverse path filtering and set its values to 0:
 
 ````
-echo 0 >  /proc/sys/net/ipv4/conf/all/rp_filter
-echo 0 >  /proc/sys/net/ipv4/conf/default/rp_filter
+< ... >
+net.ipv4.conf.default.rp_filter=0
+net.ipv4.conf.all.rp_filter=0
+< ... >
 ````
 
 You can check if the values are set correctly by running:
