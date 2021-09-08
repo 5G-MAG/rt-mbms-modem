@@ -84,12 +84,34 @@ Found device 0
 
 ````
 
+#### Troubleshooting
+
+When running the command ``SoapySDRUtil --find`` you might get an duplicate entry error:
+````
+######################################################
+##     Soapy SDR -- the SDR abstraction library     ##
+######################################################
+
+[ERROR] SoapySDR::loadModule(/usr/local/lib/SoapySDR/modules0.7/libLMS7Support.so)
+  duplicate entry for lime (/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.7/libLMS7Support.so)
+````
+This is because a duplicate limesuite apt package has incorrectly been installed when installing the Soapy module and LimeSuite. You can identify this package by running the command:
+````
+$ sudo apt list --installed | grep lime
+< ... >
+liblimesuite20.01-1/focal,now 20.01.0+dfsg-2 amd64 [installed,automatic]
+````
+You can fix this issue by deleting this package:
+````
+sudo apt remove liblimesuite20.01-1
+````
+
 ## Step 3: Building the Receive Process
 ### 3.1 Getting the source code
 
 ````
 cd ~
-git clone --recurse-submodules https://github.com/Austrian-Broadcasting-Services/obeca-receive-process.git
+git clone --recurse-submodules https://github.com/5G-MAG/obeca-receive-process.git
 
 cd obeca-receive-process
 
@@ -116,8 +138,18 @@ The application installs a systemd unit and some helper scripts for setting up t
 ### 4.1 Adding ofr user
 Create an user named "ofr" for correct pre-configuration of receive process: `` sudo useradd ofr ``
 
-### 4.2 Configuring the reverse path filter
+### 4.2 Enabling Receive Process daemon for correct pre-configuring
+For correct pre-configuring of the Receive Process at a system startup, it has to be run through systemd once:
+````
+sudo systemctl start rp
+sudo systemctl stop rp
+````
+To enable automatic startup at every boot type in:
+```` 
+sudo systemctl enable rp 
+````
 
+### 4.3 Configuring the reverse path filter
 To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled. This has to be done in the file ``/etc/sysctl.conf``. Uncomment the two lines for reverse path filtering and set its values to 0:
 
 ````
@@ -125,6 +157,11 @@ To avoid the kernel filtering away multicast packets received on the tunnel inte
 net.ipv4.conf.default.rp_filter=0
 net.ipv4.conf.all.rp_filter=0
 < ... >
+````
+
+Load in sysctl settings from the file
+````
+sudo sysctl -p
 ````
 
 You can check if the values are set correctly by running:
@@ -139,10 +176,8 @@ net.ipv4.conf.all.rp_filter = 0
 net.ipv4.conf.default.rp_filter = 0
 ````
 
-### 4.3 Set superuser rights for rp (optional)
+### 4.4 Set superuser rights for rp (optional)
 To allow the application to run at realtime scheduling without superuser privileges, set its capabilites 
 accordingly. Alternatively, you can run it with superuser rights (``sudo ./rp``).
 
 `` sudo setcap 'cap_sys_nice=eip' ./rp ``
-
-
