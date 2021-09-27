@@ -111,7 +111,7 @@ sudo apt remove liblimesuite20.01-1
 
 ````
 cd ~
-git clone --recurse-submodules https://github.com/5G-MAG/obeca-receive-process.git
+git clone --recurse-submodules https://github.com/5G-MAG/rt-mbms-modem.git
 
 cd obeca-receive-process
 
