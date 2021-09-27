@@ -103,7 +103,7 @@ struct arguments {
   unsigned srs_log_level = 4;    /**< srsLTE log level */
   int8_t override_nof_prb = -1;  /**< ovride PRB number */
   const char *sample_file = {};  /**< file path of the sample file. */
-  uint8_t file_bw = 5;           /**< bandwidth of the sample file */
+  uint8_t file_bw = 0;           /**< bandwidth of the sample file */
   const char
       *write_sample_file = {};   /**< file path of the created sample file. */
   bool list_sdr_devices = false;
@@ -316,7 +316,7 @@ auto main(int argc, char **argv) -> int {
   Phy phy(
       cfg,
       std::bind(&SdrReader::getSamples, &sdr, _1, _2, _3),  // NOLINT
-      arguments.file_bw * 5,
+      arguments.file_bw ? arguments.file_bw * 5 : 25,
       arguments.override_nof_prb);
 
   phy.init();
@@ -409,14 +409,25 @@ auto main(int argc, char **argv) -> int {
         // A cell has been found. We now know the required number of PRB = bandwidth of the carrier. Set the approproiate
         // sample rate...
         cas_nof_prb = mbsfn_nof_prb = phy.nr_prb();
-        unsigned new_srate = srslte_sampling_freq_hz(cas_nof_prb);
-        spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
-            phy.nr_prb() * 0.2);
-        sdr.stop();
 
-        bandwidth = (cas_nof_prb * 200000) * 1.2;
-        sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
-        sdr.start();
+        if (arguments.sample_file && arguments.file_bw) {
+          // Samples files are recorded at a fixed sample rate that can be determined from the bandwidth command line argument.
+          // If we're decoding from file, do not readjust the rate to match the CAS PRBs, but stay at this rate and instead configure the
+          // PHY to decode a narrow CAS from a wider channel.
+          mbsfn_nof_prb = arguments.file_bw * 5;
+          phy.set_nof_mbsfn_prb(mbsfn_nof_prb);
+          phy.set_cell();
+        } else {
+          // When decoding from the air, configure the SDR accordingly
+          unsigned new_srate = srslte_sampling_freq_hz(cas_nof_prb);
+          spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
+              phy.nr_prb() * 0.2);
+          sdr.stop();
+
+          bandwidth = (cas_nof_prb * 200000) * 1.2;
+          sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
+          sdr.start();
+        }
         spdlog::debug("Synchronizing subframe");
         // ... and move to syncing state.
         state = syncing;
@@ -483,8 +494,12 @@ auto main(int argc, char **argv) -> int {
 
             if (phy.nof_mbsfn_prb() != mbsfn_nof_prb)
             {
+              // Handle the non-LTE bandwidths (6, 7 and 8 MHz). In these cases, CAS stays at the original bandwidth, but the MBSFN
+              // portion of the frames can be wider. We need to...
+              
               mbsfn_nof_prb = phy.nof_mbsfn_prb();
-              // Adjust the sample rate to fit the wider MBSFN bandwidth
+
+              // ...adjust the SDR's sample rate to fit the wider MBSFN bandwidth...
               unsigned new_srate = srslte_sampling_freq_hz(mbsfn_nof_prb);
               spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
                   mbsfn_nof_prb * 0.2);
@@ -493,10 +508,13 @@ auto main(int argc, char **argv) -> int {
               bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
               sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
               sdr.start();
-              spdlog::debug("Synchronizing subframe after PRB extension");
-              // ... and move to syncing state.
+
+              // ... configure the PHY and CAS processor to decode a narrow CAS and wider MBSFN, and move back to syncing state
+              // after reconfiguring and restarting the SDR.
               phy.set_cell();
               cas_processor.set_cell(phy.cell());
+
+              spdlog::info("Synchronizing subframe after PRB extension");
               state = syncing;
             }
           } else {
