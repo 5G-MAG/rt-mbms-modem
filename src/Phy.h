@@ -152,6 +152,11 @@ class Phy {
      */
     uint8_t nof_mbsfn_prb() { return _cell.mbsfn_prb; }
 
+    /**
+     * Override number of PRB in MBSFN/PMCH
+     */
+    void set_nof_mbsfn_prb(uint8_t prb) { _cell.mbsfn_prb = prb; }
+
     void set_cell();
 
     typedef struct {
