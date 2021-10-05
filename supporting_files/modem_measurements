@@ -1,4 +1,4 @@
-/tmp/rp_measurements.csv {
+/tmp/modem_measurements.csv {
   daily
   compress
   missingok

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project (rp VERSION 1.1.0)
+project (modem VERSION 1.1.0)
 
 include(CTest)
 include(FindPkgConfig)
@@ -45,12 +45,11 @@ link_directories(
 
 set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,modernize*,performance*)
 
-add_executable(rp src/main.cpp src/SdrReader.cpp src/Phy.cpp
+add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp
     src/Gw.cpp src/RestHandler.cpp src/MeasurementFileWriter.cpp)
-add_test(rp_test rp --config=./ofr-lrp.conf)
 
-target_link_libraries( rp
+target_link_libraries( modem
     LINK_PUBLIC
     spdlog::spdlog
     srslte_phy
@@ -69,18 +68,18 @@ target_link_libraries( rp
 )
 
 
-install(TARGETS rp DESTINATION bin LIBRARY DESTINATION lib)
-install(FILES supporting_files/rp.service DESTINATION /usr/lib/systemd/system)
-install(FILES supporting_files/obeca.conf DESTINATION /etc)
-install(FILES supporting_files/obeca DESTINATION /etc/default)
-install(FILES supporting_files/pre_rp.sh DESTINATION /usr/share/obeca
+install(TARGETS modem)
+install(FILES supporting_files/5gmag-rt-modem.service DESTINATION /usr/lib/systemd/system)
+install(FILES supporting_files/5gmag-rt.conf DESTINATION /etc)
+install(FILES supporting_files/5gmag-rt DESTINATION /etc/default)
+install(FILES supporting_files/pre_modem.sh DESTINATION /usr/share/5gmag-rt
   PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
   )
-install(FILES supporting_files/rp_measurements DESTINATION /etc/logrotate.d)
+install(FILES supporting_files/modem_measurements DESTINATION /etc/logrotate.d)
 
 SET(CPACK_GENERATOR "DEB")
 SET(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "Austrian Broadcasting Services <obeca@ors.at>")
-SET(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_SOURCE_DIR}/debian/conffiles;${CMAKE_SOURCE_DIR}/debian/postinst;${CMAKE_SOURCE_DIR}/debian/rp.service;")
+SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "5G-MAG Reference Tools <reference-tools@5g-mag.com>")
+SET(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_SOURCE_DIR}/debian/conffiles;${CMAKE_SOURCE_DIR}/debian/postinst;")
 
 INCLUDE(CPack)

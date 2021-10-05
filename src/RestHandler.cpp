@@ -1,5 +1,5 @@
-// OBECA - Open Broadcast Edge Cache Appliance
-// Receive Process
+// 5G-MAG Reference Tools
+// MBMS Modem Process
 //
 // Copyright (C) 2021 Klaus Kühnhammer (Österreichische Rundfunksender GmbH & Co KG)
 //
@@ -45,11 +45,11 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
   if (url.rfind("https", 0) == 0) {
     server_config.set_ssl_context_callback(
         [&](boost::asio::ssl::context& ctx) {
-          std::string cert_file = "/usr/share/obeca/cert.pem";
-          cfg.lookupValue("rp.restful_api.cert", cert_file);
+          std::string cert_file = "/usr/share/5gmag-rt/cert.pem";
+          cfg.lookupValue("modem.restful_api.cert", cert_file);
 
-          std::string key_file = "/usr/share/obeca/key.pem";
-          cfg.lookupValue("rp.restful_api.key", key_file);
+          std::string key_file = "/usr/share/5gmag-rt/key.pem";
+          cfg.lookupValue("modem.restful_api.key", key_file);
 
           ctx.set_options(boost::asio::ssl::context::default_workarounds);
           ctx.use_certificate_chain_file(cert_file);
@@ -57,10 +57,10 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
         });
   }
 
-  cfg.lookupValue("rp.restful_api.api_key.enabled", _require_bearer_token);
+  cfg.lookupValue("modem.restful_api.api_key.enabled", _require_bearer_token);
   if (_require_bearer_token) {
     _api_key = "106cd60-76c8-4c37-944c-df21aa690c1e";
-    cfg.lookupValue("rp.restful_api.api_key.key", _api_key);
+    cfg.lookupValue("modem.restful_api.api_key.key", _api_key);
   }
 
   _listener = std::make_unique<http_listener>(

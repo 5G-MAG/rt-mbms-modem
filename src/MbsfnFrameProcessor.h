@@ -1,5 +1,5 @@
-// OBECA - Open Broadcast Edge Cache Appliance
-// Receive Process
+// 5G-MAG Reference Tools
+// MBMS Modem Process
 //
 // Copyright (C) 2021 Klaus Kühnhammer (Österreichische Rundfunksender GmbH & Co KG)
 //

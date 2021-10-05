@@ -1,6 +1,6 @@
 # The tun interface to be created for the receive process
-RP_TUN_INTERFACE="rp_tun"
-RP_TUN_ADDRESS="192.168.180.10"
+MODEM_TUN_INTERFACE="mbms_modem_tun"
+MODEM_TUN_ADDRESS="192.168.180.10"
 
 # Automatically set up multicast packet routing from the tun interface to a network interface
 ENABLE_MCAST_ROUTING=true
