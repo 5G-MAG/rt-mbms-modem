@@ -135,8 +135,8 @@ Alternatively, to configure a debug build:
 The application installs a systemd unit and some helper scripts for setting up the TUN network interface and multicast routing.
 
 ## Step 4: Post installation configuration
-### 4.1 Adding ofr user
-Create an user named "ofr" for correct pre-configuration of receive process: `` sudo useradd ofr ``
+### 4.1 Adding fivegmag-rt user
+Create a user named "fivegmag-rt" for correct pre-configuration of receive process: `` sudo useradd fivegmag-rt ``
 
 ### 4.2 Enabling Receive Process daemon for correct pre-configuring
 For correct pre-configuring of the Receive Process at a system startup, it has to be run through systemd once:
