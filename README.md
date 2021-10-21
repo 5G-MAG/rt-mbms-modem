@@ -1,6 +1,6 @@
 # Installation guide
 
-Installation of OBECA consists of 4 simple steps:
+Installation of 5gmag-rt-modem consists of 4 simple steps:
 1. Install dependencies
 2. Install SDR drivers
 3. Building the Receive Process
@@ -8,7 +8,7 @@ Installation of OBECA consists of 4 simple steps:
 
 ## Step 1: Install dependencies
 
-Your system needs to have some dependencies before installing OBECA. Please install them by running the commands below:
+Your system needs to have some dependencies before installing 5gmag-rt-modem. Please install them by running the commands below:
 
 ````
 sudo apt update
@@ -21,7 +21,7 @@ sudo pip3 install cpplint
 
 ### 2.1 Installing SDR drivers
 
-OBECA uses SoapySDR to interface with SDR hardware. Please install the library, the dev headers and the module that matches your hardware.
+5gmag-rt-modem uses SoapySDR to interface with SDR hardware. Please install the library, the dev headers and the module that matches your hardware.
 ````
 sudo apt install libsoapysdr-dev soapysdr-tools
 ````
@@ -55,12 +55,12 @@ sudo bladeRF-install-firmware
 
 #### Other SDRs
 
-While we've only tested with Lime- and Blade-SDRs, Soapy supports a wide range of SDR devices, which should therefore also be usable with OBECA if they support the high bandwidth/sample rates required for FeMBMS decoding.
+While we've only tested with Lime- and Blade-SDRs, Soapy supports a wide range of SDR devices, which should therefore also be usable with 5gmag-rt-modem if they support the high bandwidth/sample rates required for FeMBMS decoding.
 You can find more info on device support at https://github.com/pothosware/SoapySDR/wiki
 
 Running ``apt search soapysdr-module`` lists all available modules.
 
-If you successfully (or unsuccessfully) try OBECA with another SDR, please let us know! 
+If you successfully (or unsuccessfully) try 5gmag-rt-modem with another SDR, please let us know! 
 
 ### 2.2 Checking SoapySDR installation
 
@@ -135,18 +135,18 @@ Alternatively, to configure a debug build:
 The application installs a systemd unit and some helper scripts for setting up the TUN network interface and multicast routing.
 
 ## Step 4: Post installation configuration
-### 4.1 Adding ofr user
-Create an user named "ofr" for correct pre-configuration of receive process: `` sudo useradd ofr ``
+### 4.1 Adding fivegmag-rt user
+Create a user named "fivegmag-rt" for correct pre-configuration of receive process: `` sudo useradd fivegmag-rt ``
 
 ### 4.2 Enabling Receive Process daemon for correct pre-configuring
 For correct pre-configuring of the Receive Process at a system startup, it has to be run through systemd once:
 ````
-sudo systemctl start rp
-sudo systemctl stop rp
+sudo systemctl start 5gmag-rt-modem
+sudo systemctl stop 5gmag-rt-modem
 ````
 To enable automatic startup at every boot type in:
 ```` 
-sudo systemctl enable rp 
+sudo systemctl enable 5gmag-rt-modem 
 ````
 
 ### 4.3 Configuring the reverse path filter
@@ -176,8 +176,8 @@ net.ipv4.conf.all.rp_filter = 0
 net.ipv4.conf.default.rp_filter = 0
 ````
 
-### 4.4 Set superuser rights for rp (optional)
+### 4.4 Set superuser rights for 5gmag-rt-modem (optional)
 To allow the application to run at realtime scheduling without superuser privileges, set its capabilites 
-accordingly. Alternatively, you can run it with superuser rights (``sudo ./rp``).
+accordingly. Alternatively, you can run it with superuser rights (``sudo ./modem``).
 
-`` sudo setcap 'cap_sys_nice=eip' ./rp ``
+`` sudo setcap 'cap_sys_nice=eip' ./modem ``

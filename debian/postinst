@@ -1,6 +1,6 @@
 #!/bin/sh
 
 set -e
-sudo setcap 'cap_sys_nice=eip' /usr/bin/rp
-sudo systemctl enable rp
-sudo systemctl restart rp
+sudo setcap 'cap_sys_nice=eip' /usr/bin/modem
+sudo systemctl enable 5gmag-rt-modem
+sudo systemctl restart 5gmag-rt-modem

@@ -1,5 +1,5 @@
-// OBECA - Open Broadcast Edge Cache Appliance
-// Receive Process
+// 5G-MAG Reference Tools
+// MBMS Modem Process
 //
 // Copyright (C) 2021 Klaus Kühnhammer (Österreichische Rundfunksender GmbH & Co KG)
 //
@@ -108,9 +108,9 @@ void Gw::init() {
     _tun_fd = -1;
   }
 
-  std::string dev_name = "rp_tun";
-  if (nullptr != std::getenv("RP_TUN_INTERFACE")) {
-    dev_name = std::getenv("RP_TUN_INTERFACE");
+  std::string dev_name = "mbms_modem_tun";
+  if (nullptr != std::getenv("MODEM_TUN_INTERFACE")) {
+    dev_name = std::getenv("MODEM_TUN_INTERFACE");
   }
 
   memset(&ifr, 0, sizeof(ifr));

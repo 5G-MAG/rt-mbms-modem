@@ -1,0 +1,18 @@
+[Unit]
+Description=5gmag-rt-modem - 5G-MAG Reference Tools: MBMS Modem 
+After=rc-local.service
+Before=getty.target
+
+[Service]
+EnvironmentFile=-/etc/default/5gmag-rt
+ExecStartPre=+/usr/share/5gmag-rt/pre_modem.sh 
+ExecStart=/usr/bin/modem 
+Type=idle
+User=fivegmag-rt
+Group=fivegmag-rt
+Restart=always
+StartLimitInterval=2
+StartLimitBurst=20
+
+[Install]
+WantedBy=basic.target

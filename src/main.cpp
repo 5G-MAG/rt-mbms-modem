@@ -1,5 +1,5 @@
-// OBECA - Open Broadcast Edge Cache Appliance
-// Receive Process
+// 5G-MAG Reference Tools
+// MBMS Modem Process
 //
 // Copyright (C) 2021 Klaus Kühnhammer (Österreichische Rundfunksender GmbH & Co KG)
 //
@@ -22,7 +22,7 @@
  * @brief Contains the program entry point, command line parameter handling, and the main runloop for data processing.
  */
 
-/** \mainpage OBECA - Open Broadcast Edge Cache Applicance, receive process
+/** \mainpage 5G-MAG Reference Tools - MBMS Modem
  *
  * This is the documentation for the FeMBMS receiver. Please see main.cpp for for the runloop and main processing logic as a starting point.
  *
@@ -60,11 +60,11 @@ using std::placeholders::_3;
 
 static void print_version(FILE *stream, struct argp_state *state);
 void (*argp_program_version_hook)(FILE *, struct argp_state *) = print_version;
-const char *argp_program_bug_address = "Austrian Broadcasting Services <obeca@ors.at>";
-static char doc[] = "OBECA Receive Process";  // NOLINT
+const char *argp_program_bug_address = "5G-MAG Reference Tools <reference-tools@5g-mag.com>";
+static char doc[] = "5G-MAG-RT MBMS Modem Process";  // NOLINT
 
 static struct argp_option options[] = {  // NOLINT
-    {"config", 'c', "FILE", 0, "Configuration file (default: /etc/obeca.conf)", 0},
+    {"config", 'c', "FILE", 0, "Configuration file (default: /etc/5gmag-rt.conf)", 0},
     {"log-level", 'l', "LEVEL", 0,
      "Log verbosity: 0 = trace, 1 = debug, 2 = info, 3 = warn, 4 = error, 5 = "
      "critical, 6 = none. Default: 2.",
@@ -216,7 +216,7 @@ void set_params(const std::string& ant, unsigned fc, double g, unsigned sr, unsi
 auto main(int argc, char **argv) -> int {
   struct arguments arguments;
   /* Default values */
-  arguments.config_file = "/etc/obeca.conf";
+  arguments.config_file = "/etc/5gmag-rt.conf";
   arguments.sample_file = nullptr;
   arguments.write_sample_file = nullptr;
   argp_parse(&argp, argc, argv, 0, nullptr, &arguments);
@@ -234,7 +234,7 @@ auto main(int argc, char **argv) -> int {
   }
 
   // Set up logging
-  std::string ident = "rp";
+  std::string ident = "modem";
   auto syslog_logger = spdlog::syslog_logger_mt("syslog", ident, LOG_PID | LOG_PERROR | LOG_CONS );
 
   spdlog::set_level(
@@ -242,7 +242,7 @@ auto main(int argc, char **argv) -> int {
   spdlog::set_pattern("[%H:%M:%S.%f %z] [%^%l%$] [thr %t] %v");
 
   spdlog::set_default_logger(syslog_logger);
-  spdlog::info("OBECA rp v{}.{}.{} starting up", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
+  spdlog::info("5g-mag-rt modem v{}.{}.{} starting up", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
 
   // Init and tune the SDR
   spdlog::info("Initialising SDR");
@@ -253,17 +253,17 @@ auto main(int argc, char **argv) -> int {
   }
 
   std::string sdr_dev = "driver=lime";
-  cfg.lookupValue("rp.sdr.device_args", sdr_dev);
+  cfg.lookupValue("modem.sdr.device_args", sdr_dev);
   if (!sdr.init(sdr_dev, arguments.sample_file, arguments.write_sample_file)) {
     spdlog::error("Failed to initialize I/Q data source.");
     exit(1);
   }
 
-  cfg.lookupValue("rp.sdr.search_sample_rate_hz", sample_rate);
+  cfg.lookupValue("modem.sdr.search_sample_rate_hz", sample_rate);
   search_sample_rate = sample_rate;
 
   unsigned long long center_frequency = frequency;
-  if (!cfg.lookupValue("rp.sdr.center_frequency_hz", center_frequency)) {
+  if (!cfg.lookupValue("modem.sdr.center_frequency_hz", center_frequency)) {
     spdlog::error("Unable to parse center_frequency_hz - values must have a ‘L’ character appended");
     exit(1);
   }
@@ -278,8 +278,8 @@ auto main(int argc, char **argv) -> int {
   }
 
 
-  cfg.lookupValue("rp.sdr.normalized_gain", gain);
-  cfg.lookupValue("rp.sdr.antenna", antenna);
+  cfg.lookupValue("modem.sdr.normalized_gain", gain);
+  cfg.lookupValue("modem.sdr.antenna", antenna);
 
   if (!sdr.tune(frequency, sample_rate, bandwidth, gain, antenna)) {
     spdlog::error("Failed to set initial center frequency. Exiting.");
@@ -291,15 +291,15 @@ auto main(int argc, char **argv) -> int {
 
   // Create a thread pool for the frame processors
   unsigned thread_cnt = 4;
-  cfg.lookupValue("rp.phy.threads", thread_cnt);
+  cfg.lookupValue("modem.phy.threads", thread_cnt);
   int phy_prio = 10;
-  cfg.lookupValue("rp.phy.thread_priority_rt", phy_prio);
+  cfg.lookupValue("modem.phy.thread_priority_rt", phy_prio);
   thread_pool pool{ thread_cnt + 1, phy_prio };
 
   // Elevate execution to real time scheduling
   struct sched_param thread_param = {};
   thread_param.sched_priority = 20;
-  cfg.lookupValue("rp.phy.main_thread_priority_rt", thread_param.sched_priority);
+  cfg.lookupValue("modem.phy.main_thread_priority_rt", thread_param.sched_priority);
 
   spdlog::info("Raising main thread to realtime scheduling priority {}", thread_param.sched_priority);
 
@@ -309,7 +309,7 @@ auto main(int argc, char **argv) -> int {
   }
 
   bool enable_measurement_file = false;
-  cfg.lookupValue("rp.measurement_file.enabled", enable_measurement_file);
+  cfg.lookupValue("modem.measurement_file.enabled", enable_measurement_file);
   MeasurementFileWriter measurement_file(cfg);
 
   // Create the layer components: Phy, RLC, RRC and GW
@@ -353,8 +353,8 @@ auto main(int argc, char **argv) -> int {
   state_t state = searching;
 
   // Create the RESTful API handler
-  std::string uri = "http://0.0.0.0:3010/rp-api/";
-  cfg.lookupValue("rp.restful_api.uri", uri);
+  std::string uri = "http://0.0.0.0:3010/modem-api/";
+  cfg.lookupValue("modem.restful_api.uri", uri);
   spdlog::info("Starting RESTful API handler at {}", uri);
   RestHandler rest_handler(cfg, uri, state, sdr, phy, set_params);
 
@@ -381,7 +381,7 @@ auto main(int argc, char **argv) -> int {
   uint32_t tti = 0;
 
   uint32_t measurement_interval = 5;
-  cfg.lookupValue("rp.measurement_file.interval_secs", measurement_interval);
+  cfg.lookupValue("modem.measurement_file.interval_secs", measurement_interval);
   measurement_interval *= 1000;
   uint32_t tick = 0;
 
