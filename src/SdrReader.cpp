@@ -1,5 +1,5 @@
-// OBECA - Open Broadcast Edge Cache Appliance
-// Receive Process
+// 5G-MAG Reference Tools
+// MBMS Modem Process
 //
 // Copyright (C) 2021 Klaus Kühnhammer (Österreichische Rundfunksender GmbH & Co KG)
 //
@@ -94,7 +94,7 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
     }
   }
 
-  _cfg.lookupValue("rp.sdr.ringbuffer_size_ms", _buffer_ms);
+  _cfg.lookupValue("modem.sdr.ringbuffer_size_ms", _buffer_ms);
   unsigned int buffer_size = 16384/*15360*/ * _buffer_ms;
       // at 10MHz BW / 15.36Mhz sample rate
   int error = 0;
@@ -201,7 +201,7 @@ void SdrReader::start() {
   _readerThread = std::thread{&SdrReader::read, this};
   struct sched_param thread_param = {};
   thread_param.sched_priority = 50;
-  _cfg.lookupValue("rp.sdr.reader_thread_priority_rt", thread_param.sched_priority);
+  _cfg.lookupValue("modem.sdr.reader_thread_priority_rt", thread_param.sched_priority);
 
   spdlog::debug("Launching sample reader thread with realtime scheduling priority {}", thread_param.sched_priority);
 

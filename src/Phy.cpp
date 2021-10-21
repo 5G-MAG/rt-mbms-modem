@@ -1,5 +1,5 @@
-// OBECA - Open Broadcast Edge Cache Appliance
-// Receive Process
+// 5G-MAG Reference Tools
+// MBMS Modem Process
 //
 // Copyright (C) 2021 Klaus Kühnhammer (Österreichische Rundfunksender GmbH & Co KG)
 //
@@ -240,7 +240,7 @@ void Phy::set_mbsfn_config(const srslte::mcch_msg_t& mcch) {
     for (uint32_t j = 0; j < _mcch.pmch_info_list[i].nof_mbms_session_info; j++) {
       mtch_info_t mtch_info;
       mtch_info.lcid = _mcch.pmch_info_list[i].mbms_session_info_list[j].lc_ch_id;
-      char tmgi[20];
+      char tmgi[20]; // NOLINT
       /* acc to  TS24.008 10.5.6.13:
        * MCC 1,2,3: 901 ->   9, 0, 1
        * MNC 3,1,2:  56 -> (F), 5, 6
