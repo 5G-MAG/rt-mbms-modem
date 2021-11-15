@@ -53,6 +53,38 @@ Finally, install the BladeRF firmware:
 sudo bladeRF-install-firmware
 ````
 
+#### Using HackRF One with Soapy
+For HackRF One , install by running:
+````
+sudo apt install hackrf soapysdr-module-hackrf
+````
+Plug in your HackRF and verify it is recognised using: 
+````
+hackrf_info
+````
+Example output:
+```
+hackrf_info version: unknown
+libhackrf version: unknown (0.5)
+Found HackRF
+Index: 0
+Serial number: 0000000000000000xxxxxxxxxxxxxxxx
+Board ID Number: 2 (HackRF One)
+Firmware Version: 2018.01.1 (API:1.02)
+Part ID Number: 0xa000cb3c 0x0066435f
+```
+
+Note: After installing rt-mbms-modem using the instructions below you must modify a rt-mbms configuration parameter from:
+```
+    device_args = "driver=lime";
+    antenna = "LNAW";
+```
+to:
+```
+    device_args = "driver=hackrf";
+    antenna = "TX/RX";
+```
+
 #### Other SDRs
 
 While we've only tested with Lime- and Blade-SDRs, Soapy supports a wide range of SDR devices, which should therefore also be usable with 5gmag-rt-modem if they support the high bandwidth/sample rates required for FeMBMS decoding.
@@ -66,7 +98,7 @@ If you successfully (or unsuccessfully) try 5gmag-rt-modem with another SDR, ple
 
 Before continuing, please verify that your SDR is detected by running ``SoapySDRUtil --find``
 
-The output should show your device, e.g.:
+The output should show your device, e.g. for LimeSDR:
 
 ```` 
 ######################################################
@@ -84,9 +116,25 @@ Found device 0
 
 ````
 
+Example for HackRF One:
+```
+######################################################
+##     Soapy SDR -- the SDR abstraction library     ##
+######################################################
+
+Found device 3
+  device = HackRF One
+  driver = hackrf
+  label = HackRF One #0 75b068dc3_______
+  part_id = a000cb3c0066435f
+  serial = 000000000000000075b068dc3_______
+  version = 2018.01.1
+  
+```
+
 #### Troubleshooting
 
-When running the command ``SoapySDRUtil --find`` you might get an duplicate entry error:
+When running the command ``SoapySDRUtil --find`` you might get a duplicate entry error:
 ````
 ######################################################
 ##     Soapy SDR -- the SDR abstraction library     ##
@@ -177,7 +225,7 @@ net.ipv4.conf.default.rp_filter = 0
 ````
 
 ### 4.4 Set superuser rights for 5gmag-rt-modem (optional)
-To allow the application to run at realtime scheduling without superuser privileges, set its capabilites 
+To allow the application to run at realtime scheduling without superuser privileges, set its capabilities 
 accordingly. Alternatively, you can run it with superuser rights (``sudo ./modem``).
 
 `` sudo setcap 'cap_sys_nice=eip' ./modem ``
