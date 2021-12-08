@@ -74,7 +74,7 @@ Firmware Version: 2018.01.1 (API:1.02)
 Part ID Number: 0xa000cb3c 0x0066435f
 ```
 
-Note: After installing rt-mbms-modem using the instructions below you must modify a rt-mbms configuration parameter from:
+Note: After installing rt-mbms-modem using the instructions below you must modify a rt-mbms configuration parameter in `/etc/5gmag-rt.conf` from:
 ```
     device_args = "driver=lime";
     antenna = "LNAW";
