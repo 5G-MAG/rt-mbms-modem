@@ -53,6 +53,17 @@ Finally, install the BladeRF firmware:
 sudo bladeRF-install-firmware
 ````
 
+Note: After installing rt-mbms-modem using the instructions below you must modify the rt-mbms configuration parameter in `/etc/5gmag-rt.conf` from:
+```
+device_args = "driver=lime";
+antenna = "LNAW";
+```
+to:
+```
+device_args = "driver=bladerf";
+antenna = "RX"
+```
+
 #### Using HackRF One with Soapy
 For HackRF One , install by running:
 ````
@@ -74,15 +85,15 @@ Firmware Version: 2018.01.1 (API:1.02)
 Part ID Number: 0xa000cb3c 0x0066435f
 ```
 
-Note: After installing rt-mbms-modem using the instructions below you must modify a rt-mbms configuration parameter in `/etc/5gmag-rt.conf` from:
+Note: After installing rt-mbms-modem using the instructions below you must modify the rt-mbms configuration parameter in `/etc/5gmag-rt.conf` from:
 ```
-    device_args = "driver=lime";
-    antenna = "LNAW";
+device_args = "driver=lime";
+antenna = "LNAW";
 ```
 to:
 ```
-    device_args = "driver=hackrf";
-    antenna = "TX/RX";
+device_args = "driver=hackrf";
+antenna = "TX/RX";
 ```
 
 #### Other SDRs
