@@ -127,6 +127,21 @@ Found device 0
 
 ````
 
+Example for BladeRF:
+
+````
+######################################################
+##     Soapy SDR -- the SDR abstraction library     ##
+######################################################
+Found device 2
+  backend = libusb
+  device = 0x02:0x09
+  driver = bladerf
+  instance = 0
+  label = BladeRF #0 [ANY]
+  serial = ANY
+````
+
 Example for HackRF One:
 ```
 ######################################################
