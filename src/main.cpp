@@ -332,7 +332,7 @@ auto main(int argc, char **argv) -> int {
   rlc.init(&pdcp, &rrc, &timers, 0 /* RB_ID_SRB0 */);
   pdcp.init(&rlc, &rrc,  &gw);
 
-  auto srs_level = srslte::LOG_LEVEL_WARNING;
+  auto srs_level = srslte::LOG_LEVEL_NONE;
   switch (arguments.srs_log_level) {
     case 0: srs_level = srslte::LOG_LEVEL_DEBUG; break;
     case 1: srs_level = srslte::LOG_LEVEL_INFO; break;
@@ -349,6 +349,9 @@ auto main(int argc, char **argv) -> int {
   srslte::log_ref mac_log = srslte::logmap::get("MAC");
   mac_log->set_level(srs_level);
   mac_log->set_hex_limit(128);
+
+  srslte::log_ref asn_log = srslte::logmap::get("ASN1");
+  asn_log->set_level(srs_level);
 
   state_t state = searching;
 
@@ -477,8 +480,8 @@ auto main(int argc, char **argv) -> int {
       int mb_idx = 0;
       while (state == processing) {
         tti = (tti + 1) % 10240; // Clamp the TTI
-        if (tti%40 == 0) { 
-          // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
+        unsigned sfn = tti / 10;
+        if (phy.is_cas_subframe(tti)) {
           // Get the samples from the SDR interface, hand them to a CAS processor, and start it
           // on a thread from the pool.
           if (!restart && phy.get_next_frame(cas_processor.rx_buffer(), cas_processor.rx_buffer_size())) {
@@ -536,10 +539,10 @@ auto main(int argc, char **argv) -> int {
           // Get the samples from the SDR interface, hand them to an MNSFN processor, and start it
           // on a thread from the pool. Getting the buffer pointer from the pool also locks this processor.
           if (!restart && phy.get_next_frame(mbsfn_processors[mb_idx]->get_rx_buffer_and_lock(), mbsfn_processors[mb_idx]->rx_buffer_size())) {
-            if (phy.mcch_configured()) {
+            if (phy.mcch_configured() && phy.is_mbsfn_subframe(tti)) {
               // If data frm SIB1/SIB13 has been received in CAS, configure the processors accordingly
               if (!mbsfn_processors[mb_idx]->mbsfn_configured()) {
-                srslte_scs_t scs;
+                srslte_scs_t scs = SRSLTE_SCS_15KHZ;
                 switch (phy.mbsfn_subcarrier_spacing()) {
                   case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSLTE_SCS_15KHZ; break;
                   case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSLTE_SCS_7KHZ5; break;

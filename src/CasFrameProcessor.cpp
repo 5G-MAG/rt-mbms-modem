@@ -99,6 +99,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
   if (srslte_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
     _rest._pdsch.errors++;
     spdlog::error("Getting PDCCH FFT estimate\n");
+    _mutex.unlock();
     return false;
   }
 
@@ -107,7 +108,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
 
   // Try to decode DCIs from PDCCH
   srslte_dci_dl_t dci[SRSLTE_MAX_CARRIERS] = {};    // NOLINT
-  int nof_grants = srslte_ue_dl_find_dl_dci(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, SRSLTE_SIRNTI_MBMS_DEDICATED, dci);
+  int nof_grants = srslte_ue_dl_find_dl_dci(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, _cell.mbms_dedicated ? SRSLTE_SIRNTI_MBMS_DEDICATED : SRSLTE_SIRNTI, dci);
   for (int k = 0; k < nof_grants; k++) {
     char str[512];  // NOLINT
     srslte_dci_dl_info(&dci[k], str, 512);
@@ -116,6 +117,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
 
     if (srslte_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant)) {
       spdlog::error("Converting DCI message to DL dci\n");
+    _mutex.unlock();
       return false;
     }
 
@@ -138,7 +140,9 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
     }
 
     // Decode PDSCH..
-    if (srslte_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res)) {
+    auto ret = srslte_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
+      spdlog::debug("decode_pdsch returned {} \n", ret);
+    if (ret) {
       spdlog::error("Error decoding PDSCH\n");
       _rest._pdsch.errors++;
     } else {
@@ -146,12 +150,13 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       _rest._pdsch.ber = _softbuffer.ber;
       for (int i = 0; i < SRSLTE_MAX_CODEWORDS; i++) {
         // .. and pass received PDUs to RLC for further processing
-        if (pdsch_cfg->grant.tb[i].enabled) {
+        if (pdsch_cfg->grant.tb[i].enabled && pdsch_res[i].crc) {
           _rlc.write_pdu_bcch_dlsch(_data[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
         }
       }
     }
   }
+    _mutex.unlock();
   return true;
 }
 

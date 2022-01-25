@@ -23,10 +23,13 @@
 
 using asn1::rrc::mcch_msg_type_c;
 using asn1::rrc::bcch_dl_sch_msg_mbms_s;
+using asn1::rrc::bcch_dl_sch_msg_s;
 using asn1::rrc::bcch_dl_sch_msg_type_mbms_r14_c;
 using asn1::rrc::sib_type1_mbms_r14_s;
 using asn1::rrc::sib_type_mbms_r14_e;
 using asn1::rrc::sched_info_mbms_r14_s;
+using asn1::rrc::sys_info_r8_ies_s;
+using asn1::rrc::sib_info_item_c;
 
 void Rrc::write_pdu_mch(uint32_t /*lcid*/, srslte::unique_byte_buffer_t pdu) {
   spdlog::trace("rrc: write_pdu_mch");
@@ -70,17 +73,48 @@ void Rrc::write_pdu_bcch_dlsch(srslte::unique_byte_buffer_t pdu) {
   asn1::SRSASN_CODE err = dlsch_msg.unpack(dlsch_bref);
 
   if (err != asn1::SRSASN_SUCCESS || dlsch_msg.msg.type().value != bcch_dl_sch_msg_type_mbms_r14_c::types_opts::c1) {
-    spdlog::error("Could not unpack BCCH DL-SCH message ({} B).", pdu->N_bytes);
+    spdlog::debug("Could not unpack BCCH DL-SCH MBMS message ({} B), trying as BCCH DL-SCH.", pdu->N_bytes);
+
+    bcch_dl_sch_msg_s dlsch_msg1;
+    asn1::cbit_ref    dlsch_bref(pdu->msg, pdu->N_bytes);
+    asn1::SRSASN_CODE err = dlsch_msg1.unpack(dlsch_bref);
+
+    asn1::json_writer json_writer;
+    dlsch_msg1.to_json(json_writer);
+    spdlog::debug("BCCH-DLSCH message content:\n{}", json_writer.to_string());
     return;
   }
 
   asn1::json_writer json_writer;
   dlsch_msg.to_json(json_writer);
-  spdlog::debug("BCCH-DLSCH message content:\n{}", json_writer.to_string());
+  spdlog::debug("BCCH-DLSCH MBMS message content:\n{}", json_writer.to_string());
 
   if (dlsch_msg.msg.c1().type() == bcch_dl_sch_msg_type_mbms_r14_c::c1_c_::types::sib_type1_mbms_r14) {
     spdlog::debug("Processing SIB1-MBMS (1/1)");
     handle_sib1(dlsch_msg.msg.c1().sib_type1_mbms_r14());
+  } else {
+    sys_info_r8_ies_s::sib_type_and_info_l_& sib_list =
+        dlsch_msg.msg.c1().sys_info_mbms_r14().crit_exts.sys_info_r8().sib_type_and_info;
+    for (uint32_t i = 0; i < sib_list.size(); ++i) {
+      switch (sib_list[i].type().value) {
+        case sib_info_item_c::types::sib2:
+          spdlog::debug("Handling SIB2\n");
+          //handle_sib2();
+          break;
+        case sib_info_item_c::types::sib13_v920:
+          spdlog::debug("Handling SIB13\n");
+          _phy.set_mch_scheduling_info( srslte::make_sib13(sib_list[i].sib13_v920()));
+          if (!_rlc.has_bearer_mrb(0)) {
+            _rlc.add_bearer_mrb(0);
+          }
+  _phy.set_decode_mcch(true);
+  _state = ACQUIRE_AREA_CONFIG;
+          //handle_sib13();
+          break;
+        default:
+          spdlog::debug("SIB{} is not supported\n", sib_list[i].type().to_number());
+      }
+    }
   }
 }
 

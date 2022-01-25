@@ -159,6 +159,9 @@ class Phy {
 
     void set_cell();
 
+    bool is_cas_subframe(unsigned tti);
+    bool is_mbsfn_subframe(unsigned tti);
+
     typedef struct {
       std::string tmgi;
       std::string dest;
@@ -180,10 +183,14 @@ class Phy {
     };
 
     SubcarrierSpacing mbsfn_subcarrier_spacing() {
-      switch (_sib13.mbsfn_area_info_list[0].subcarrier_spacing) {
-        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return SubcarrierSpacing::df_1kHz25;
-        case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5: return SubcarrierSpacing::df_7kHz5;
-        default: return SubcarrierSpacing::df_15kHz;
+      if (_cell.mbms_dedicated) {
+        switch (_sib13.mbsfn_area_info_list[0].subcarrier_spacing) {
+          case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return SubcarrierSpacing::df_1kHz25;
+          case srslte::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5: return SubcarrierSpacing::df_7kHz5;
+          default: return SubcarrierSpacing::df_15kHz;
+        }
+      } else {
+          return SubcarrierSpacing::df_15kHz;
       }
     }
 

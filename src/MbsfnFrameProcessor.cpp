@@ -90,6 +90,11 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   _pmch_cfg.area_id = _area_id;
   srslte_mbsfn_cfg_t mbsfn_cfg = _phy.mbsfn_config_for_tti(tti, area);
   _ue_dl_cfg.chest_cfg.mbsfn_area_id = _area_id;
+  srslte_ue_dl_set_mbsfn_area_id(&_ue_dl, mbsfn_cfg.mbsfn_area_id);
+
+  if (!_cell.mbms_dedicated) {
+    srslte_ue_dl_set_non_mbsfn_region(&_ue_dl, mbsfn_cfg.non_mbsfn_region_length);
+  }
 
   if (sfn%50 == 0) {
     if (mbsfn_cfg.is_mcch) {
@@ -217,7 +222,13 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   if (!mbsfn_cfg.is_mcch) {
     for (uint32_t i = 0; i < _phy.mcch().nof_pmch_info; i++) {
       unsigned fn_in_scheduling_period =  sfn % srslte::enum_to_number(_phy.mcch().pmch_info_list[i].mch_sched_period);
-      unsigned sf_idx = fn_in_scheduling_period * 10 + sf - (fn_in_scheduling_period / 4) - 1;
+      unsigned sf_idx;
+      if (_cell.mbms_dedicated) {
+        sf_idx = fn_in_scheduling_period * 10 + sf - (fn_in_scheduling_period / 4) - 1;
+      } else {
+        sf_idx = fn_in_scheduling_period * 6 + (sf < 6 ? sf - 1 : sf - 3);
+      }
+          spdlog::debug("tti{}, sfn {}, sf {}, fn_in_scheduling_period {}, sf_idf {}", tti, sfn, sf, fn_in_scheduling_period, sf_idx);
 
       const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
       for (auto itr = _sched_stops.cbegin() ; itr != _sched_stops.cend() ;) {
@@ -241,6 +252,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
 void MbsfnFrameProcessor::configure_mbsfn(uint8_t area_id, srslte_scs_t subcarrier_spacing) {
   _sf_cfg.subcarrier_spacing = subcarrier_spacing;
   srslte_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, subcarrier_spacing);
+
+
   srslte_ue_dl_set_mbsfn_area_id(&_ue_dl, area_id);
   _area_id = area_id;
   _mbsfn_configured = true;

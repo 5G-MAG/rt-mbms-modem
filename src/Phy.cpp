@@ -69,10 +69,15 @@ auto Phy::synchronize_subframe() -> bool {
           srslte_ue_mib_decode(&_mib, bch_payload.data(), nullptr, &sfn_offset);
       if (n == 1) {
         uint32_t sfn = 0;
-        srslte_pbch_mib_mbms_unpack(bch_payload.data(), &_cell, &sfn, nullptr,
-                                    _override_nof_prb);
-        sfn = (sfn + sfn_offset * kSfnOffset) % kMaxSfn;
-        _tti = sfn * kSubframesPerFrame;
+        if (_cell.mbms_dedicated) {
+          srslte_pbch_mib_mbms_unpack(bch_payload.data(), &_cell, &sfn, nullptr,
+              _override_nof_prb);
+          sfn = (sfn + sfn_offset * kSfnOffset) % kMaxSfn;
+        } else {
+          srslte_pbch_mib_unpack(bch_payload.data(), &_cell, &sfn);
+          sfn = (sfn + sfn_offset) % kMaxSfn;
+        }
+        _tti =  sfn * kSubframesPerFrame;
         return true;
       }
     }
@@ -98,34 +103,56 @@ auto Phy::cell_search() -> bool {
   new_cell.id         = found_cells.at(max_peak_cell).cell_id;
   new_cell.cp         = found_cells.at(max_peak_cell).cp;
   new_cell.frame_type = found_cells.at(max_peak_cell).frame_type;
-  new_cell.mbms_dedicated = true;
   float cfo           = found_cells.at(max_peak_cell).cfo;
+  //new_cell.mbms_dedicated = false; // [kku] true;
 
   spdlog::info("Phy: PSS/SSS detected: Mode {}, PCI {}, CFO {} KHz, CP {}",
                new_cell.frame_type != 0U ? "TDD" : "FDD", new_cell.id,
                cfo / 1000, srslte_cp_string(new_cell.cp));
 
-  if (srslte_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
-    spdlog::error("Phy: Error setting UE MIB sync cell");
-    return false;
-  }
 
-  srslte_ue_sync_reset(&_mib_sync.ue_sync);
 
   std::array<uint8_t, SRSLTE_BCH_PAYLOAD_LEN> bch_payload = {};
   /* Find and decode MIB */
   int sfn_offset = 0;
+
+  // Try to decode MIB-MBMS
+  new_cell.mbms_dedicated = true;
+  if (srslte_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
+    spdlog::error("Phy: Error setting UE MIB sync cell");
+    return false;
+  }
+  srslte_ue_sync_reset(&_mib_sync.ue_sync);
   ret = srslte_ue_mib_sync_decode_prb(&_mib_sync, 40, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
+
+  if (!ret) { // MIB-MBMS failed, try to decode regular MIB
+    init();
+    new_cell.mbms_dedicated = false;
+    if (srslte_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
+      spdlog::error("Phy: Error setting UE MIB sync cell");
+      return false;
+    }
+    srslte_ue_sync_reset(&_mib_sync.ue_sync);
+    ret = srslte_ue_mib_sync_decode_prb(&_mib_sync, 40, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
+  }
+
   if (ret == 1) {
     uint32_t sfn = 0;
-    srslte_pbch_mib_mbms_unpack(bch_payload.data(), &new_cell, &sfn, nullptr,
-                                _override_nof_prb);
+
+    if (new_cell.mbms_dedicated) {
+      srslte_pbch_mib_mbms_unpack(bch_payload.data(), &new_cell, &sfn, nullptr,
+          _override_nof_prb);
+    } else {
+      srslte_pbch_mib_unpack(bch_payload.data(), &new_cell, &sfn);
+    }
+    sfn = (sfn + sfn_offset) % 1024;
 
     spdlog::info(
-        "Phy: MIB Decoded. Mode {}, PCI {}, PRB {}, Ports {}, CFO {} KHz, SFN "
-        "{}\n",
+        "Phy: MIB Decoded. {} cell, Mode {}, PCI {}, PRB {}, Ports {}, CFO {} KHz, SFN "
+        "{}, sfn_offset {}\n",
+        new_cell.mbms_dedicated ? "MBMS dedicated" : "MBMS/Unicast mixed",
         new_cell.frame_type != 0u ? "TDD" : "FDD", new_cell.id,
-        new_cell.nof_prb, new_cell.nof_ports, cfo / 1000, sfn);
+        new_cell.nof_prb, new_cell.nof_ports, cfo / 1000, sfn, sfn_offset);
 
     if (!srslte_cell_isvalid(&new_cell)) {
       spdlog::error("SYNC:  Detected invalid cell.\n");
@@ -271,6 +298,27 @@ void Phy::set_mbsfn_config(const srslte::mcch_msg_t& mcch) {
   }
 }
 
+auto Phy::is_cas_subframe(unsigned tti) -> bool
+{
+  if (_cell.mbms_dedicated) {
+    // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
+    return tti%40 == 0;
+  } else {
+    return (tti%10 == 0 || tti%10 == 5); 
+        //if (sfn%8 == 0 && (tti%10 == 0 || tti%10 == 5)) { 
+  }
+}
+
+auto Phy::is_mbsfn_subframe(unsigned tti) -> bool
+{
+  if (_cell.mbms_dedicated) {
+    // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
+    return !is_cas_subframe(tti);
+  } else {
+    return !is_cas_subframe(tti) &&
+      (tti%10 == 1 || tti%10 == 2 || tti%10 == 3 || tti%10 == 6 || tti%10 == 7 || tti%10 == 8);
+  }
+}
 auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
     -> srslte_mbsfn_cfg_t {
   srslte_mbsfn_cfg_t cfg;

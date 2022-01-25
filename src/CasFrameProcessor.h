@@ -80,12 +80,20 @@ class CasFrameProcessor {
    /**
     *  Get a handle of the signal buffer to store samples for processing in
     */
-   cf_t** rx_buffer() { return _signal_buffer_rx; }
+   //cf_t** rx_buffer() { return _signal_buffer_rx; }
+   cf_t** rx_buffer() {  _mutex.lock(); return _signal_buffer_rx; }
 
    /**
     *  Size of the signal buffer
     */
    uint32_t rx_buffer_size() { return _signal_buffer_max_samples; }
+
+    /**
+     *  Unlock the processor
+     *
+     *  @see get_rx_buffer_and_lock() 
+     */
+    void unlock() { _mutex.unlock(); }
 
    /**
     *  Get the CE values (time domain) for displaying the spectrum
@@ -120,4 +128,5 @@ class CasFrameProcessor {
     srslte_dl_sf_cfg_t _sf_cfg = {};
 
     srslte_cell_t _cell;
+    std::mutex _mutex;
 };
