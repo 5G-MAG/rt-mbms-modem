@@ -58,7 +58,7 @@ class Gw : public srsue::gw_interface_stack {
      *  Handle a MCH PDU. Verifies the contents start with an IP header, checks the IP header checksum
      *  and corrects it if necessary, and writes the packet out to the TUN interface. 
      */
-    void write_pdu_mch(uint32_t lcid, srslte::unique_byte_buffer_t pdu) override;
+    void write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srslte::unique_byte_buffer_t pdu) override;
 
     // Unused interface methods
     void add_mch_port(uint32_t lcid, uint32_t port) override {};

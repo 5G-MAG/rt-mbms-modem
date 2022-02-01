@@ -26,9 +26,9 @@
 #include "Phy.h"
 #include "RestHandler.h"
 #include <libconfig.h++>
-#include "srslte/srslte.h"
-#include "srslte/upper/rlc.h"
-#include "srslte/upper/pdcp.h"
+#include "srsran/srsran.h"
+#include "srsran/rlc/rlc.h"
+#include "srsran/upper/pdcp.h"
 
 /**
  *  Frame processor for CAS subframes. Handles the complete processing chain for
@@ -45,7 +45,7 @@ class CasFrameProcessor {
     *  @param rlc RLC reference
     *  @param rest RESTful API handler reference
     */
-   CasFrameProcessor(const libconfig::Config& cfg, Phy& phy, srslte::rlc& rlc, RestHandler& rest)
+   CasFrameProcessor(const libconfig::Config& cfg, Phy& phy, srsran::rlc& rlc, RestHandler& rest)
      : _cfg(cfg)
        , _phy(phy)
        , _rest(rest)
@@ -75,12 +75,11 @@ class CasFrameProcessor {
     * 
     *  @param cell The cell we're camping on
     */
-   void set_cell(srslte_cell_t cell);
+   void set_cell(srsran_cell_t cell);
 
    /**
     *  Get a handle of the signal buffer to store samples for processing in
     */
-   //cf_t** rx_buffer() { return _signal_buffer_rx; }
    cf_t** rx_buffer() {  _mutex.lock(); return _signal_buffer_rx; }
 
    /**
@@ -113,20 +112,20 @@ class CasFrameProcessor {
 
  private:
    const libconfig::Config& _cfg;
-    srslte::rlc& _rlc;
+    srsran::rlc& _rlc;
     Phy& _phy;
     RestHandler& _rest;
 
-    cf_t*    _signal_buffer_rx[SRSLTE_MAX_PORTS] = {};
+    cf_t*    _signal_buffer_rx[SRSRAN_MAX_PORTS] = {};
     uint32_t _signal_buffer_max_samples          = 0;
 
-    srslte_softbuffer_rx_t _softbuffer;
-    uint8_t* _data[SRSLTE_MAX_CODEWORDS];
+    srsran_softbuffer_rx_t _softbuffer;
+    uint8_t* _data[SRSRAN_MAX_CODEWORDS];
 
-    srslte_ue_dl_t     _ue_dl     = {};
-    srslte_ue_dl_cfg_t _ue_dl_cfg = {};
-    srslte_dl_sf_cfg_t _sf_cfg = {};
+    srsran_ue_dl_t     _ue_dl     = {};
+    srsran_ue_dl_cfg_t _ue_dl_cfg = {};
+    srsran_dl_sf_cfg_t _sf_cfg = {};
 
-    srslte_cell_t _cell;
+    srsran_cell_t _cell;
     std::mutex _mutex;
 };

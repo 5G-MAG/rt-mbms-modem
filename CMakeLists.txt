@@ -14,10 +14,6 @@ set(CMAKE_CXX_FLAGS_RELEASE_INIT "-Wall -O3")
 find_package(spdlog REQUIRED)
 find_package(cpprestsdk REQUIRED)
 
-set(ENABLE_SRSUE OFF CACHE BOOL "Build srsUE application")
-set(ENABLE_SRSENB OFF CACHE BOOL "Build srsENB application")
-set(ENABLE_SRSEPC OFF CACHE BOOL "Build srsEPC application")
-add_subdirectory(lib/srslte)
 
 file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/lib/include)
 
@@ -27,19 +23,25 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/src
 
     SYSTEM
-    ${PROJECT_SOURCE_DIR}/lib/srslte/lib/include
-    ${PROJECT_BINARY_DIR}/lib/srslte/lib/include
+    ${PROJECT_SOURCE_DIR}/lib/srsran
+    ${PROJECT_SOURCE_DIR}/lib/srsran/lib/include
+    ${PROJECT_BINARY_DIR}/lib/srsran/lib/include
     ${PROJECT_BINARY_DIR}/lib/include
     ${PROJECT_SOURCE_DIR}/lib/include
     ${LIB_LIMESUITE_INCLUDE_DIRS}
     ${SPDLOG_INCLUDEDIR}
     )
 
+set(ENABLE_SRSUE OFF CACHE BOOL "Build srsUE application")
+set(ENABLE_SRSENB OFF CACHE BOOL "Build srsENB application")
+set(ENABLE_SRSEPC OFF CACHE BOOL "Build srsEPC application")
+add_subdirectory(lib/srsran)
+
 configure_file("include/Version.h.in" "Version.h")
 
 link_directories(
     ${LIB_LIMESUITE_LIBRARIES}
-    ${PROJECT_BINARY_DIR}/lib/srslte/lib/src/phy/
+    ${PROJECT_BINARY_DIR}/lib/srsran/lib/src/phy/
     )
 
 
@@ -52,9 +54,10 @@ add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
 target_link_libraries( modem
     LINK_PUBLIC
     spdlog::spdlog
-    srslte_phy
-    srslte_mac
-    srslte_upper
+    srsran_phy
+    srsran_mac
+    srsran_rlc
+    srsran_pdcp
     rrc_asn1
     config++
     cpprestsdk::cpprest
