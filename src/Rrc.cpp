@@ -50,8 +50,8 @@ void Rrc::write_pdu_mch(uint32_t /*lcid*/, srslte::unique_byte_buffer_t pdu) {
   for (uint32_t i = 0; i < mcch.nof_pmch_info; i++) {
     for (uint32_t j = 0; j < mcch.pmch_info_list[i].nof_mbms_session_info; j++) {
       uint32_t lcid = mcch.pmch_info_list[i].mbms_session_info_list[j].lc_ch_id;
-      if (!_rlc.has_bearer_mrb(lcid)) {
-        _rlc.add_bearer_mrb(lcid);
+      if (!_rlc.has_bearer_mrb(i, lcid)) {
+        _rlc.add_bearer_mrb(i, lcid);
       }
     }
   }
@@ -98,8 +98,8 @@ void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1) {
   }
 
   _phy.set_mch_scheduling_info( srslte::make_sib13(sib1.sib_type13_r14));
-  if (!_rlc.has_bearer_mrb(0)) {
-    _rlc.add_bearer_mrb(0);
+  if (!_rlc.has_bearer_mrb(0, 0)) {
+    _rlc.add_bearer_mrb(0, 0);
   }
 
   _phy.set_decode_mcch(true);

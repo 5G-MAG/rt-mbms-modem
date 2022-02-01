@@ -344,11 +344,11 @@ auto main(int argc, char **argv) -> int {
   // Configure srsLTE logging
   srslte::log_ref rlc_log = srslte::logmap::get("RLC");
   rlc_log->set_level(srs_level);
-  rlc_log->set_hex_limit(128);
+  rlc_log->set_hex_limit(2048);
 
   srslte::log_ref mac_log = srslte::logmap::get("MAC");
   mac_log->set_level(srs_level);
-  mac_log->set_hex_limit(128);
+  mac_log->set_hex_limit(2048);
 
   state_t state = searching;
 

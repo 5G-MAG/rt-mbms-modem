@@ -85,10 +85,10 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   uint32_t sfn = tti / 10;
   uint8_t sf = tti % 10;
 
-  unsigned area = 0;
+  unsigned mch_idx = 0;
   _sf_cfg.tti = tti;
   _pmch_cfg.area_id = _area_id;
-  srslte_mbsfn_cfg_t mbsfn_cfg = _phy.mbsfn_config_for_tti(tti, area);
+  srslte_mbsfn_cfg_t mbsfn_cfg = _phy.mbsfn_config_for_tti(tti, mch_idx);
   _ue_dl_cfg.chest_cfg.mbsfn_area_id = _area_id;
 
   if (sfn%50 == 0) {
@@ -96,12 +96,13 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       _rest._mcch.errors = 0;
       _rest._mcch.total = 1;
     } else {
-      _rest._mch[area].errors = 0;
-      _rest._mch[area].total = 1;
+      _rest._mch[mch_idx].errors = 0;
+      _rest._mch[mch_idx].total = 1;
     }
   }
 
   if (!mbsfn_cfg.enable) {
+    spdlog::trace("PMCH: tti {}: neither MCCH nor MCH enabled. Skipping subframe");
     _mutex.unlock();
     return -1;
   }
@@ -109,14 +110,14 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   if (mbsfn_cfg.is_mcch) {
     _rest._mcch.total++;
   } else {
-    _rest._mch[area].total++;
+    _rest._mch[mch_idx].total++;
   }
 
   if (srslte_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
-      _rest._mch[area].errors++;
+      _rest._mch[mch_idx].errors++;
     }
     spdlog::error("Getting PDCCH FFT estimate");
     _mutex.unlock();
@@ -139,7 +140,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
-      _rest._mch[area].errors++;
+      _rest._mch[mch_idx].errors++;
     }
     spdlog::warn("Error decoding PMCH");
     _mutex.unlock();
@@ -160,10 +161,10 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rest._mcch.mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
     _rest._mcch.ber = _softbuffer.ber;
   } else {
-    _rest._mch[area].SetData(mch_data());
-    _rest._mch[area].mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
-    _rest._mch[area].present = true;
-    _rest._mch[area].ber = _softbuffer.ber;
+    _rest._mch[mch_idx].SetData(mch_data());
+    _rest._mch[mch_idx].mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
+    _rest._mch[mch_idx].present = true;
+    _rest._mch[mch_idx].ber = _softbuffer.ber;
   }
 
   if (pmch_dec.crc) {
@@ -189,7 +190,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
           if (mbsfn_cfg.is_mcch) {
             _rest._mcch.errors++;
           } else {
-            _rest._mch[area].errors++;
+            _rest._mch[mch_idx].errors++;
           }
           _mutex.unlock();
           return -1;
@@ -198,7 +199,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         {
           const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
-          _rlc.write_pdu_mch(lcid, mch_mac_msg.get()->get_sdu_ptr(), mch_mac_msg.get()->get_payload_size());
+          _rlc.write_pdu_mch(mch_idx, lcid, mch_mac_msg.get()->get_sdu_ptr(), mch_mac_msg.get()->get_payload_size());
         }
       }
     }
@@ -206,7 +207,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
-      _rest._mch[area].errors++;
+      _rest._mch[mch_idx].errors++;
     }
 
     spdlog::warn("PMCH in TTI {} failed with CRC error", tti);
@@ -224,7 +225,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         if ( sf_idx >= itr->second ) {
           const std::lock_guard<std::mutex> lock(_rlc_mutex);
           spdlog::debug("Stopping LCID {} in tti {} (idx in rf {})", itr->first, tti, sf_idx);
-          _rlc.stop_mch(itr->first);
+          _rlc.stop_mch(i, itr->first);
           itr = _sched_stops.erase(itr);
         } else {
           itr = std::next(itr);
@@ -232,6 +233,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
   } else {
+    _rlc.stop_mch(0, 0);
     _rest._mcch.present = true;
   }
   _mutex.unlock();

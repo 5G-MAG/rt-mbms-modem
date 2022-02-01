@@ -263,7 +263,7 @@ void Phy::set_mbsfn_config(const srslte::mcch_msg_t& mcch) {
          _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mnc[1] << 4 | _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mnc[0]
          );
       mtch_info.tmgi = tmgi;
-      mtch_info.dest = _dests[mch_info.mcs][mtch_info.lcid];
+      mtch_info.dest = _dests[i][mtch_info.lcid];
       mch_info.mtchs.push_back(mtch_info);
     }
 
@@ -299,24 +299,31 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
       cfg.enable                  = true;
       cfg.is_mcch                 = true;
     }
+  } else if (sfn % enum_to_number(area_info.mcch_cfg.mcch_repeat_period) == area_info.mcch_cfg.mcch_offset &&
+      sf == 1) {
+      cfg.mbsfn_mcs               = enum_to_number(area_info.mcch_cfg.sig_mcs);
+      cfg.enable                  = true;
+      cfg.is_mcch                 = false;
   } else {
     if (_mch_configured) {
       cfg.mbsfn_area_id = area_info.mbsfn_area_id;
 
       for (uint32_t i = 0; i < _mcch.nof_pmch_info; i++) {
         unsigned fn_in_scheduling_period =  sfn % enum_to_number(_mcch.pmch_info_list[i].mch_sched_period);
-        unsigned sf_idx = fn_in_scheduling_period * 10 + sf - (fn_in_scheduling_period / 4) - 1;
+        unsigned sf_idx = fn_in_scheduling_period * 10 + sf 
+          - (fn_in_scheduling_period / 4) // minus 1 CAS SF per 4 SFNs 
+          - 1; // minus 1 MCCH SF per scheduling period;
 
-        spdlog::debug("tti {}, fn_in_ {}, sf_idx {}", tti, fn_in_scheduling_period,  sf_idx);
+        spdlog::debug("i {}, tti {}, fn_in_ {}, sf_idx {}", i, tti, fn_in_scheduling_period,  sf_idx);
 
         if (sf_idx <= _mcch.pmch_info_list[i].sf_alloc_end) {
           area = i;
           if ((i == 0 && fn_in_scheduling_period == 0 && sf == 1) ||
               (i > 0 && _mcch.pmch_info_list[i-1].sf_alloc_end + 1 == sf_idx)) {
-            spdlog::debug("assigning sig_mcs {}",  area_info.mcch_cfg.sig_mcs);
+            spdlog::debug("assigning sig_mcs {}, mch_idx is {}",  area_info.mcch_cfg.sig_mcs, area);
             cfg.mbsfn_mcs = enum_to_number(area_info.mcch_cfg.sig_mcs);
           } else {
-            spdlog::debug("assigning pmch_mcs {}",  area_info.mcch_cfg.sig_mcs);
+            spdlog::debug("assigning pmch_mcs {}, mch_idx is {}", _mcch.pmch_info_list[i].data_mcs, area);
             cfg.mbsfn_mcs = _mcch.pmch_info_list[i].data_mcs;
           }
           cfg.enable = true;

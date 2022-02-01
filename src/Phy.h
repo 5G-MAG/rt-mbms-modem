@@ -171,7 +171,7 @@ class Phy {
 
     const std::vector< mch_info_t>& mch_info() { return _mch_info;  }
 
-    void set_dest_for_lcid(int lcid, std::string dest) { _dests[_mcs][lcid] = dest; }
+    void set_dest_for_lcid(uint32_t mch_idx, int lcid, std::string dest) { _dests[mch_idx][lcid] = dest; }
 
     enum class SubcarrierSpacing {
       df_15kHz,
@@ -225,7 +225,7 @@ class Phy {
 
     std::vector< mch_info_t > _mch_info;
 
-    std::map< int, std::map< int, std::string >> _dests;
+    std::map< uint32_t, std::map< int, std::string >> _dests;
 
     int8_t _override_nof_prb;
 };
