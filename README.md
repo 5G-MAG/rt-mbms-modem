@@ -127,6 +127,21 @@ Found device 0
 
 ````
 
+Example for BladeRF:
+
+````
+######################################################
+##     Soapy SDR -- the SDR abstraction library     ##
+######################################################
+Found device 2
+  backend = libusb
+  device = 0x02:0x09
+  driver = bladerf
+  instance = 0
+  label = BladeRF #0 [ANY]
+  serial = ANY
+````
+
 Example for HackRF One:
 ```
 ######################################################
@@ -240,3 +255,6 @@ To allow the application to run at realtime scheduling without superuser privile
 accordingly. Alternatively, you can run it with superuser rights (``sudo ./modem``).
 
 `` sudo setcap 'cap_sys_nice=eip' ./modem ``
+
+### 4.5 Adjust SDR configuration
+Follow the instructions in [Installing SDR Drivers](https://github.com/5G-MAG/rt-mbms-modem#21-installing-sdr-drivers) to adjust the configuration in `/etc/5gmag-rt.conf` for your SDR card.
