@@ -33,10 +33,10 @@
 
 #include "spdlog/spdlog.h"
 
-void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srslte::unique_byte_buffer_t pdu) {
+void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buffer_t pdu) {
   char* err_str = nullptr;
   if (pdu->N_bytes > 2) {
-    spdlog::debug("GW: RX MCH PDU ({} B), MCH idx {}. Stack latency: {} us", pdu->N_bytes, mch_idx,  pdu->get_latency_us());
+    spdlog::debug("GW: RX MCH PDU ({} B), MCH idx {}. Stack latency: {} us", pdu->N_bytes, mch_idx,  pdu->get_latency_us().count());
 
     if (_tun_fd < 0) {
       spdlog::warn("TUN/TAP not up - dropping gw RX message\n");

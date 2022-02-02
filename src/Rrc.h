@@ -20,9 +20,9 @@
 #pragma once
 #include <string>
 #include <libconfig.h++>
-#include "srslte/srslte.h"
-#include "srslte/upper/rlc.h"
-#include "srslte/asn1/rrc_asn1.h"
+#include "srsran/srsran.h"
+#include "srsran/rlc/rlc.h"
+#include "srsran/asn1/rrc.h"
 
 #include "Phy.h"
 
@@ -40,7 +40,7 @@ class Rrc : public srsue::rrc_interface_rlc, public srsue::rrc_interface_pdcp {
      *  @param rlc RLC reference
      *  @param rlc PHY reference
      */
-    Rrc(const libconfig::Config& cfg, Phy& phy, srslte::rlc& rlc)
+    Rrc(const libconfig::Config& cfg, Phy& phy, srsran::rlc& rlc)
       : _cfg(cfg)
       , _rlc(rlc)
       , _phy(phy) {}
@@ -63,22 +63,24 @@ class Rrc : public srsue::rrc_interface_rlc, public srsue::rrc_interface_pdcp {
      *  Automatically creates MRB bearers for all discovered LCIDs, and sets the MBSFN configuration
      *  in PHY.
      */
-    void write_pdu_mch(uint32_t lcid, srslte::unique_byte_buffer_t pdu) override;
+    void write_pdu_mch(uint32_t lcid, srsran::unique_byte_buffer_t pdu) override;
 
     /**
      *  Handle SIB1(SIB13) from BCCH/DLSCH, and set the scheduling info in PHY.
      */
-    void write_pdu_bcch_dlsch(srslte::unique_byte_buffer_t pdu) override;
-    void write_pdu(uint32_t lcid, srslte::unique_byte_buffer_t pdu) override {}; // Unused
-    void write_pdu_bcch_bch(srslte::unique_byte_buffer_t pdu) override {}; // Unused
-    void write_pdu_pcch(srslte::unique_byte_buffer_t pdu) override {}; // Unused
-    std::string get_rb_name(uint32_t lcid) override { return "RB" + std::to_string(lcid); };
+    void write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) override;
+    void write_pdu(uint32_t lcid, srsran::unique_byte_buffer_t pdu) override {}; // Unused
+    void write_pdu_bcch_bch(srsran::unique_byte_buffer_t pdu) override {}; // Unused
+    void write_pdu_pcch(srsran::unique_byte_buffer_t pdu) override {}; // Unused
+    const char* get_rb_name(uint32_t lcid) override { return "RB" + lcid; };
+    void protocol_failure() override {};
+    void notify_pdcp_integrity_error(uint32_t lcid) override {};
 
  private:
     void handle_sib1(const asn1::rrc::sib_type1_mbms_r14_s& sib1);
     rrc_state_t _state = ACQUIRE_SIB;
 
     const libconfig::Config& _cfg;
-    srslte::rlc& _rlc;
+    srsran::rlc& _rlc;
     Phy& _phy;
 };

@@ -19,7 +19,6 @@
 
 #include "MbsfnFrameProcessor.h"
 #include "spdlog/spdlog.h"
-#include "srslte/interfaces/ue_interfaces.h"
 
 std::map<uint8_t, uint16_t> MbsfnFrameProcessor::_sched_stops;
 
@@ -27,56 +26,56 @@ std::mutex MbsfnFrameProcessor::_sched_stop_mutex;
 std::mutex MbsfnFrameProcessor::_rlc_mutex;
 
 auto MbsfnFrameProcessor::init() -> bool {
-  _signal_buffer_max_samples = 3 * SRSLTE_SF_LEN_PRB(MAX_PRB);
+  _signal_buffer_max_samples = 3 * SRSRAN_SF_LEN_PRB(MAX_PRB);
 
-  _signal_buffer_rx[0] = srslte_vec_cf_malloc(_signal_buffer_max_samples);
+  _signal_buffer_rx[0] = srsran_vec_cf_malloc(_signal_buffer_max_samples);
   if (_signal_buffer_rx[0] == nullptr) {
     spdlog::error("Could not allocate regular DL signal buffer\n");
     return false;
   }
 
-  if (srslte_ue_dl_init(&_ue_dl, _signal_buffer_rx, MAX_PRB, 1) != 0) {
+  if (srsran_ue_dl_init(&_ue_dl, _signal_buffer_rx, MAX_PRB, 1) != 0) {
     spdlog::error("Could not init ue_dl\n");
     return false;;
   }
 
-  srslte_softbuffer_rx_init(&_softbuffer, 100);
+  srsran_softbuffer_rx_init(&_softbuffer, 100);
 
   _ue_dl_cfg.snr_to_cqi_offset = 0;
 
-  srslte_chest_dl_cfg_t* chest_cfg = &_ue_dl_cfg.chest_cfg;
-  bzero(chest_cfg, sizeof(srslte_chest_dl_cfg_t));
+  srsran_chest_dl_cfg_t* chest_cfg = &_ue_dl_cfg.chest_cfg;
+  bzero(chest_cfg, sizeof(srsran_chest_dl_cfg_t));
   chest_cfg->filter_coef[0] = 0.1;
-  chest_cfg->filter_type = SRSLTE_CHEST_FILTER_TRIANGLE;
-  chest_cfg->noise_alg = SRSLTE_NOISE_ALG_EMPTY;
+  chest_cfg->filter_type = SRSRAN_CHEST_FILTER_TRIANGLE;
+  chest_cfg->noise_alg = SRSRAN_NOISE_ALG_EMPTY;
   chest_cfg->rsrp_neighbour       = false;
   chest_cfg->sync_error_enable    = false;
-  chest_cfg->estimator_alg = SRSLTE_ESTIMATOR_ALG_INTERPOLATE;
+  chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_INTERPOLATE;
   chest_cfg->cfo_estimate_enable  = false;
 
   _ue_dl_cfg.cfg.pdsch.csi_enable         = true;
   _ue_dl_cfg.cfg.pdsch.max_nof_iterations = 8;
   _ue_dl_cfg.cfg.pdsch.meas_evm_en        = false;
-  _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSLTE_MIMO_DECODER_MMSE;
+  _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
   _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer;
 
   _pmch_cfg.pdsch_cfg.csi_enable         = true;
   _pmch_cfg.pdsch_cfg.max_nof_iterations = 8;
   _pmch_cfg.pdsch_cfg.meas_evm_en        = false;
-  _pmch_cfg.pdsch_cfg.decoder_type       = SRSLTE_MIMO_DECODER_MMSE;
+  _pmch_cfg.pdsch_cfg.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
 
-  _sf_cfg.sf_type = SRSLTE_SF_MBSFN;
+  _sf_cfg.sf_type = SRSRAN_SF_MBSFN;
   return true;
 }
 
 MbsfnFrameProcessor::~MbsfnFrameProcessor() {
-  srslte_softbuffer_rx_free(&_softbuffer);
-  srslte_ue_dl_free(&_ue_dl);
+  srsran_softbuffer_rx_free(&_softbuffer);
+  srsran_ue_dl_free(&_ue_dl);
 }
 
-void MbsfnFrameProcessor::set_cell(srslte_cell_t cell) {
+void MbsfnFrameProcessor::set_cell(srsran_cell_t cell) {
   _cell = cell;
-  srslte_ue_dl_set_cell(&_ue_dl, cell);
+  srsran_ue_dl_set_cell(&_ue_dl, cell);
 }
 
 auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
@@ -88,12 +87,12 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   unsigned mch_idx = 0;
   _sf_cfg.tti = tti;
   _pmch_cfg.area_id = _area_id;
-  srslte_mbsfn_cfg_t mbsfn_cfg = _phy.mbsfn_config_for_tti(tti, mch_idx);
+  srsran_mbsfn_cfg_t mbsfn_cfg = _phy.mbsfn_config_for_tti(tti, mch_idx);
   _ue_dl_cfg.chest_cfg.mbsfn_area_id = _area_id;
-  srslte_ue_dl_set_mbsfn_area_id(&_ue_dl, mbsfn_cfg.mbsfn_area_id);
+  srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, mbsfn_cfg.mbsfn_area_id);
 
   if (!_cell.mbms_dedicated) {
-    srslte_ue_dl_set_non_mbsfn_region(&_ue_dl, mbsfn_cfg.non_mbsfn_region_length);
+    srsran_ue_dl_set_non_mbsfn_region(&_ue_dl, mbsfn_cfg.non_mbsfn_region_length);
   }
 
   if (sfn%50 == 0) {
@@ -118,7 +117,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rest._mch[mch_idx].total++;
   }
 
-  if (srslte_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
+  if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
@@ -129,19 +128,19 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     return -1;
   }
 
-  srslte_configure_pmch(&_pmch_cfg, &_cell, &mbsfn_cfg);
-  srslte_ra_dl_compute_nof_re(&_cell, &_sf_cfg, &_pmch_cfg.pdsch_cfg.grant);
+  srsran_configure_pmch(&_pmch_cfg, &_cell, &mbsfn_cfg);
+  srsran_ra_dl_compute_nof_re(&_cell, &_sf_cfg, &_pmch_cfg.pdsch_cfg.grant);
 
   _pmch_cfg.area_id = _area_id;
 
-  srslte_softbuffer_rx_reset_cb(&_softbuffer, 1);
+  srsran_softbuffer_rx_reset_cb(&_softbuffer, 1);
 
-  srslte_pdsch_res_t pmch_dec = {};
+  srsran_pdsch_res_t pmch_dec = {};
   _pmch_cfg.pdsch_cfg.softbuffers.rx[0] = &_softbuffer;
   pmch_dec.payload = _payload_buffer;
-  srslte_softbuffer_rx_reset_tbs(_pmch_cfg.pdsch_cfg.softbuffers.rx[0], _pmch_cfg.pdsch_cfg.grant.tb[0].tbs);
+  srsran_softbuffer_rx_reset_tbs(_pmch_cfg.pdsch_cfg.softbuffers.rx[0], _pmch_cfg.pdsch_cfg.grant.tb[0].tbs);
 
-  if (srslte_ue_dl_decode_pmch(&_ue_dl, &_sf_cfg, &_pmch_cfg, &pmch_dec) != 0) {
+  if (srsran_ue_dl_decode_pmch(&_ue_dl, &_sf_cfg, &_pmch_cfg, &pmch_dec) != 0) {
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
@@ -164,12 +163,10 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   if (mbsfn_cfg.is_mcch) {
     _rest._mcch.SetData(mch_data());
     _rest._mcch.mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
-    _rest._mcch.ber = _softbuffer.ber;
   } else {
     _rest._mch[mch_idx].SetData(mch_data());
     _rest._mch[mch_idx].mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
     _rest._mch[mch_idx].present = true;
-    _rest._mch[mch_idx].ber = _softbuffer.ber;
   }
 
   if (pmch_dec.crc) {
@@ -178,7 +175,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     mch_mac_msg.parse_packet(_payload_buffer);
 
     while (mch_mac_msg.next()) {
-      if (srslte::mch_lcid::MCH_SCHED_INFO == mch_mac_msg.get()->mch_ce_type()) {
+      if (srsran::mch_lcid::MCH_SCHED_INFO == mch_mac_msg.get()->mch_ce_type()) {
         uint16_t stop = 0;
         uint8_t lcid = 0;
         while (mch_mac_msg.get()->get_next_mch_sched_info(&lcid, &stop)) {
@@ -190,8 +187,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         uint32_t lcid = mch_mac_msg.get()->get_sdu_lcid();
         spdlog::trace("Processing MAC MCH PDU entered, lcid {}", lcid);
 
-        if (lcid >= SRSLTE_N_MCH_LCIDS) {
-          spdlog::warn("Radio bearer id must be in [0:%d] - %d", SRSLTE_N_MCH_LCIDS, lcid);
+        if (lcid >= SRSRAN_N_MCH_LCIDS) {
+          spdlog::warn("Radio bearer id must be in [0:%d] - %d", SRSRAN_N_MCH_LCIDS, lcid);
           if (mbsfn_cfg.is_mcch) {
             _rest._mcch.errors++;
           } else {
@@ -222,7 +219,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
 
   if (!mbsfn_cfg.is_mcch) {
     for (uint32_t i = 0; i < _phy.mcch().nof_pmch_info; i++) {
-      unsigned fn_in_scheduling_period =  sfn % srslte::enum_to_number(_phy.mcch().pmch_info_list[i].mch_sched_period);
+      unsigned fn_in_scheduling_period =  sfn % srsran::enum_to_number(_phy.mcch().pmch_info_list[i].mch_sched_period);
       unsigned sf_idx;
       if (_cell.mbms_dedicated) {
         sf_idx = fn_in_scheduling_period * 10 + sf - (fn_in_scheduling_period / 4) - 1;
@@ -251,12 +248,12 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   return mbsfn_cfg.is_mcch ? 0 : 1;
 }
 
-void MbsfnFrameProcessor::configure_mbsfn(uint8_t area_id, srslte_scs_t subcarrier_spacing) {
+void MbsfnFrameProcessor::configure_mbsfn(uint8_t area_id, srsran_scs_t subcarrier_spacing) {
   _sf_cfg.subcarrier_spacing = subcarrier_spacing;
-  srslte_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, subcarrier_spacing);
+  srsran_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, subcarrier_spacing);
 
 
-  srslte_ue_dl_set_mbsfn_area_id(&_ue_dl, area_id);
+  srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, area_id);
   _area_id = area_id;
   _mbsfn_configured = true;
 }

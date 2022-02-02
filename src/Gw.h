@@ -18,11 +18,13 @@
 //
 
 #pragma once
+#include "srsran/srsran.h"
+#include "srsran/rlc/rlc.h"
+#include "srsran/asn1/rrc.h"
+#include "srsran/interfaces/ue_gw_interfaces.h"
+
 #include <string>
 #include <libconfig.h++>
-#include "srslte/srslte.h"
-#include "srslte/upper/rlc.h"
-#include "srslte/asn1/rrc_asn1.h"
 
 #include "Phy.h"
 
@@ -58,15 +60,17 @@ class Gw : public srsue::gw_interface_stack {
      *  Handle a MCH PDU. Verifies the contents start with an IP header, checks the IP header checksum
      *  and corrects it if necessary, and writes the packet out to the TUN interface. 
      */
-    void write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srslte::unique_byte_buffer_t pdu) override;
+    void write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buffer_t pdu) override;
 
     // Unused interface methods
     void add_mch_port(uint32_t lcid, uint32_t port) override {};
-    void write_pdu(uint32_t lcid, srslte::unique_byte_buffer_t pdu) override {};
+    void write_pdu(uint32_t lcid, srsran::unique_byte_buffer_t pdu) override {};
     int setup_if_addr(uint32_t lcid, uint8_t pdn_type, uint32_t ip_addr, uint8_t* ipv6_if_id, char* err_str) override { return -1; };
-    int apply_traffic_flow_template(const uint8_t& eps_bearer_id, const uint8_t& lcid, const LIBLTE_MME_TRAFFIC_FLOW_TEMPLATE_STRUCT* tft) override { return -1; };
+    int apply_traffic_flow_template(const uint8_t& eps_bearer_id, const LIBLTE_MME_TRAFFIC_FLOW_TEMPLATE_STRUCT* tft) override { return -1; };
     void set_test_loop_mode(const test_loop_mode_state_t mode, const uint32_t ip_pdu_delay_ms = 0) override {};
 
+    int deactivate_eps_bearer(const uint32_t eps_bearer_id) override {return 0;};
+    bool is_running() override { return true; };
   private:
     const libconfig::Config& _cfg;
 

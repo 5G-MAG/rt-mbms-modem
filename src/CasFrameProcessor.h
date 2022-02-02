@@ -23,12 +23,11 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include "srsran/srsran.h"
+#include "srsran/rlc/rlc.h"
 #include "Phy.h"
 #include "RestHandler.h"
 #include <libconfig.h++>
-#include "srsran/srsran.h"
-#include "srsran/rlc/rlc.h"
-#include "srsran/upper/pdcp.h"
 
 /**
  *  Frame processor for CAS subframes. Handles the complete processing chain for
