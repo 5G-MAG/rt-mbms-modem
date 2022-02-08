@@ -24,13 +24,15 @@
 auto CasFrameProcessor::init() -> bool {
   _signal_buffer_max_samples = 3 * SRSRAN_SF_LEN_PRB(MAX_PRB);
 
-  _signal_buffer_rx[0] = srsran_vec_cf_malloc(_signal_buffer_max_samples);
-  if (!_signal_buffer_rx[0]) {
-    spdlog::error("Could not allocate regular DL signal buffer\n");
-    return false;
+  for (auto ch = 0; ch < _rx_channels; ch++) {
+    _signal_buffer_rx[ch] = srsran_vec_cf_malloc(_signal_buffer_max_samples);
+    if (!_signal_buffer_rx[ch]) {
+      spdlog::error("Could not allocate regular DL signal buffer\n");
+      return false;
+    }
   }
 
-  if (srsran_ue_dl_init(&_ue_dl, _signal_buffer_rx, MAX_PRB, 1)) {
+  if (srsran_ue_dl_init(&_ue_dl, _signal_buffer_rx, MAX_PRB, _rx_channels)) {
     spdlog::error("Could not init ue_dl\n");
     return false;;
   }
@@ -49,13 +51,17 @@ auto CasFrameProcessor::init() -> bool {
 
   srsran_chest_dl_cfg_t* chest_cfg = &_ue_dl_cfg.chest_cfg;
   bzero(chest_cfg, sizeof(srsran_chest_dl_cfg_t));
-  chest_cfg->filter_coef[0] = 4;
-  chest_cfg->filter_coef[1] = 1.0f;
-  chest_cfg->filter_type = SRSRAN_CHEST_FILTER_GAUSS;
-  chest_cfg->noise_alg = SRSRAN_NOISE_ALG_EMPTY;
+  //chest_cfg->filter_coef[0] = 4;
+  //chest_cfg->filter_coef[1] = 1.0f;
+  //chest_cfg->filter_type = SRSRAN_CHEST_FILTER_GAUSS;
+  chest_cfg->filter_coef[0] = 0.1;
+  chest_cfg->filter_type = SRSRAN_CHEST_FILTER_TRIANGLE;
+  chest_cfg->noise_alg = SRSRAN_NOISE_ALG_REFS;
   chest_cfg->rsrp_neighbour       = false;
-  chest_cfg->sync_error_enable    = false;
+  chest_cfg->sync_error_enable    = true;
   chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_AVERAGE;
+  //chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_WIENER;
+  //chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_INTERPOLATE;
   chest_cfg->cfo_estimate_enable  = true;
   chest_cfg->cfo_estimate_sf_mask = 1023;
 
@@ -139,9 +145,10 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       }
     }
 
+    _rest._pdsch.SetData(pdsch_data());
+
     // Decode PDSCH..
     auto ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
-      spdlog::debug("decode_pdsch returned {} \n", ret);
     if (ret) {
       spdlog::error("Error decoding PDSCH\n");
       _rest._pdsch.errors++;

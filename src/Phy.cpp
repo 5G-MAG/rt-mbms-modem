@@ -29,7 +29,7 @@
 static auto receive_callback(void* obj, cf_t* data[SRSRAN_MAX_CHANNELS],         // NOLINT
                              uint32_t nsamples, srsran_timestamp_t* rx_time)
     -> int {
-  return (static_cast<Phy*>(obj))->_sample_cb(data[0], nsamples, rx_time);       // NOLINT
+  return (static_cast<Phy*>(obj))->_sample_cb(data, nsamples, rx_time);       // NOLINT
 }
 
 const uint32_t kMaxBufferSamples = 2 * 15360;
@@ -40,13 +40,15 @@ const uint32_t kSubframesPerFrame = 10;
 const uint32_t kMaxCellsToDiscover = 3;
 
 Phy::Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb,
-         int8_t override_nof_prb)
+         int8_t override_nof_prb, uint8_t rx_channels)
     : _cfg(cfg),
       _sample_cb(std::move(std::move(cb))),
       _cs_nof_prb(cs_nof_prb),
-      _override_nof_prb(override_nof_prb) {
+      _override_nof_prb(override_nof_prb),
+      _rx_channels(rx_channels) {
   _buffer_max_samples = kMaxBufferSamples;
   _mib_buffer[0] = static_cast<cf_t*>(malloc(_buffer_max_samples * sizeof(cf_t)));  // NOLINT
+  _mib_buffer[1] = static_cast<cf_t*>(malloc(_buffer_max_samples * sizeof(cf_t)));  // NOLINT
 }
 
 Phy::~Phy() {
@@ -188,26 +190,26 @@ auto Phy::set_cell() -> void {
 }
 
 auto Phy::init() -> bool {
-  if (srsran_ue_cellsearch_init_multi_prb_cp(&_cell_search, 8, receive_callback, 1,
-                                      this, _cs_nof_prb, true) != 0) {
+  if (srsran_ue_cellsearch_init_multi_prb_cp(&_cell_search, 8, receive_callback, _rx_channels,
+                                      this, _cs_nof_prb, _search_extended_cp) != 0) {
     spdlog::error("Phy: error while initiating UE cell search\n");
     return false;
   }
   srsran_ue_cellsearch_set_nof_valid_frames(&_cell_search, 4);
 
-  if (srsran_ue_sync_init_multi(&_ue_sync, MAX_PRB, false, receive_callback, 1,
+  if (srsran_ue_sync_init_multi(&_ue_sync, MAX_PRB, false, receive_callback, _rx_channels,
                                 this) != 0) {
     spdlog::error("Cannot init ue_sync");
     return false;
   }
 
-  if (srsran_ue_mib_sync_init_multi_prb(&_mib_sync, receive_callback, 1, this,
+  if (srsran_ue_mib_sync_init_multi_prb(&_mib_sync, receive_callback, _rx_channels, this,
                                     _cs_nof_prb) != 0) {
     spdlog::error("Cannot init ue_mib_sync");
     return false;
   }
 
-  if (srsran_ue_mib_init(&_mib, _mib_buffer[0], 50) != 0) {
+  if (srsran_ue_mib_init(&_mib, _mib_buffer[0], MAX_PRB) != 0) {
     spdlog::error("Cannot init ue_mib");
     return false;
   }
@@ -304,8 +306,9 @@ auto Phy::is_cas_subframe(unsigned tti) -> bool
     // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
     return tti%40 == 0;
   } else {
-    return (tti%10 == 0 || tti%10 == 5); 
-        //if (sfn%8 == 0 && (tti%10 == 0 || tti%10 == 5)) { 
+    unsigned sfn = tti / 10;
+    //return (tti%10 == 0 || tti%10 == 5); 
+        return (sfn%8 == 0 && tti%10 == 5); 
   }
 }
 

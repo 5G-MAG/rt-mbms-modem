@@ -47,12 +47,14 @@ class MbsfnFrameProcessor {
      *  @param log_h srsLTE log handle for the MCH MAC msg decoder
      *  @param rest RESTful API handler reference
      */
-    MbsfnFrameProcessor(const libconfig::Config& cfg, srsran::rlc& rlc, Phy& phy, srslog::basic_logger& log_h, RestHandler& rest )
+    MbsfnFrameProcessor(const libconfig::Config& cfg, srsran::rlc& rlc, Phy& phy, srslog::basic_logger& log_h, RestHandler& rest, unsigned rx_channels )
       : _cfg(cfg)
-        , _rlc(rlc)
-        , _phy(phy)
-        , _rest(rest)
-        , mch_mac_msg(20, log_h) {}
+      , _rlc(rlc)
+      , _phy(phy)
+      , _rest(rest)
+      , mch_mac_msg(20, log_h)
+      , _rx_channels(rx_channels)
+      {}
 
     /**
      *  Default destructor.
@@ -148,6 +150,8 @@ class MbsfnFrameProcessor {
     std::mutex _mutex;
 
     RestHandler& _rest;
+
+    unsigned _rx_channels;
 
     static std::mutex _sched_stop_mutex;
     static std::map<uint8_t, uint16_t> _sched_stops;

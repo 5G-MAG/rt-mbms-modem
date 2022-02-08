@@ -245,8 +245,10 @@ auto main(int argc, char **argv) -> int {
   spdlog::info("5g-mag-rt modem v{}.{}.{} starting up", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
 
   // Init and tune the SDR
-  spdlog::info("Initialising SDR");
-  SdrReader sdr(cfg);
+  auto rx_channels = 1;
+  cfg.lookupValue("modem.sdr.rx_channels", rx_channels);
+  spdlog::info("Initialising SDR with {} RX channel(s)", rx_channels);
+  SdrReader sdr(cfg, rx_channels);
   if (arguments.list_sdr_devices) {
     sdr.enumerateDevices();
     exit(0);
@@ -315,9 +317,10 @@ auto main(int argc, char **argv) -> int {
   // Create the layer components: Phy, RLC, RRC and GW
   Phy phy(
       cfg,
-      std::bind(&SdrReader::getSamples, &sdr, _1, _2, _3),  // NOLINT
+      std::bind(&SdrReader::get_samples, &sdr, _1, _2, _3),  // NOLINT
       arguments.file_bw ? arguments.file_bw * 5 : 25,
-      arguments.override_nof_prb);
+      arguments.override_nof_prb,
+      rx_channels);
 
   phy.init();
 
@@ -361,7 +364,7 @@ auto main(int argc, char **argv) -> int {
   RestHandler rest_handler(cfg, uri, state, sdr, phy, set_params);
 
   // Initialize one CAS and thered_cnt MBSFN frame processors
-  CasFrameProcessor cas_processor(cfg, phy, rlc, rest_handler);
+  CasFrameProcessor cas_processor(cfg, phy, rlc, rest_handler, rx_channels);
   if (!cas_processor.init()) {
     spdlog::error("Failed to create CAS processor. Exiting.");
     exit(1);
@@ -369,7 +372,7 @@ auto main(int argc, char **argv) -> int {
 
   std::vector<MbsfnFrameProcessor*> mbsfn_processors;
   for (int i = 0; i < thread_cnt; i++) {
-    auto p = new MbsfnFrameProcessor(cfg, rlc, phy, mac_log, rest_handler);
+    auto p = new MbsfnFrameProcessor(cfg, rlc, phy, mac_log, rest_handler, rx_channels);
     if (!p->init()) {
       spdlog::error("Failed to create MBSFN processor. Exiting.");
       exit(1);
@@ -428,6 +431,8 @@ auto main(int argc, char **argv) -> int {
 
           bandwidth = (cas_nof_prb * 200000) * 1.2;
           sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
+
+
           sdr.start();
         }
         spdlog::debug("Synchronizing subframe");
@@ -457,7 +462,7 @@ auto main(int argc, char **argv) -> int {
         // We're locked on to the cell, and have succesfully received the MIB at the target sample rate.
         spdlog::info("Decoded MIB at target sample rate, TTI is {}. Subframe synchronized.", phy.tti());
 
-        // Set the cell parameters in the CAS and MBSFN processors
+        // Set the cell parameters in the CAS processor
         cas_processor.set_cell(phy.cell());
 
         for (int i = 0; i < thread_cnt; i++) {
@@ -485,14 +490,13 @@ auto main(int argc, char **argv) -> int {
           // on a thread from the pool.
           if (!restart && phy.get_next_frame(cas_processor.rx_buffer(), cas_processor.rx_buffer_size())) {
             spdlog::debug("sending tti {} to regular processor", tti);
-            pool.push([ObjectPtr = &cas_processor, tti] {
-                ObjectPtr->process(tti);
+            pool.push([ObjectPtr = &cas_processor, tti, &rest_handler] {
+                if (ObjectPtr->process(tti)) {
+                // Set constellation diagram data and rx params for CAS in the REST API handler
+                rest_handler.add_cinr_value(ObjectPtr->cinr_db());
+                }
                 });
 
-            // Set constellation diagram data and rx params for CAS in the REST API handler
-            rest_handler._ce_values = std::move(cas_processor.ce_values());
-            rest_handler._pdsch.SetData(cas_processor.pdsch_data());
-            rest_handler.add_cinr_value(cas_processor.cinr_db());
 
             if (phy.nof_mbsfn_prb() != mbsfn_nof_prb)
             {
@@ -509,13 +513,13 @@ auto main(int argc, char **argv) -> int {
 
               bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
               sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
-              sdr.start();
 
               // ... configure the PHY and CAS processor to decode a narrow CAS and wider MBSFN, and move back to syncing state
               // after reconfiguring and restarting the SDR.
               phy.set_cell();
               cas_processor.set_cell(phy.cell());
 
+              sdr.start();
               spdlog::info("Synchronizing subframe after PRB extension");
               state = syncing;
             }
