@@ -307,8 +307,7 @@ auto Phy::is_cas_subframe(unsigned tti) -> bool
     return tti%40 == 0;
   } else {
     unsigned sfn = tti / 10;
-    //return (tti%10 == 0 || tti%10 == 5); 
-        return (sfn%8 == 0 && tti%10 == 5); 
+    return (tti%10 == 0 || tti%10 == 5); 
   }
 }
 
