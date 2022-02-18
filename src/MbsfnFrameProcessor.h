@@ -24,13 +24,13 @@
 #include <thread>
 #include <vector>
 #include <map>
+#include "srsran/srsran.h"
+#include "srsran/rlc/rlc.h"
+#include "srsran/upper/pdcp.h"
+#include "srsran/mac/pdu.h"
+#include <libconfig.h++>
 #include "Phy.h"
 #include "RestHandler.h"
-#include <libconfig.h++>
-#include "srslte/srslte.h"
-#include "srslte/upper/rlc.h"
-#include "srslte/upper/pdcp.h"
-#include "srslte/mac/pdu.h"
 
 /**
  *  Frame processor for MBSFN subframes. Handles the complete processing chain for
@@ -47,7 +47,7 @@ class MbsfnFrameProcessor {
      *  @param log_h srsLTE log handle for the MCH MAC msg decoder
      *  @param rest RESTful API handler reference
      */
-    MbsfnFrameProcessor(const libconfig::Config& cfg, srslte::rlc& rlc, Phy& phy, srslte::log_ref log_h, RestHandler& rest )
+    MbsfnFrameProcessor(const libconfig::Config& cfg, srsran::rlc& rlc, Phy& phy, srslog::basic_logger& log_h, RestHandler& rest )
       : _cfg(cfg)
         , _rlc(rlc)
         , _phy(phy)
@@ -78,7 +78,7 @@ class MbsfnFrameProcessor {
      * 
      *  @param cell The cell we're camping on
      */
-    void set_cell(srslte_cell_t cell);
+    void set_cell(srsran_cell_t cell);
 
     /**
      *  Get a handle of the signal buffer to store samples for processing in, 
@@ -98,7 +98,7 @@ class MbsfnFrameProcessor {
     /**
      *  Set MBSFN parameters: area ID and subcarrier spacing
      */
-    void configure_mbsfn(uint8_t area_id, srslte_scs_t subcarrier_spacing);
+    void configure_mbsfn(uint8_t area_id, srsran_scs_t subcarrier_spacing);
 
     /**
      *  Returns tru if MBSFN params have already been configured
@@ -124,27 +124,27 @@ class MbsfnFrameProcessor {
 
   private:
     const libconfig::Config& _cfg;
-    srslte::rlc& _rlc;
+    srsran::rlc& _rlc;
     Phy& _phy;
 
-    srslte_cell_t _cell;
+    srsran_cell_t _cell;
 
-    cf_t*    _signal_buffer_rx[SRSLTE_MAX_PORTS] = {};
+    cf_t*    _signal_buffer_rx[SRSRAN_MAX_PORTS] = {};
     uint32_t _signal_buffer_max_samples          = 0;
 
-    static const uint32_t  _payload_buffer_sz = SRSLTE_MAX_BUFFER_SIZE_BYTES;
+    static const uint32_t  _payload_buffer_sz = SRSRAN_MAX_BUFFER_SIZE_BYTES;
     uint8_t                _payload_buffer[_payload_buffer_sz];
-    srslte_softbuffer_rx_t _softbuffer;
+    srsran_softbuffer_rx_t _softbuffer;
 
-    srslte_ue_dl_t     _ue_dl     = {};
-    srslte_ue_dl_cfg_t _ue_dl_cfg = {};
-    srslte_dl_sf_cfg_t _sf_cfg = {};
-    srslte_pmch_cfg_t  _pmch_cfg  = {};
+    srsran_ue_dl_t     _ue_dl     = {};
+    srsran_ue_dl_cfg_t _ue_dl_cfg = {};
+    srsran_dl_sf_cfg_t _sf_cfg = {};
+    srsran_pmch_cfg_t  _pmch_cfg  = {};
 
     uint8_t _area_id = 1;
     bool _mbsfn_configured = false;
 
-    srslte::mch_pdu mch_mac_msg;
+    srsran::mch_pdu mch_mac_msg;
     std::mutex _mutex;
 
     RestHandler& _rest;

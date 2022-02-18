@@ -19,18 +19,21 @@
 
 #include "Rrc.h"
 #include "spdlog/spdlog.h"
-#include "srslte/asn1/rrc_asn1_utils.h"
+#include "srsran/asn1/rrc_utils.h"
 
 using asn1::rrc::mcch_msg_type_c;
 using asn1::rrc::bcch_dl_sch_msg_mbms_s;
+using asn1::rrc::bcch_dl_sch_msg_s;
 using asn1::rrc::bcch_dl_sch_msg_type_mbms_r14_c;
 using asn1::rrc::sib_type1_mbms_r14_s;
 using asn1::rrc::sib_type_mbms_r14_e;
 using asn1::rrc::sched_info_mbms_r14_s;
+using asn1::rrc::sys_info_r8_ies_s;
+using asn1::rrc::sib_info_item_c;
 
-void Rrc::write_pdu_mch(uint32_t /*lcid*/, srslte::unique_byte_buffer_t pdu) {
+void Rrc::write_pdu_mch(uint32_t /*lcid*/, srsran::unique_byte_buffer_t pdu) {
   spdlog::trace("rrc: write_pdu_mch");
-  if (pdu->N_bytes <= 0 || pdu->N_bytes >= SRSLTE_MAX_BUFFER_SIZE_BITS) {
+  if (pdu->N_bytes <= 0 || pdu->N_bytes >= SRSRAN_MAX_BUFFER_SIZE_BITS) {
     return;
   }
   asn1::cbit_ref bref(pdu->msg, pdu->N_bytes);
@@ -44,14 +47,14 @@ void Rrc::write_pdu_mch(uint32_t /*lcid*/, srslte::unique_byte_buffer_t pdu) {
   msg.to_json(json_writer);
   spdlog::debug("BCCH-DLSCH message content:\n{}", json_writer.to_string());
 
-  srslte::mcch_msg_t mcch = srslte::make_mcch_msg(msg);
+  srsran::mcch_msg_t mcch = srsran::make_mcch_msg(msg);
 
   // add bearers for all LCIDs
   for (uint32_t i = 0; i < mcch.nof_pmch_info; i++) {
     for (uint32_t j = 0; j < mcch.pmch_info_list[i].nof_mbms_session_info; j++) {
       uint32_t lcid = mcch.pmch_info_list[i].mbms_session_info_list[j].lc_ch_id;
-      if (!_rlc.has_bearer_mrb(lcid)) {
-        _rlc.add_bearer_mrb(lcid);
+      if (!_rlc.has_bearer_mrb(i, lcid)) {
+        _rlc.add_bearer_mrb(i, lcid);
       }
     }
   }
@@ -61,7 +64,7 @@ void Rrc::write_pdu_mch(uint32_t /*lcid*/, srslte::unique_byte_buffer_t pdu) {
   _state = STREAMING;
 }
 
-void Rrc::write_pdu_bcch_dlsch(srslte::unique_byte_buffer_t pdu) {
+void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
   // Stop BCCH search after successful reception of 1 BCCH block
   // mac->bcch_stop_rx();
 
@@ -70,17 +73,48 @@ void Rrc::write_pdu_bcch_dlsch(srslte::unique_byte_buffer_t pdu) {
   asn1::SRSASN_CODE err = dlsch_msg.unpack(dlsch_bref);
 
   if (err != asn1::SRSASN_SUCCESS || dlsch_msg.msg.type().value != bcch_dl_sch_msg_type_mbms_r14_c::types_opts::c1) {
-    spdlog::error("Could not unpack BCCH DL-SCH message ({} B).", pdu->N_bytes);
+    spdlog::debug("Could not unpack BCCH DL-SCH MBMS message ({} B), trying as BCCH DL-SCH.", pdu->N_bytes);
+
+    bcch_dl_sch_msg_s dlsch_msg1;
+    asn1::cbit_ref    dlsch_bref(pdu->msg, pdu->N_bytes);
+    asn1::SRSASN_CODE err = dlsch_msg1.unpack(dlsch_bref);
+
+    asn1::json_writer json_writer;
+    dlsch_msg1.to_json(json_writer);
+    spdlog::debug("BCCH-DLSCH message content:\n{}", json_writer.to_string());
     return;
   }
 
   asn1::json_writer json_writer;
   dlsch_msg.to_json(json_writer);
-  spdlog::debug("BCCH-DLSCH message content:\n{}", json_writer.to_string());
+  spdlog::debug("BCCH-DLSCH MBMS message content:\n{}", json_writer.to_string());
 
   if (dlsch_msg.msg.c1().type() == bcch_dl_sch_msg_type_mbms_r14_c::c1_c_::types::sib_type1_mbms_r14) {
     spdlog::debug("Processing SIB1-MBMS (1/1)");
     handle_sib1(dlsch_msg.msg.c1().sib_type1_mbms_r14());
+  } else {
+    sys_info_r8_ies_s::sib_type_and_info_l_& sib_list =
+        dlsch_msg.msg.c1().sys_info_mbms_r14().crit_exts.sys_info_r8().sib_type_and_info;
+    for (auto& sib : sib_list) {
+      switch (sib.type().value) {
+        case sib_info_item_c::types::sib2:
+          spdlog::debug("Handling SIB2\n");
+          //handle_sib2();
+          break;
+        case sib_info_item_c::types::sib13_v920:
+          spdlog::debug("Handling SIB13\n");
+          _phy.set_mch_scheduling_info( srsran::make_sib13(sib.sib13_v920()));
+          if (!_rlc.has_bearer_mrb(0, 0)) {
+            _rlc.add_bearer_mrb(0, 0);
+          }
+          _phy.set_decode_mcch(true);
+          _state = ACQUIRE_AREA_CONFIG;
+          //handle_sib13();
+          break;
+        default:
+          spdlog::debug("SIB{} is not supported\n", sib.type().to_number());
+      }
+    }
   }
 }
 
@@ -97,9 +131,9 @@ void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1) {
     }
   }
 
-  _phy.set_mch_scheduling_info( srslte::make_sib13(sib1.sib_type13_r14));
-  if (!_rlc.has_bearer_mrb(0)) {
-    _rlc.add_bearer_mrb(0);
+  _phy.set_mch_scheduling_info( srsran::make_sib13(sib1.sib_type13_r14));
+  if (!_rlc.has_bearer_mrb(0, 0)) {
+    _rlc.add_bearer_mrb(0, 0);
   }
 
   _phy.set_decode_mcch(true);

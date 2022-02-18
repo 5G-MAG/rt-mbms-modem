@@ -45,9 +45,9 @@
 #include "spdlog/async.h"
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/syslog_sink.h"
-#include "srslte/srslte.h"
-#include "srslte/upper/pdcp.h"
-#include "srslte/upper/rlc.h"
+#include "srsran/srsran.h"
+#include "srsran/upper/pdcp.h"
+#include "srsran/rlc/rlc.h"
 #include "thread_pool.hpp"
 
 using libconfig::Config;
@@ -69,8 +69,8 @@ static struct argp_option options[] = {  // NOLINT
      "Log verbosity: 0 = trace, 1 = debug, 2 = info, 3 = warn, 4 = error, 5 = "
      "critical, 6 = none. Default: 2.",
      0},
-    {"srslte-log-level", 's', "LEVEL", 0,
-     "Log verbosity for srslte: 0 = debug, 1 = info, 2 = warn, 3 = error, 4 = "
+    {"srsran-log-level", 's', "LEVEL", 0,
+     "Log verbosity for srsran: 0 = debug, 1 = info, 2 = warn, 3 = error, 4 = "
      "none, Default: 4.",
      0},
     {"sample-file", 'f', "FILE", 0,
@@ -286,8 +286,8 @@ auto main(int argc, char **argv) -> int {
     exit(1);
   }
 
-  srslte_verbose = arguments.log_level == 1 ? 2 : 0;
-  srslte_use_standard_symbol_size(true);
+  set_srsran_verbose_level(arguments.log_level <= 1 ? SRSRAN_VERBOSE_DEBUG : SRSRAN_VERBOSE_NONE);
+  srsran_use_standard_symbol_size(true);
 
   // Create a thread pool for the frame processors
   unsigned thread_cnt = 4;
@@ -321,9 +321,9 @@ auto main(int argc, char **argv) -> int {
 
   phy.init();
 
-  srslte::pdcp pdcp(nullptr, "PDCP");
-  srslte::rlc rlc("RLC");
-  srslte::timer_handler timers;
+  srsran::pdcp pdcp(nullptr, "PDCP");
+  srsran::rlc rlc("RLC");
+  srsran::timer_handler timers;
 
   Rrc rrc(cfg, phy, rlc);
   Gw gw(cfg, phy);
@@ -332,23 +332,25 @@ auto main(int argc, char **argv) -> int {
   rlc.init(&pdcp, &rrc, &timers, 0 /* RB_ID_SRB0 */);
   pdcp.init(&rlc, &rrc,  &gw);
 
-  auto srs_level = srslte::LOG_LEVEL_WARNING;
+  auto srs_level = srslog::basic_levels::none;
   switch (arguments.srs_log_level) {
-    case 0: srs_level = srslte::LOG_LEVEL_DEBUG; break;
-    case 1: srs_level = srslte::LOG_LEVEL_INFO; break;
-    case 2: srs_level = srslte::LOG_LEVEL_WARNING; break;
-    case 3: srs_level = srslte::LOG_LEVEL_ERROR; break;
-    case 4: srs_level = srslte::LOG_LEVEL_NONE; break;
+    case 0: srs_level = srslog::basic_levels::debug; break;
+    case 1: srs_level = srslog::basic_levels::info; break;
+    case 2: srs_level = srslog::basic_levels::warning; break;
+    case 3: srs_level = srslog::basic_levels::error; break;
+    case 4: srs_level = srslog::basic_levels::none; break;
   }
 
   // Configure srsLTE logging
-  srslte::log_ref rlc_log = srslte::logmap::get("RLC");
-  rlc_log->set_level(srs_level);
-  rlc_log->set_hex_limit(128);
+ auto& mac_log = srslog::fetch_basic_logger("MAC", false);
+  mac_log.set_level(srs_level);
+ auto& phy_log = srslog::fetch_basic_logger("PHY", false);
+  phy_log.set_level(srs_level);
+ auto& rlc_log = srslog::fetch_basic_logger("RLC", false);
+  rlc_log.set_level(srs_level);
+ auto& asn1_log = srslog::fetch_basic_logger("ASN1", false);
+  asn1_log.set_level(srs_level);
 
-  srslte::log_ref mac_log = srslte::logmap::get("MAC");
-  mac_log->set_level(srs_level);
-  mac_log->set_hex_limit(128);
 
   state_t state = searching;
 
@@ -419,7 +421,7 @@ auto main(int argc, char **argv) -> int {
           phy.set_cell();
         } else {
           // When decoding from the air, configure the SDR accordingly
-          unsigned new_srate = srslte_sampling_freq_hz(cas_nof_prb);
+          unsigned new_srate = srsran_sampling_freq_hz(cas_nof_prb);
           spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
               phy.nr_prb() * 0.2);
           sdr.stop();
@@ -477,8 +479,8 @@ auto main(int argc, char **argv) -> int {
       int mb_idx = 0;
       while (state == processing) {
         tti = (tti + 1) % 10240; // Clamp the TTI
-        if (tti%40 == 0) { 
-          // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
+        unsigned sfn = tti / 10;
+        if (phy.is_cas_subframe(tti)) {
           // Get the samples from the SDR interface, hand them to a CAS processor, and start it
           // on a thread from the pool.
           if (!restart && phy.get_next_frame(cas_processor.rx_buffer(), cas_processor.rx_buffer_size())) {
@@ -500,7 +502,7 @@ auto main(int argc, char **argv) -> int {
               mbsfn_nof_prb = phy.nof_mbsfn_prb();
 
               // ...adjust the SDR's sample rate to fit the wider MBSFN bandwidth...
-              unsigned new_srate = srslte_sampling_freq_hz(mbsfn_nof_prb);
+              unsigned new_srate = srsran_sampling_freq_hz(mbsfn_nof_prb);
               spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
                   mbsfn_nof_prb * 0.2);
               sdr.stop();
@@ -536,14 +538,14 @@ auto main(int argc, char **argv) -> int {
           // Get the samples from the SDR interface, hand them to an MNSFN processor, and start it
           // on a thread from the pool. Getting the buffer pointer from the pool also locks this processor.
           if (!restart && phy.get_next_frame(mbsfn_processors[mb_idx]->get_rx_buffer_and_lock(), mbsfn_processors[mb_idx]->rx_buffer_size())) {
-            if (phy.mcch_configured()) {
+            if (phy.mcch_configured() && phy.is_mbsfn_subframe(tti)) {
               // If data frm SIB1/SIB13 has been received in CAS, configure the processors accordingly
               if (!mbsfn_processors[mb_idx]->mbsfn_configured()) {
-                srslte_scs_t scs;
+                srsran_scs_t scs = SRSRAN_SCS_15KHZ;
                 switch (phy.mbsfn_subcarrier_spacing()) {
-                  case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSLTE_SCS_15KHZ; break;
-                  case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSLTE_SCS_7KHZ5; break;
-                  case Phy::SubcarrierSpacing::df_1kHz25: scs = SRSLTE_SCS_1KHZ25; break;
+                  case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ; break;
+                  case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSRAN_SCS_7KHZ5; break;
+                  case Phy::SubcarrierSpacing::df_1kHz25: scs = SRSRAN_SCS_1KHZ25; break;
                 }
                 auto cell = phy.cell();
                 cell.nof_prb = cell.mbsfn_prb;

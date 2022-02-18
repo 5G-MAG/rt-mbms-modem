@@ -37,11 +37,11 @@ SdrReader:: ~SdrReader() {
   }
 
   if (_reading_from_file) {
-    srslte_filesource_free(&file_source);
+    srsran_filesource_free(&file_source);
   }
 
   if (_writing_to_file) {
-    srslte_filesink_free(&file_sink);
+    srsran_filesink_free(&file_sink);
   }
 }
 
@@ -65,9 +65,9 @@ void SdrReader::enumerateDevices()
 auto SdrReader::init(const std::string& device_args, const char* sample_file,
                          const char* write_sample_file) -> bool {
   if (sample_file != nullptr) {
-    if (0 == srslte_filesource_init(&file_source,
+    if (0 == srsran_filesource_init(&file_source,
                                     const_cast<char*>(sample_file),
-                                    SRSLTE_COMPLEX_FLOAT_BIN)) {
+                                    SRSRAN_COMPLEX_FLOAT_BIN)) {
       _reading_from_file = true;
     } else {
       spdlog::error("Could not open file {}", sample_file);
@@ -75,9 +75,9 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
     }
   } else {
     if (write_sample_file != nullptr) {
-      if (0 == srslte_filesink_init(&file_sink,
+      if (0 == srsran_filesink_init(&file_sink,
                                     const_cast<char*>(write_sample_file),
-                                    SRSLTE_COMPLEX_FLOAT_BIN)) {
+                                    SRSRAN_COMPLEX_FLOAT_BIN)) {
         _writing_to_file = true;
       } else {
         spdlog::error("Could not open file {}", write_sample_file);
@@ -225,7 +225,7 @@ void SdrReader::stop() {
 }
 
 void SdrReader::read() {
-  std::array<void*, SRSLTE_MAX_CHANNELS> radio_buffers = { nullptr };
+  std::array<void*, SRSRAN_MAX_CHANNELS> radio_buffers = { nullptr };
   while (_running) {
     int toRead = ceil(_sampleRate / 1000.0);
     if (_buffer.free_size() < toRead * sizeof(cf_t)) {
@@ -239,9 +239,9 @@ void SdrReader::read() {
         int64_t required_time_us = (1000000.0/_sampleRate) * toRead;
 
         radio_buffers[0] = _buffer.write_head();
-        read = srslte_filesource_read_multi(&file_source, radio_buffers.data(), toRead, 1);
+        read = srsran_filesource_read_multi(&file_source, radio_buffers.data(), toRead, 1);
         if ( read == 0 ) {
-          srslte_filesource_seek(&file_source, 0);
+          srsran_filesource_seek(&file_source, 0);
         }
 
         if (read> 0) {
@@ -261,7 +261,7 @@ void SdrReader::read() {
 
         if (read> 0) {
           if (_writing_to_file && _write_samples) {
-            srslte_filesink_write(&file_sink, _buffer.write_head(), read);
+            srsran_filesink_write(&file_sink, _buffer.write_head(), read);
           }
           _buffer.commit( read * sizeof(cf_t) );
         }
@@ -272,7 +272,7 @@ void SdrReader::read() {
 }
 
 auto SdrReader::getSamples(cf_t* data, uint32_t nsamples,
-                               srslte_timestamp_t *
+                               srsran_timestamp_t *
                                /*rx_time*/) -> int {
   std::chrono::steady_clock::time_point entered = {};
   entered = std::chrono::steady_clock::now();

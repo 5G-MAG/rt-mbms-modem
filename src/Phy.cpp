@@ -22,11 +22,12 @@
 #include <utility>
 #include <iomanip>
 
+#include "srsran/interfaces/rrc_interface_types.h"
+#include "srsran/asn1/rrc_utils.h"
 #include "spdlog/spdlog.h"
-#include "srslte/asn1/rrc_asn1_utils.h"
 
-static auto receive_callback(void* obj, cf_t* data[SRSLTE_MAX_CHANNELS],         // NOLINT
-                             uint32_t nsamples, srslte_timestamp_t* rx_time)
+static auto receive_callback(void* obj, cf_t* data[SRSRAN_MAX_CHANNELS],         // NOLINT
+                             uint32_t nsamples, srsran_timestamp_t* rx_time)
     -> int {
   return (static_cast<Phy*>(obj))->_sample_cb(data[0], nsamples, rx_time);       // NOLINT
 }
@@ -49,30 +50,35 @@ Phy::Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb,
 }
 
 Phy::~Phy() {
-  srslte_ue_sync_free(&_ue_sync);
+  srsran_ue_sync_free(&_ue_sync);
   free(_mib_buffer[0]);  // NOLINT
 }
 
 auto Phy::synchronize_subframe() -> bool {
 
-  int ret = srslte_ue_sync_zerocopy(&_ue_sync, _mib_buffer, _buffer_max_samples);  // NOLINT
+  int ret = srsran_ue_sync_zerocopy(&_ue_sync, _mib_buffer, _buffer_max_samples);  // NOLINT
   if (ret < 0) {
     spdlog::error("SYNC:  Error calling ue_sync_get_buffer.\n");
     return false;
   }
 
   if (ret == 1) {
-    std::array<uint8_t, SRSLTE_BCH_PAYLOAD_LEN> bch_payload = {};
-    if (srslte_ue_sync_get_sfidx(&_ue_sync) == 0) {
+    std::array<uint8_t, SRSRAN_BCH_PAYLOAD_LEN> bch_payload = {};
+    if (srsran_ue_sync_get_sfidx(&_ue_sync) == 0) {
       int sfn_offset = 0;
       int n =
-          srslte_ue_mib_decode(&_mib, bch_payload.data(), nullptr, &sfn_offset);
+          srsran_ue_mib_decode(&_mib, bch_payload.data(), nullptr, &sfn_offset);
       if (n == 1) {
         uint32_t sfn = 0;
-        srslte_pbch_mib_mbms_unpack(bch_payload.data(), &_cell, &sfn, nullptr,
-                                    _override_nof_prb);
-        sfn = (sfn + sfn_offset * kSfnOffset) % kMaxSfn;
-        _tti = sfn * kSubframesPerFrame;
+        if (_cell.mbms_dedicated) {
+          srsran_pbch_mib_mbms_unpack(bch_payload.data(), &_cell, &sfn, nullptr,
+              _override_nof_prb);
+          sfn = (sfn + sfn_offset * kSfnOffset) % kMaxSfn;
+        } else {
+          srsran_pbch_mib_unpack(bch_payload.data(), &_cell, &sfn);
+          sfn = (sfn + sfn_offset) % kMaxSfn;
+        }
+        _tti =  sfn * kSubframesPerFrame;
         return true;
       }
     }
@@ -81,10 +87,10 @@ auto Phy::synchronize_subframe() -> bool {
 }
 
 auto Phy::cell_search() -> bool {
-  std::array<srslte_ue_cellsearch_result_t, kMaxCellsToDiscover> found_cells = {0};
+  std::array<srsran_ue_cellsearch_result_t, kMaxCellsToDiscover> found_cells = {0};
 
   uint32_t max_peak_cell = 0;
-  int ret = srslte_ue_cellsearch_scan(&_cell_search, found_cells.data(), &max_peak_cell);
+  int ret = srsran_ue_cellsearch_scan(&_cell_search, found_cells.data(), &max_peak_cell);
   if (ret < 0) {
     spdlog::error("Phy: Error decoding MIB: Error searching PSS\n");
     return false;
@@ -94,40 +100,61 @@ auto Phy::cell_search() -> bool {
     return false;
   }
 
-  srslte_cell_t new_cell = {};
+  srsran_cell_t new_cell = {};
   new_cell.id         = found_cells.at(max_peak_cell).cell_id;
   new_cell.cp         = found_cells.at(max_peak_cell).cp;
   new_cell.frame_type = found_cells.at(max_peak_cell).frame_type;
-  new_cell.mbms_dedicated = true;
   float cfo           = found_cells.at(max_peak_cell).cfo;
 
   spdlog::info("Phy: PSS/SSS detected: Mode {}, PCI {}, CFO {} KHz, CP {}",
                new_cell.frame_type != 0U ? "TDD" : "FDD", new_cell.id,
-               cfo / 1000, srslte_cp_string(new_cell.cp));
+               cfo / 1000, srsran_cp_string(new_cell.cp));
 
-  if (srslte_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
+
+
+  std::array<uint8_t, SRSRAN_BCH_PAYLOAD_LEN> bch_payload = {};
+  /* Find and decode MIB */
+  int sfn_offset = 0;
+
+  // Try to decode MIB-MBMS
+  new_cell.mbms_dedicated = true;
+  if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
     spdlog::error("Phy: Error setting UE MIB sync cell");
     return false;
   }
+  srsran_ue_sync_reset(&_mib_sync.ue_sync);
+  ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, 40, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
 
-  srslte_ue_sync_reset(&_mib_sync.ue_sync);
+  if (!ret) { // MIB-MBMS failed, try to decode regular MIB
+    init();
+    new_cell.mbms_dedicated = false;
+    if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
+      spdlog::error("Phy: Error setting UE MIB sync cell");
+      return false;
+    }
+    srsran_ue_sync_reset(&_mib_sync.ue_sync);
+    ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, 40, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
+  }
 
-  std::array<uint8_t, SRSLTE_BCH_PAYLOAD_LEN> bch_payload = {};
-  /* Find and decode MIB */
-  int sfn_offset = 0;
-  ret = srslte_ue_mib_sync_decode_prb(&_mib_sync, 40, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
   if (ret == 1) {
     uint32_t sfn = 0;
-    srslte_pbch_mib_mbms_unpack(bch_payload.data(), &new_cell, &sfn, nullptr,
-                                _override_nof_prb);
+
+    if (new_cell.mbms_dedicated) {
+      srsran_pbch_mib_mbms_unpack(bch_payload.data(), &new_cell, &sfn, nullptr,
+          _override_nof_prb);
+    } else {
+      srsran_pbch_mib_unpack(bch_payload.data(), &new_cell, &sfn);
+    }
+    sfn = (sfn + sfn_offset) % 1024;
 
     spdlog::info(
-        "Phy: MIB Decoded. Mode {}, PCI {}, PRB {}, Ports {}, CFO {} KHz, SFN "
-        "{}\n",
+        "Phy: MIB Decoded. {} cell, Mode {}, PCI {}, PRB {}, Ports {}, CFO {} KHz, SFN "
+        "{}, sfn_offset {}\n",
+        new_cell.mbms_dedicated ? "MBMS dedicated" : "MBMS/Unicast mixed",
         new_cell.frame_type != 0u ? "TDD" : "FDD", new_cell.id,
-        new_cell.nof_prb, new_cell.nof_ports, cfo / 1000, sfn);
+        new_cell.nof_prb, new_cell.nof_ports, cfo / 1000, sfn, sfn_offset);
 
-    if (!srslte_cell_isvalid(&new_cell)) {
+    if (!srsran_cell_isvalid(&new_cell)) {
       spdlog::error("SYNC:  Detected invalid cell.\n");
       return false;
     }
@@ -135,11 +162,11 @@ auto Phy::cell_search() -> bool {
     _cell = new_cell;
     _cell.mbsfn_prb = _cell.nof_prb;
 
-    if (srslte_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
+    if (srsran_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
       spdlog::error("Phy: failed to set cell.\n");
       return false;
     }
-    if (srslte_ue_mib_set_cell(&_mib, cell()) != 0) {
+    if (srsran_ue_mib_set_cell(&_mib, cell()) != 0) {
       spdlog::error("Phy: Error setting UE MIB cell");
       return false;
     }
@@ -152,35 +179,35 @@ auto Phy::cell_search() -> bool {
 }
 
 auto Phy::set_cell() -> void {
-    if (srslte_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
+    if (srsran_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
       spdlog::error("Phy: failed to set cell.\n");
     }
-    if (srslte_ue_mib_set_cell(&_mib, cell()) != 0) {
+    if (srsran_ue_mib_set_cell(&_mib, cell()) != 0) {
       spdlog::error("Phy: Error setting UE MIB cell");
     }
 }
 
 auto Phy::init() -> bool {
-  if (srslte_ue_cellsearch_init_multi_prb_cp(&_cell_search, 8, receive_callback, 1,
+  if (srsran_ue_cellsearch_init_multi_prb_cp(&_cell_search, 8, receive_callback, 1,
                                       this, _cs_nof_prb, true) != 0) {
     spdlog::error("Phy: error while initiating UE cell search\n");
     return false;
   }
-  srslte_ue_cellsearch_set_nof_valid_frames(&_cell_search, 4);
+  srsran_ue_cellsearch_set_nof_valid_frames(&_cell_search, 4);
 
-  if (srslte_ue_sync_init_multi(&_ue_sync, MAX_PRB, false, receive_callback, 1,
+  if (srsran_ue_sync_init_multi(&_ue_sync, MAX_PRB, false, receive_callback, 1,
                                 this) != 0) {
     spdlog::error("Cannot init ue_sync");
     return false;
   }
 
-  if (srslte_ue_mib_sync_init_multi_prb(&_mib_sync, receive_callback, 1, this,
+  if (srsran_ue_mib_sync_init_multi_prb(&_mib_sync, receive_callback, 1, this,
                                     _cs_nof_prb) != 0) {
     spdlog::error("Cannot init ue_mib_sync");
     return false;
   }
 
-  if (srslte_ue_mib_init(&_mib, _mib_buffer[0], 50) != 0) {
+  if (srsran_ue_mib_init(&_mib, _mib_buffer[0], 50) != 0) {
     spdlog::error("Cannot init ue_mib");
     return false;
   }
@@ -189,10 +216,10 @@ auto Phy::init() -> bool {
 }
 
 auto Phy::get_next_frame(cf_t** buffer, uint32_t size) -> bool {
-  return 1 == srslte_ue_sync_zerocopy(&_ue_sync, buffer, size);
+  return 1 == srsran_ue_sync_zerocopy(&_ue_sync, buffer, size);
 }
 
-void Phy::set_mch_scheduling_info(const srslte::sib13_t& sib13) {
+void Phy::set_mch_scheduling_info(const srsran::sib13_t& sib13) {
   if (sib13.nof_mbsfn_area_info > 1) {
     spdlog::warn("SIB13 has {} MBSFN area info elements - only 1 supported", sib13.nof_mbsfn_area_info);
   }
@@ -228,7 +255,7 @@ void Phy::set_mch_scheduling_info(const srslte::sib13_t& sib13) {
   }
 }
 
-void Phy::set_mbsfn_config(const srslte::mcch_msg_t& mcch) {
+void Phy::set_mbsfn_config(const srsran::mcch_msg_t& mcch) {
   _mcch = mcch;
   _mch_configured = true;
 
@@ -263,7 +290,7 @@ void Phy::set_mbsfn_config(const srslte::mcch_msg_t& mcch) {
          _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mnc[1] << 4 | _mcch.pmch_info_list[i].mbms_session_info_list[j].tmgi.plmn_id.explicit_value.mnc[0]
          );
       mtch_info.tmgi = tmgi;
-      mtch_info.dest = _dests[mch_info.mcs][mtch_info.lcid];
+      mtch_info.dest = _dests[i][mtch_info.lcid];
       mch_info.mtchs.push_back(mtch_info);
     }
 
@@ -271,9 +298,30 @@ void Phy::set_mbsfn_config(const srslte::mcch_msg_t& mcch) {
   }
 }
 
+auto Phy::is_cas_subframe(unsigned tti) -> bool
+{
+  if (_cell.mbms_dedicated) {
+    // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
+    return tti%40 == 0;
+  } else {
+    return (tti%10 == 0 || tti%10 == 5); 
+        //if (sfn%8 == 0 && (tti%10 == 0 || tti%10 == 5)) { 
+  }
+}
+
+auto Phy::is_mbsfn_subframe(unsigned tti) -> bool
+{
+  if (_cell.mbms_dedicated) {
+    // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
+    return !is_cas_subframe(tti);
+  } else {
+    return !is_cas_subframe(tti) &&
+      (tti%10 == 1 || tti%10 == 2 || tti%10 == 3 || tti%10 == 6 || tti%10 == 7 || tti%10 == 8);
+  }
+}
 auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
-    -> srslte_mbsfn_cfg_t {
-  srslte_mbsfn_cfg_t cfg;
+    -> srsran_mbsfn_cfg_t {
+  srsran_mbsfn_cfg_t cfg;
   cfg.enable                  = false;
   cfg.is_mcch                 = false;
 
@@ -286,7 +334,7 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
   uint32_t sfn = tti / 10;
   uint8_t sf = tti % 10;
 
-  srslte::mbsfn_area_info_t& area_info = _sib13.mbsfn_area_info_list[0];
+  srsran::mbsfn_area_info_t& area_info = _sib13.mbsfn_area_info_list[0];
 
   cfg.mbsfn_area_id = area_info.mbsfn_area_id;
   cfg.non_mbsfn_region_length = enum_to_number(area_info.non_mbsfn_region_len);
@@ -299,24 +347,31 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
       cfg.enable                  = true;
       cfg.is_mcch                 = true;
     }
+  } else if (sfn % enum_to_number(area_info.mcch_cfg.mcch_repeat_period) == area_info.mcch_cfg.mcch_offset &&
+      sf == 1) {
+      cfg.mbsfn_mcs               = enum_to_number(area_info.mcch_cfg.sig_mcs);
+      cfg.enable                  = true;
+      cfg.is_mcch                 = false;
   } else {
     if (_mch_configured) {
       cfg.mbsfn_area_id = area_info.mbsfn_area_id;
 
       for (uint32_t i = 0; i < _mcch.nof_pmch_info; i++) {
         unsigned fn_in_scheduling_period =  sfn % enum_to_number(_mcch.pmch_info_list[i].mch_sched_period);
-        unsigned sf_idx = fn_in_scheduling_period * 10 + sf - (fn_in_scheduling_period / 4) - 1;
+        unsigned sf_idx = fn_in_scheduling_period * 10 + sf 
+          - (fn_in_scheduling_period / 4) // minus 1 CAS SF per 4 SFNs 
+          - 1; // minus 1 MCCH SF per scheduling period;
 
-        spdlog::debug("tti {}, fn_in_ {}, sf_idx {}", tti, fn_in_scheduling_period,  sf_idx);
+        spdlog::debug("i {}, tti {}, fn_in_ {}, sf_idx {}", i, tti, fn_in_scheduling_period,  sf_idx);
 
         if (sf_idx <= _mcch.pmch_info_list[i].sf_alloc_end) {
           area = i;
           if ((i == 0 && fn_in_scheduling_period == 0 && sf == 1) ||
               (i > 0 && _mcch.pmch_info_list[i-1].sf_alloc_end + 1 == sf_idx)) {
-            spdlog::debug("assigning sig_mcs {}",  area_info.mcch_cfg.sig_mcs);
+            spdlog::debug("assigning sig_mcs {}, mch_idx is {}",  area_info.mcch_cfg.sig_mcs, area);
             cfg.mbsfn_mcs = enum_to_number(area_info.mcch_cfg.sig_mcs);
           } else {
-            spdlog::debug("assigning pmch_mcs {}",  area_info.mcch_cfg.sig_mcs);
+            spdlog::debug("assigning pmch_mcs {}, mch_idx is {}", _mcch.pmch_info_list[i].data_mcs, area);
             cfg.mbsfn_mcs = _mcch.pmch_info_list[i].data_mcs;
           }
           cfg.enable = true;
