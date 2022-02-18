@@ -25,7 +25,7 @@
 #include <thread>
 #include <cstdint>
 #include <libconfig.h++>
-#include "srslte/srslte.h"
+#include "srsran/srsran.h"
 
 /**
  *  Interface to the SDR stick.
@@ -94,7 +94,7 @@ class SdrReader {
      * @param nsamples sample count
      * @param rx_time unused
      */
-    int getSamples(cf_t* data, uint32_t nsamples, srslte_timestamp_t* rx_time);
+    int getSamples(cf_t* data, uint32_t nsamples, srsran_timestamp_t* rx_time);
 
     /**
      * Get current sample rate
@@ -166,8 +166,8 @@ class SdrReader {
 
     cf_t* _read_buffer;
 
-    srslte_filesource_t          file_source;
-    srslte_filesink_t          file_sink;
+    srsran_filesource_t          file_source;
+    srsran_filesink_t          file_sink;
 
     std::chrono::steady_clock::time_point _last_read;
 

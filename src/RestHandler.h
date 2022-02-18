@@ -23,9 +23,6 @@
 #include <map>
 #include <memory>
 #include <libconfig.h++>
-#include "srslte/srslte.h"
-#include "srslte/upper/rlc.h"
-#include "srslte/asn1/rrc_asn1.h"
 
 #include "SdrReader.h"
 #include "Phy.h"
