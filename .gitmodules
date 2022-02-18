@@ -1,4 +1,4 @@
 [submodule "lib/srsran"]
 	path = lib/srsran
-	url = ../srsRAN
-	branch = srsran-rebase
+	url = ../srsLTE
+	branch = fembms
