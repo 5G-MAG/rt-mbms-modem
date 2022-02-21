@@ -44,7 +44,7 @@ class Phy {
     /**
      *  Definition of the callback function used to fetch samples from the SDR
      */
-    typedef std::function<int(cf_t* data, uint32_t nsamples, srsran_timestamp_t* rx_time)> get_samples_t;
+    typedef std::function<int(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, srsran_timestamp_t* rx_time)> get_samples_t;
 
     /**
      *  Default constructor.
@@ -54,7 +54,7 @@ class Phy {
      *  @param cs_nof_prb  Nr of PRBs to use during cell search
      *  @param override_nof_prb  If set, overrides the nof PRB received in the MIB
      */
-    Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb, int8_t override_nof_prb);
+    Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb, int8_t override_nof_prb, uint8_t rx_channels);
     
     /**
      *  Default destructor.
@@ -239,4 +239,6 @@ class Phy {
     std::map< uint32_t, std::map< int, std::string >> _dests;
 
     int8_t _override_nof_prb;
+    uint8_t _rx_channels;
+    bool _search_extended_cp = true;
 };

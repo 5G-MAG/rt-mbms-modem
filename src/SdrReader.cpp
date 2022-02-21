@@ -85,8 +85,8 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
       }
     }
 
-    auto args = SoapySDR::KwargsFromString(device_args);
-    _sdr = SoapySDR::Device::make(args);
+    _device_args = SoapySDR::KwargsFromString(device_args);
+    _sdr = SoapySDR::Device::make(_device_args);
     if (_sdr == nullptr)
     {
       spdlog::error("SoapySDR: failed to open device with args {}", device_args);
@@ -95,37 +95,83 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
   }
 
   _cfg.lookupValue("modem.sdr.ringbuffer_size_ms", _buffer_ms);
-  unsigned int buffer_size = 16384/*15360*/ * _buffer_ms;
-      // at 10MHz BW / 15.36Mhz sample rate
-  int error = 0;
-  error = _buffer.initialize(sizeof(cf_t) * buffer_size);
-  if (error != 0) {
-    spdlog::error("Cannot allocate ringbuffer: {}", errno);
-    return false;
-  }
-  _buffer_ready = true;
   return true;
 }
 
+void SdrReader::init_buffer() {
+  auto buffer_size = (unsigned int)ceil(_sampleRate/1000.0 * _buffer_ms);
+  _buffer = std::make_unique<MultichannelRingbuffer>(sizeof(cf_t) * buffer_size, _rx_channels);
+  _buffer_ready = true;
+}
+
 void SdrReader::clear_buffer() {
-  _buffer.clear();
+  _buffer->clear();
   _high_watermark_reached = false;
 }
 
-auto SdrReader::setSampleRate(unsigned /*sample_rate*/) -> bool {
-  return _sdr != nullptr;
+auto SdrReader::set_antenna(const std::string& antenna, uint8_t idx) -> bool {
+  auto sdr = (SoapySDR::Device*)_sdr;
+  auto antenna_list = sdr->listAntennas(SOAPY_SDR_RX, idx);
+  if (std::find(antenna_list.begin(), antenna_list.end(), antenna) != antenna_list.end()) {
+    sdr->setAntenna( SOAPY_SDR_RX, idx, antenna);
+    _antenna = sdr->getAntenna( SOAPY_SDR_RX, idx);
+    return true;
+  } else {
+    spdlog::error("Unknown antenna \"{}\". Available: {}.", antenna, boost::algorithm::join(antenna_list, ", ") );
+    return false;
+  }
+}
+
+auto SdrReader::set_frequency(uint32_t frequency, uint8_t idx) -> bool {
+  auto sdr = (SoapySDR::Device*)_sdr;
+  sdr->setFrequency( SOAPY_SDR_RX, idx, frequency);
+  return true;
+}
+
+auto SdrReader::set_filter_bw(uint32_t bandwidth, uint8_t idx) -> bool {
+  auto sdr = (SoapySDR::Device*)_sdr;
+  sdr->setBandwidth( SOAPY_SDR_RX, idx, bandwidth);
+  return true;
+}
+
+auto SdrReader::set_sample_rate(uint32_t rate, uint8_t idx) -> bool {
+  auto sdr = (SoapySDR::Device*)_sdr;
+  sdr->setSampleRate( SOAPY_SDR_RX, idx, rate);
+  return true;
+}
+
+auto SdrReader::set_gain(bool use_agc, double gain, uint8_t idx) -> bool {
+  auto sdr = (SoapySDR::Device*)_sdr;
+  if (sdr->hasGainMode(SOAPY_SDR_RX, idx)) {
+//    spdlog::info("{} AGC", use_agc ? "Enabling" : "Disabling");
+    sdr->setGainMode(SOAPY_SDR_RX, idx, use_agc);
+  } else if (use_agc) {
+//    spdlog::info("AGC is not supported by this device, please set gain manually");
+  }
+  auto gain_range = sdr->getGainRange(SOAPY_SDR_RX, idx);
+  _min_gain = gain_range.minimum();
+  _max_gain = gain_range.maximum();
+  if (gain >= gain_range.minimum() && gain <= gain_range.maximum()) {
+    sdr->setGain( SOAPY_SDR_RX, idx, gain);
+    if (idx == 0) {
+      _gain = sdr->getGain( SOAPY_SDR_RX, idx);
+    }
+    return true;
+  } else {
+    spdlog::error("Invalid gain setting {}. Allowed range is: {} - {}.", gain, gain_range.minimum(), gain_range.maximum());
+    return false;
+  }
 }
 
 auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
     uint32_t bandwidth, double gain, const std::string& antenna) -> bool {
   _frequency = frequency;
   _filterBw = bandwidth;
+  _sampleRate = sample_rate;
 
-  _buffer.clear();
-  _high_watermark_reached = false;
+  init_buffer();
 
   if (_reading_from_file) {
-    _sampleRate = sample_rate;
     return true;
   }
 
@@ -138,33 +184,13 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
 
   auto sdr = (SoapySDR::Device*)_sdr;
 
-  auto antenna_list = sdr->listAntennas(SOAPY_SDR_RX, 0);
-  if (std::find(antenna_list.begin(), antenna_list.end(), antenna) != antenna_list.end()) {
-    sdr->setAntenna( SOAPY_SDR_RX, 0, antenna);
-    _antenna = sdr->getAntenna( SOAPY_SDR_RX, 0);
-  } else {
-    spdlog::error("Unknown antenna \"{}\". Available: {}.", antenna, boost::algorithm::join(antenna_list, ", ") );
-    return false;
+  for (auto ch = 0; ch < _rx_channels; ch++) {
+    set_antenna(antenna, ch);
+    set_gain(_use_agc, gain, ch);
+    set_frequency(frequency, ch);
+    set_filter_bw(bandwidth, ch);
+    set_sample_rate(sample_rate, ch);
   }
-
-  if (sdr->hasGainMode(SOAPY_SDR_RX, 0)) {
-    spdlog::info("Disabling AGC");
-    sdr->setGainMode(SOAPY_SDR_RX, 0, false);
-  }
-  auto gain_range = sdr->getGainRange(SOAPY_SDR_RX, 0);
-  _min_gain = gain_range.minimum();
-  _max_gain = gain_range.maximum();
-  if (gain >= gain_range.minimum() && gain <= gain_range.maximum()) {
-    sdr->setGain( SOAPY_SDR_RX, 0, gain);
-    _gain = sdr->getGain( SOAPY_SDR_RX, 0);
-  } else {
-    spdlog::error("Invalid gain setting {}. Allowed range is: {} - {}.", gain, gain_range.minimum(), gain_range.maximum());
-    return false;
-  }
-
-  sdr->setFrequency( SOAPY_SDR_RX, 0, frequency);
-  sdr->setBandwidth( SOAPY_SDR_RX, 0, bandwidth);
-  sdr->setSampleRate( SOAPY_SDR_RX, 0, sample_rate);
 
   _frequency = sdr->getFrequency( SOAPY_SDR_RX, 0);
   bandwidth = sdr->getBandwidth( SOAPY_SDR_RX, 0);
@@ -186,7 +212,11 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
 void SdrReader::start() {
   if (_sdr != nullptr) {
     auto sdr = (SoapySDR::Device*)_sdr;
-    _stream = sdr->setupStream( SOAPY_SDR_RX, SOAPY_SDR_CF32);
+    std::vector<size_t> channels(_rx_channels);
+    for (auto ch = 0; ch < _rx_channels; ch++) {
+      channels[ch] = ch;
+    }
+    _stream = sdr->setupStream( SOAPY_SDR_RX, SOAPY_SDR_CF32, channels, _device_args);
     if( _stream == nullptr)
     {
       spdlog::error("Failed to set up RX stream");
@@ -221,31 +251,36 @@ void SdrReader::stop() {
   }
 
   _readerThread.join();
-  _buffer.clear();
+  clear_buffer();
 }
 
 void SdrReader::read() {
   std::array<void*, SRSRAN_MAX_CHANNELS> radio_buffers = { nullptr };
   while (_running) {
     int toRead = ceil(_sampleRate / 1000.0);
-    if (_buffer.free_size() < toRead * sizeof(cf_t)) {
+    //int toRead = 254;
+    if (_buffer->free_size() < toRead * sizeof(cf_t)) {
       spdlog::debug("ringbuffer overflow");
       std::this_thread::sleep_for(std::chrono::microseconds(1000));
     } else {
       int read = 0;
+      size_t writeable = 0;
+      auto buffers = _buffer->write_head(&writeable);
+      int writeable_samples = (int)floor(writeable / sizeof(cf_t));
+
       if (_reading_from_file) {
         std::chrono::steady_clock::time_point entered = {};
         entered = std::chrono::steady_clock::now();
-        int64_t required_time_us = (1000000.0/_sampleRate) * toRead;
 
-        radio_buffers[0] = _buffer.write_head();
-        read = srsran_filesource_read_multi(&file_source, radio_buffers.data(), toRead, 1);
+        read = srsran_filesource_read_multi(&file_source, buffers.data(), std::min(writeable_samples, toRead), (int)_rx_channels);
         if ( read == 0 ) {
           srsran_filesource_seek(&file_source, 0);
         }
+        read = read / _rx_channels;
+        int64_t required_time_us = (1000000.0/_sampleRate) * read;
 
-        if (read> 0) {
-          _buffer.commit( read * sizeof(cf_t) );
+        if (read > 0) {
+          _buffer->commit( read * sizeof(cf_t) );
         }
 
         std::chrono::microseconds sleep = (std::chrono::microseconds(required_time_us) -
@@ -253,17 +288,22 @@ void SdrReader::read() {
         std::this_thread::sleep_for(sleep);
       } else {
         auto sdr = (SoapySDR::Device*)_sdr;
-        int flags;
-        long long time_ns;
-        void *buffs[] = {_buffer.write_head()}; // NOLINT
+        int flags = 0;
+        long long time_ns = 0;
 
-        read = sdr->readStream( (SoapySDR::Stream*)_stream, buffs, toRead, flags, time_ns);
+        read = sdr->readStream( (SoapySDR::Stream*)_stream, buffers.data(), std::min(writeable_samples, toRead), flags, time_ns);
+
 
         if (read> 0) {
           if (_writing_to_file && _write_samples) {
-            srsran_filesink_write(&file_sink, _buffer.write_head(), read);
+            srsran_filesink_write_multi(&file_sink, buffers.data(), read, (int)_rx_channels);
           }
-          _buffer.commit( read * sizeof(cf_t) );
+          _buffer->commit( read * sizeof(cf_t) );
+          spdlog::debug("buffer: commited {}, requested {}, writeable {}, flags {}", read, toRead, writeable_samples, flags);
+        }
+        else {
+          spdlog::error("readStream returned {}", read);
+          _buffer->commit(0);
         }
       }
     }
@@ -271,7 +311,7 @@ void SdrReader::read() {
   spdlog::debug("Sample reader thread exited");
 }
 
-auto SdrReader::getSamples(cf_t* data, uint32_t nsamples,
+auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, //NOLINT
                                srsran_timestamp_t *
                                /*rx_time*/) -> int {
   std::chrono::steady_clock::time_point entered = {};
@@ -280,29 +320,32 @@ auto SdrReader::getSamples(cf_t* data, uint32_t nsamples,
   int64_t required_time_us = (1000000.0/_sampleRate) * nsamples;
   size_t cnt = nsamples * sizeof(cf_t);
 
-  if (_high_watermark_reached &&  _buffer.size() < (_sampleRate / 1000.0) * 10 * sizeof(cf_t)) {
+  if (_high_watermark_reached &&  _buffer->used_size() < (_sampleRate / 1000.0) * 10 * sizeof(cf_t)) {
     _high_watermark_reached = false;
   }
 
   if (!_high_watermark_reached) {
-    spdlog::debug("size {}", _buffer.size() );
-    while (_buffer.size() < (_sampleRate / 1000.0) * (_buffer_ms / 2.0) * sizeof(cf_t)) {
+    while (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms / 2.0) * sizeof(cf_t)) {
       std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
     spdlog::debug("Filled ringbuffer to half capacity");
     _high_watermark_reached = true;
   }
 
-  memcpy(data, _buffer.read_head(), cnt);
-  _buffer.consume(cnt);
+  std::vector<char*> buffers(_rx_channels);
+  for (auto ch = 0; ch < _rx_channels; ch++) {
+    buffers[ch] = (char*)data[ch];
+  }
+  _buffer->read(buffers, cnt);
 
-  if (_buffer.size() < (_sampleRate / 1000.0) * (_buffer_ms / 2.0) * sizeof(cf_t)) {
+  if (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms / 4.0) * sizeof(cf_t)) {
     required_time_us += 500;
   } else {
     required_time_us -= 500;
   }
 
-  spdlog::debug("read {} samples, adjusted required {} us, delta {} us, sleep adj {},  sleeping for {} us",
+  spdlog::debug("took {}, read {} samples, adjusted required {} us, delta {} us, sleep adj {},  sleeping for {} us",
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - entered).count(),
       nsamples,
       std::chrono::microseconds(required_time_us).count(),
       std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - _last_read).count(),
@@ -320,4 +363,12 @@ auto SdrReader::getSamples(cf_t* data, uint32_t nsamples,
 
   _last_read = std::chrono::steady_clock::now();
   return 0;
+}
+
+auto SdrReader::get_buffer_level() -> double
+{ 
+  if (!_buffer_ready) { 
+    return 0; 
+  } 
+  return static_cast<double>(_buffer->used_size()) / static_cast<double>(_buffer->capacity()); 
 }

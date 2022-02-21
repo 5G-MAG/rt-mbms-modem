@@ -44,11 +44,13 @@ class CasFrameProcessor {
     *  @param rlc RLC reference
     *  @param rest RESTful API handler reference
     */
-   CasFrameProcessor(const libconfig::Config& cfg, Phy& phy, srsran::rlc& rlc, RestHandler& rest)
+   CasFrameProcessor(const libconfig::Config& cfg, Phy& phy, srsran::rlc& rlc, RestHandler& rest, unsigned rx_channels)
      : _cfg(cfg)
-       , _phy(phy)
-       , _rest(rest)
-       , _rlc(rlc) {}
+     , _phy(phy)
+     , _rest(rest)
+     , _rlc(rlc)
+     , _rx_channels(rx_channels)
+     {}
 
    /**
     *  Default destructor.
@@ -127,4 +129,5 @@ class CasFrameProcessor {
 
     srsran_cell_t _cell;
     std::mutex _mutex;
+    unsigned _rx_channels;
 };
