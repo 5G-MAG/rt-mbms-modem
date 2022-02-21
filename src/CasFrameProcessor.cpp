@@ -24,13 +24,15 @@
 auto CasFrameProcessor::init() -> bool {
   _signal_buffer_max_samples = 3 * SRSRAN_SF_LEN_PRB(MAX_PRB);
 
-  _signal_buffer_rx[0] = srsran_vec_cf_malloc(_signal_buffer_max_samples);
-  if (!_signal_buffer_rx[0]) {
-    spdlog::error("Could not allocate regular DL signal buffer\n");
-    return false;
+  for (auto ch = 0; ch < _rx_channels; ch++) {
+    _signal_buffer_rx[ch] = srsran_vec_cf_malloc(_signal_buffer_max_samples);
+    if (!_signal_buffer_rx[ch]) {
+      spdlog::error("Could not allocate regular DL signal buffer\n");
+      return false;
+    }
   }
 
-  if (srsran_ue_dl_init(&_ue_dl, _signal_buffer_rx, MAX_PRB, 1)) {
+  if (srsran_ue_dl_init(&_ue_dl, _signal_buffer_rx, MAX_PRB, _rx_channels)) {
     spdlog::error("Could not init ue_dl\n");
     return false;;
   }
@@ -139,9 +141,10 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       }
     }
 
+    _rest._pdsch.SetData(pdsch_data());
+
     // Decode PDSCH..
     auto ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
-      spdlog::debug("decode_pdsch returned {} \n", ret);
     if (ret) {
       spdlog::error("Error decoding PDSCH\n");
       _rest._pdsch.errors++;
