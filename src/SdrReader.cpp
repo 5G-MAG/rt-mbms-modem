@@ -164,10 +164,11 @@ auto SdrReader::set_gain(bool use_agc, double gain, uint8_t idx) -> bool {
 }
 
 auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
-    uint32_t bandwidth, double gain, const std::string& antenna) -> bool {
+    uint32_t bandwidth, double gain, const std::string& antenna, bool use_agc) -> bool {
   _frequency = frequency;
   _filterBw = bandwidth;
   _sampleRate = sample_rate;
+  _use_agc = use_agc;
 
   init_buffer();
 
