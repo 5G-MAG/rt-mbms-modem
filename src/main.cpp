@@ -170,6 +170,7 @@ static unsigned frequency = 667000000;  /**< Center freqeuncy the SDR is tuned t
 static uint32_t bandwidth = 10000000;   /**< Low pass filter bandwidth for the SDR */
 static double gain = 0.9;               /**< Overall system gain for the SDR */
 static std::string antenna = "LNAW";    /**< Antenna input to be used */
+static bool use_agc = false;
 
 static unsigned mbsfn_nof_prb = 0;
 static unsigned cas_nof_prb = 0;
@@ -282,8 +283,9 @@ auto main(int argc, char **argv) -> int {
 
   cfg.lookupValue("modem.sdr.normalized_gain", gain);
   cfg.lookupValue("modem.sdr.antenna", antenna);
+  cfg.lookupValue("modem.sdr.use_agc", use_agc);
 
-  if (!sdr.tune(frequency, sample_rate, bandwidth, gain, antenna)) {
+  if (!sdr.tune(frequency, sample_rate, bandwidth, gain, antenna, use_agc)) {
     spdlog::error("Failed to set initial center frequency. Exiting.");
     exit(1);
   }
@@ -399,13 +401,13 @@ auto main(int argc, char **argv) -> int {
       if (restart) {
         sdr.stop();
         sample_rate = search_sample_rate;  // sample rate for searching
-        sdr.tune(frequency, sample_rate, bandwidth, gain, antenna);
+        sdr.tune(frequency, sample_rate, bandwidth, gain, antenna, use_agc);
         sdr.start();
       }
 
       // We're at the search sample rate, and there's no point in creating a sample file. Stop the sample writer, if enabled.
       sdr.disableSampleFileWriting();
-      
+
       // In searching state, clear the receive buffer and try to find a cell at the configured frequency and synchronize with it
       restart = false;
       sdr.clear_buffer();
@@ -430,7 +432,7 @@ auto main(int argc, char **argv) -> int {
           sdr.stop();
 
           bandwidth = (cas_nof_prb * 200000) * 1.2;
-          sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
+          sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
 
 
           sdr.start();
@@ -443,7 +445,7 @@ auto main(int argc, char **argv) -> int {
       }
     } else if (state == syncing) {
       // In syncing state, we already know the cell we want to camp on, and the SDR is tuned to the required
-      // sample rate for its number of PRB / bandwidth. We now synchronize PSS/SSS and receive the MIB once again 
+      // sample rate for its number of PRB / bandwidth. We now synchronize PSS/SSS and receive the MIB once again
       // at this sample rate.
       unsigned max_frames = 200;
       bool sfn_sync = false;
@@ -502,7 +504,7 @@ auto main(int argc, char **argv) -> int {
             {
               // Handle the non-LTE bandwidths (6, 7 and 8 MHz). In these cases, CAS stays at the original bandwidth, but the MBSFN
               // portion of the frames can be wider. We need to...
-              
+
               mbsfn_nof_prb = phy.nof_mbsfn_prb();
 
               // ...adjust the SDR's sample rate to fit the wider MBSFN bandwidth...
@@ -512,7 +514,7 @@ auto main(int argc, char **argv) -> int {
               sdr.stop();
 
               bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
-              sdr.tune(frequency, new_srate, bandwidth, gain, antenna);
+              sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
 
               // ... configure the PHY and CAS processor to decode a narrow CAS and wider MBSFN, and move back to syncing state
               // after reconfiguring and restarting the SDR.
@@ -527,7 +529,7 @@ auto main(int argc, char **argv) -> int {
             // Failed to receive data, or sync lost. Go back to searching state.
             sdr.stop();
             sample_rate = search_sample_rate;  // sample rate for searching
-            sdr.tune(frequency, sample_rate, bandwidth, gain, antenna);
+            sdr.tune(frequency, sample_rate, bandwidth, gain, antenna, use_agc);
             sdr.start();
             rrc.reset();
             phy.reset();
@@ -569,7 +571,7 @@ auto main(int argc, char **argv) -> int {
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
             sdr.stop();
             sample_rate = search_sample_rate;  // sample rate for searching
-            sdr.tune(frequency, sample_rate, bandwidth, gain, antenna);
+            sdr.tune(frequency, sample_rate, bandwidth, gain, antenna, use_agc);
             sdr.start();
 
             state = searching;
