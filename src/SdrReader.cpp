@@ -164,10 +164,11 @@ auto SdrReader::set_gain(bool use_agc, double gain, uint8_t idx) -> bool {
 }
 
 auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
-    uint32_t bandwidth, double gain, const std::string& antenna) -> bool {
+    uint32_t bandwidth, double gain, const std::string& antenna, bool use_agc) -> bool {
   _frequency = frequency;
   _filterBw = bandwidth;
   _sampleRate = sample_rate;
+  _use_agc = use_agc;
 
   init_buffer();
 
@@ -179,8 +180,8 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
     return false;
   }
 
-  spdlog::info("Tuning to {} MHz, filter bandwidth {} MHz, sample rate {}, gain {}, antenna path {}",
-      frequency/1000000.0, bandwidth/1000000.0, sample_rate/1000000.0, gain, antenna);
+  spdlog::info("Tuning to {} MHz, filter bandwidth {} MHz, sample rate {}, gain {}, antenna path {} with AGC set to {}",
+      frequency/1000000.0, bandwidth/1000000.0, sample_rate/1000000.0, gain, antenna, use_agc);
 
   auto sdr = (SoapySDR::Device*)_sdr;
 
