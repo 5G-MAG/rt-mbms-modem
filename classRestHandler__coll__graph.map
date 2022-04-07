@@ -1,0 +1,6 @@
+<map id="RestHandler" name="RestHandler">
+<area shape="rect" id="node1" title="The RESTful API handler." alt="" coords="185,556,343,824"/>
+<area shape="rect" id="node2" href="$classSdrReader.html" title="Interface to the SDR stick." alt="" coords="5,5,155,479"/>
+<area shape="rect" id="node3" href="$classRestHandler_1_1ChannelInfo.html" title="RX Info pertaining to an SCH (MCCH/MCH or PDSCH)" alt="" coords="179,152,349,332"/>
+<area shape="rect" id="node4" href="$classPhy.html" title="The PHY component." alt="" coords="373,42,544,442"/>
+</map>

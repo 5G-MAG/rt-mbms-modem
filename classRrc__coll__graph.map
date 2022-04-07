@@ -1,0 +1,6 @@
+<map id="Rrc" name="Rrc">
+<area shape="rect" id="node1" title="Simple RRC component between PHY and RLC." alt="" coords="181,468,351,780"/>
+<area shape="rect" id="node2" title=" " alt="" coords="5,167,159,244"/>
+<area shape="rect" id="node3" title=" " alt="" coords="183,167,349,244"/>
+<area shape="rect" id="node4" href="$classPhy.html" title="The PHY component." alt="" coords="374,5,545,405"/>
+</map>

@@ -1,0 +1,5 @@
+<map id="Gw" name="Gw">
+<area shape="rect" id="node1" title="Network gateway component." alt="" coords="75,468,247,736"/>
+<area shape="rect" id="node2" title=" " alt="" coords="5,159,140,251"/>
+<area shape="rect" id="node3" href="$classPhy.html" title="The PHY component." alt="" coords="165,5,335,405"/>
+</map>
