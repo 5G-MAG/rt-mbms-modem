@@ -2,3 +2,7 @@
 	path = lib/srsran
 	url = ../srsRAN
 	branch = fembms
+[submodule "supporting_files/rt-common-shared"]
+	path = supporting_files/rt-common-shared
+	url = https://github.com/5G-MAG/rt-common-shared
+	branch = feature/mbms
