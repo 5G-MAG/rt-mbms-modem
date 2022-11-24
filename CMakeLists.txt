@@ -68,8 +68,8 @@ target_link_libraries( modem
 
 install(TARGETS modem)
 install(FILES supporting_files/5gmag-rt-modem.service DESTINATION /usr/lib/systemd/system)
-install(FILES supporting_files/5gmag-rt.conf DESTINATION /etc)
-install(FILES supporting_files/5gmag-rt DESTINATION /etc/default)
+install(FILES supporting_files/mbms/common-config/5gmag-rt.conf DESTINATION /etc)
+install(FILES supporting_files/mbms/common-config/5gmag-rt DESTINATION /etc/default)
 install(FILES supporting_files/pre_modem.sh DESTINATION /usr/share/5gmag-rt
   PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
   )
