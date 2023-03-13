@@ -150,6 +150,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       _rest._pdsch.errors++;
     } else {
       spdlog::debug("Decoded PDSCH");
+      _rest._pdsch.evm_rms = pdsch_res[0].evm; // evm of the first codeword
       for (int i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
         // .. and pass received PDUs to RLC for further processing
         if (pdsch_cfg->grant.tb[i].enabled && pdsch_res[i].crc) {

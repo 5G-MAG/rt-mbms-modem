@@ -80,6 +80,7 @@ class RestHandler {
         bool present = false;
         int mcs = 0;
         double ber;
+        float evm_rms = 0.0f;
         unsigned total = 1;
         unsigned errors = 0;
       private:

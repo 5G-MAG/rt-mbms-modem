@@ -591,18 +591,18 @@ auto main(int argc, char **argv) -> int {
           spdlog::info("CINR {:.2f} dB", rest_handler.cinr_db() );
           cols.push_back(std::to_string(rest_handler.cinr_db()));
 
-          spdlog::info("PDSCH: MCS {}, BLER {}, BER {}",
+          spdlog::info("PDSCH: MCS {}, BLER {}, EVM {}, CFO {}",
               rest_handler._pdsch.mcs,
               ((rest_handler._pdsch.errors * 1.0) / (rest_handler._pdsch.total * 1.0)),
-              rest_handler._pdsch.ber);
+              rest_handler._pdsch.evm_rms,
+              phy.cfo());
           cols.push_back(std::to_string(rest_handler._pdsch.mcs));
           cols.push_back(std::to_string(((rest_handler._pdsch.errors * 1.0) / (rest_handler._pdsch.total * 1.0))));
-          cols.push_back(std::to_string(rest_handler._pdsch.ber));
+          cols.push_back(std::to_string(rest_handler._pdsch.evm_rms));
 
-          spdlog::info("MCCH: MCS {}, BLER {}, BER {}",
+          spdlog::info("MCCH: MCS {}, BLER {}",
               rest_handler._mcch.mcs,
-              ((rest_handler._mcch.errors * 1.0) / (rest_handler._mcch.total * 1.0)),
-              rest_handler._mcch.ber);
+              ((rest_handler._mcch.errors * 1.0) / (rest_handler._mcch.total * 1.0)));
 
           cols.push_back(std::to_string(rest_handler._mcch.mcs));
           cols.push_back(std::to_string(((rest_handler._mcch.errors * 1.0) / (rest_handler._mcch.total * 1.0))));
@@ -611,15 +611,13 @@ auto main(int argc, char **argv) -> int {
           auto mch_info = phy.mch_info();
           int mch_idx = 0;
           std::for_each(std::begin(mch_info), std::end(mch_info), [&cols, &mch_idx, &rest_handler](Phy::mch_info_t const& mch) {
-              spdlog::info("MCH {}: MCS {}, BLER {}, BER {}",
+              spdlog::info("MCH {}: MCS {}, BLER {}",
                   mch_idx,
                   mch.mcs,
-                  (rest_handler._mch[mch_idx].errors * 1.0) / (rest_handler._mch[mch_idx].total * 1.0),
-                  rest_handler._mch[mch_idx].ber);
+                  (rest_handler._mch[mch_idx].errors * 1.0) / (rest_handler._mch[mch_idx].total * 1.0));
               cols.push_back(std::to_string(mch_idx));
               cols.push_back(std::to_string(mch.mcs));
               cols.push_back(std::to_string((rest_handler._mch[mch_idx].errors * 1.0) / (rest_handler._mch[mch_idx].total * 1.0)));
-              cols.push_back(std::to_string(rest_handler._mch[mch_idx].ber));
 
               int mtch_idx = 0;
               std::for_each(std::begin(mch.mtchs), std::end(mch.mtchs), [&mtch_idx](Phy::mtch_info_t const& mtch) {
