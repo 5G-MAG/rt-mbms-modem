@@ -217,6 +217,7 @@ void SdrReader::start() {
     for (auto ch = 0; ch < _rx_channels; ch++) {
       channels[ch] = ch;
     }
+    sdr->setHardwareTime(0); // Set SDR timestamp to zero.
     _stream = sdr->setupStream( SOAPY_SDR_RX, SOAPY_SDR_CF32, channels, _device_args);
     if( _stream == nullptr)
     {
@@ -224,7 +225,7 @@ void SdrReader::start() {
       SoapySDR::Device::unmake( sdr );
       return ;
     }
-    sdr->activateStream( (SoapySDR::Stream*)_stream, 0, 0, 0);
+    sdr->activateStream( (SoapySDR::Stream*)_stream, SOAPY_SDR_HAS_TIME, 4000000, 0); // Delayed start of the SDR reception, to avoid overfloas at the beggining.
   }
   _running = true;
 
@@ -245,13 +246,13 @@ void SdrReader::start() {
 void SdrReader::stop() {
   _running = false;
 
+  _readerThread.join();
   if (_sdr != nullptr) {
     auto sdr = (SoapySDR::Device*)_sdr;
     sdr->deactivateStream((SoapySDR::Stream*)_stream, 0, 0);
     sdr->closeStream((SoapySDR::Stream*)_stream);
   }
 
-  _readerThread.join();
   clear_buffer();
 }
 
