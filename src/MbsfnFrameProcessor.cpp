@@ -214,7 +214,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       _rest._mch[mch_idx].errors++;
     }
 
-    spdlog::warn("PMCH in TTI {} failed with CRC error", tti);
+    spdlog::trace("PMCH in TTI {} failed with CRC error", tti);
     _mutex.unlock();
     return -1;
   }
