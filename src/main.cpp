@@ -387,9 +387,9 @@ auto main(int argc, char **argv) -> int {
 
   uint32_t tti = 0;
 
-  uint32_t measurement_interval = 5;
-  cfg.lookupValue("modem.measurement_file.interval_secs", measurement_interval);
-  measurement_interval *= 1000;
+  float measurement_interval_f = 5;
+  cfg.lookupValue("modem.measurement_file.interval_secs", measurement_interval_f);
+  uint32_t measurement_interval = measurement_interval_f * 1000;
   uint32_t tick = 0;
 
   // Initial state: searching a cell
