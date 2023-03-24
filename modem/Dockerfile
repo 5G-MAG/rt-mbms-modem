@@ -14,7 +14,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y install \
   libmbedtls-dev libboost-all-dev libconfig++-dev libsctp-dev libfftw3-dev \
   vim \
   libcpprest-dev libusb-1.0-0-dev \
-  python-psutil python3-pip clang-tidy \
+  python3-pip python-psutil clang-tidy \
   gpsd gpsd-clients libgps-dev \
   cmake \
   uml-utilities
