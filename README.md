@@ -720,3 +720,7 @@ If you encounter segmentation faults in the rt-mbms-modem for higher bandwidths 
 - change #define CALCULATE_BER in line 34 to #undef CALCULATE_BER
 - rebuild (cd build; ninja)
 ````
+
+## Docker Implementation
+
+An easy to use docker Implentation is also available. Please check into the [wiki](https://github.com/5G-MAG/Documentation-and-Architecture/wiki/5G-MAG-Reference-Tools:-Docker-Implementation-of-MBMS-processes) page for a detailed description on how to run the processes in a docker container. 
