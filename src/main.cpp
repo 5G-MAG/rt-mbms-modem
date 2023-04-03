@@ -527,15 +527,13 @@ auto main(int argc, char **argv) -> int {
             }
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
-            sdr.stop();
             sample_rate = search_sample_rate;  // sample rate for searching
             sdr.tune(frequency, sample_rate, bandwidth, gain, antenna, use_agc);
             sdr.start();
             rrc.reset();
             phy.reset();
 
-            sleep(1);
-            state = searching;
+            state = syncing;
           }
         } else {
           // All other frames in FeMBMS dedicated mode are MBSFN frames.
@@ -569,15 +567,8 @@ auto main(int argc, char **argv) -> int {
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
-            sdr.stop();
-            sample_rate = search_sample_rate;  // sample rate for searching
-            sdr.tune(frequency, sample_rate, bandwidth, gain, antenna, use_agc);
-            sdr.start();
-
-            state = searching;
-            sleep(1);
-            rrc.reset();
-            phy.reset();
+            
+            state = syncing;
           }
           mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
         }
