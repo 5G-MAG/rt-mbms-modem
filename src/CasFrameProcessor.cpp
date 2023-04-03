@@ -52,11 +52,11 @@ auto CasFrameProcessor::init() -> bool {
   srsran_chest_dl_cfg_t* chest_cfg = &_ue_dl_cfg.chest_cfg;
   bzero(chest_cfg, sizeof(srsran_chest_dl_cfg_t));
   chest_cfg->filter_coef[0] = 4;
-  chest_cfg->filter_coef[1] = 1.0f;
+  chest_cfg->filter_coef[1] = 0.2f;
   chest_cfg->filter_type = SRSRAN_CHEST_FILTER_GAUSS;
   chest_cfg->noise_alg = SRSRAN_NOISE_ALG_EMPTY;
   chest_cfg->rsrp_neighbour       = false;
-  chest_cfg->sync_error_enable    = false;
+  chest_cfg->sync_error_enable    = true;
   chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_AVERAGE;
   chest_cfg->cfo_estimate_enable  = true;
   chest_cfg->cfo_estimate_sf_mask = 1023;

@@ -48,10 +48,10 @@ auto MbsfnFrameProcessor::init() -> bool {
   srsran_chest_dl_cfg_t* chest_cfg = &_ue_dl_cfg.chest_cfg;
   bzero(chest_cfg, sizeof(srsran_chest_dl_cfg_t));
   chest_cfg->filter_coef[0] = 0.1;
-  chest_cfg->filter_type = SRSRAN_CHEST_FILTER_TRIANGLE;
+  chest_cfg->filter_type = SRSRAN_CHEST_FILTER_NONE;
   chest_cfg->noise_alg = SRSRAN_NOISE_ALG_EMPTY;
   chest_cfg->rsrp_neighbour       = false;
-  chest_cfg->sync_error_enable    = false;
+  chest_cfg->sync_error_enable    = true;
   chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_INTERPOLATE;
   chest_cfg->cfo_estimate_enable  = false;
 
@@ -91,7 +91,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   _pmch_cfg.area_id = _area_id;
   srsran_mbsfn_cfg_t mbsfn_cfg = _phy.mbsfn_config_for_tti(tti, mch_idx);
   _ue_dl_cfg.chest_cfg.mbsfn_area_id = _area_id;
-  srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, mbsfn_cfg.mbsfn_area_id);
+  //srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, mbsfn_cfg.mbsfn_area_id);
 
   if (!_cell.mbms_dedicated) {
     srsran_ue_dl_set_non_mbsfn_region(&_ue_dl, mbsfn_cfg.non_mbsfn_region_length);

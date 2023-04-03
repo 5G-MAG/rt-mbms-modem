@@ -35,7 +35,7 @@
 #include "cpprest/containerstream.h"
 #include "cpprest/producerconsumerstream.h"
 
-const int CINR_RAVG_CNT = 100;
+const int CINR_RAVG_CNT = 8;
 typedef enum { searching, syncing, processing } state_t;
 
 /**
@@ -111,7 +111,7 @@ class RestHandler {
     /**
      *  Current CINR value
      */
-    float cinr_db() { return _cinr_db.size() ? (std::accumulate(_cinr_db.begin(), _cinr_db.end(), 0) / (_cinr_db.size() * 1.0)) : 0.0; };
+    float cinr_db() { return _cinr_db.size() ? (std::accumulate(_cinr_db.begin(), _cinr_db.end(), 0.0f) / (_cinr_db.size() * 1.0f)) : 0.0f; };
     void add_cinr_value( float cinr);
 
   private:
