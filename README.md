@@ -1,4 +1,4 @@
-# 5G-MAG Reference Tools: MBMS Modem
+# MBMS Modem
 
 This repository holds the MBMS Modem part of the 5G-MAG Reference Tools.
 
