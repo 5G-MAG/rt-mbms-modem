@@ -311,7 +311,7 @@ accordingly. Alternatively, you can run it with superuser rights (``sudo ./modem
 `` sudo setcap 'cap_sys_nice=eip' ./modem ``
 
 ### Adjust SDR configuration
-Follow the instructions in [Installing SDR Drivers](https://github.com/5G-MAG/rt-mbms-modem#21-installing-sdr-drivers) to adjust the configuration in `/etc/5gmag-rt.conf` for your SDR card.
+Follow the instructions in [Installing SDR Drivers](https://github.com/5G-MAG/rt-mbms-modem#install-sdr-drivers) to adjust the configuration in `/etc/5gmag-rt.conf` for your SDR card.
 
 ***
 
