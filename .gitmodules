@@ -1,6 +1,6 @@
 [submodule "lib/srsran"]
 	path = lib/srsran
-	url = ../srsRAN
+	url = ../srsRAN_4G
 	branch = fembms
 [submodule "supporting_files/rt-common-shared"]
 	path = supporting_files/rt-common-shared
