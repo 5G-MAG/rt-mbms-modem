@@ -1,8 +1,16 @@
-# 5G-MAG Reference Tools: MBMS Modem
+# MBMS Modem
 
 This repository holds the MBMS Modem part of the 5G-MAG Reference Tools.
 
 ## Introduction
+
+[]
+
+### Specifications
+
+A list of specification related to this repository is available in the [Standards Wiki](https://github.com/5G-MAG/Standards/wiki/MBMS-&-LTE-based-5G-Broadcast:-Relevant-Specifications).
+
+### About the implementation
 
 The *MBMS Modem* builds the lower part of the 5G-MAG Reference Tools. Its main task is to convert a 5G BC input signal (received as I/Q
 raw data from the SDR) to Multicast IP packets on the output. The *MBMS Modem* can run as background process or can
@@ -10,7 +18,7 @@ be started/stopped manually. Configuration can be done in the config file or via
 
 ![Architecture](https://github.com/5G-MAG/Documentation-and-Architecture/blob/main/media/architecture/5G-MAG%20RT%20Architecture%20Current%20Architecture%205G%20Media%20Client%20v8.drawio.png)
 
-## How it works
+This is how it works:
 
 The main components of the *MBMS Modem* are implemented as modules for a better overview and to easier improve
 parts later:
@@ -26,8 +34,6 @@ parts later:
 
 <img src="https://github.com/5G-MAG/Documentation-and-Architecture/blob/main/media/wiki/modules-rp.png">
 
-### The 5G-MAG Reference Tools use srsRAN as library
-
 The *MBMS Modem* is implemented as a standalone C++ application which uses some parts of
 the [srsRAN](https://github.com/srsran/srsRAN library. In order to use FeMBMS, functional extensions and adjustments in
 srsRAN are necessary:
@@ -41,8 +47,6 @@ srsRAN are necessary:
   39)
 * asn1: Support for subcarrier_spacing_mbms_r14
 
-### Further open source software
-
 A list of other used open source software components can be
 found [here](https://github.com/5G-MAG/rt-mbms-modem/blob/main/ATTRIBUTION_NOTICE).
 
@@ -52,7 +56,7 @@ found [here](https://github.com/5G-MAG/rt-mbms-modem/blob/main/ATTRIBUTION_NOTIC
 
 Your system needs to have some dependencies before installing 5gmag-rt-modem. Please install them by running the commands below:
 
-### Ubuntu 20.04 LTS
+On Ubuntu 20.04 LTS:
 ````
 sudo apt update
 sudo apt install ssh g++ git libboost-atomic-dev libboost-thread-dev libboost-system-dev libboost-date-time-dev libboost-regex-dev libboost-filesystem-dev libboost-random-dev libboost-chrono-dev libboost-serialization-dev libwebsocketpp-dev openssl libssl-dev ninja-build libspdlog-dev libmbedtls-dev libboost-all-dev libconfig++-dev libsctp-dev libfftw3-dev vim libcpprest-dev libusb-1.0-0-dev net-tools smcroute python-psutil python3-pip clang-tidy gpsd gpsd-clients libgps-dev
@@ -60,7 +64,7 @@ sudo snap install cmake --classic
 sudo pip3 install cpplint
 ````
 
-### Ubuntu 22.04 LTS
+On Ubuntu 22.04 LTS:
 ````
 sudo apt update
 sudo apt install ssh g++ git libboost-atomic-dev libboost-thread-dev libboost-system-dev libboost-date-time-dev libboost-regex-dev libboost-filesystem-dev libboost-random-dev libboost-chrono-dev libboost-serialization-dev libwebsocketpp-dev openssl libssl-dev ninja-build libspdlog-dev libmbedtls-dev libboost-all-dev libconfig++-dev libsctp-dev libfftw3-dev vim libcpprest-dev libusb-1.0-0-dev net-tools smcroute python3-pip clang-tidy gpsd gpsd-clients libgps-dev
@@ -157,7 +161,7 @@ Running ``apt search soapysdr-module`` lists all available modules.
 
 If you successfully (or unsuccessfully) try 5gmag-rt-modem with another SDR, please let us know! 
 
-## Testing SoapySDR installation
+### Testing SoapySDR installation
 
 Before continuing, please verify that your SDR is detected by running ``SoapySDRUtil --find``
 
@@ -307,7 +311,7 @@ accordingly. Alternatively, you can run it with superuser rights (``sudo ./modem
 `` sudo setcap 'cap_sys_nice=eip' ./modem ``
 
 ### Adjust SDR configuration
-Follow the instructions in [Installing SDR Drivers](https://github.com/5G-MAG/rt-mbms-modem#21-installing-sdr-drivers) to adjust the configuration in `/etc/5gmag-rt.conf` for your SDR card.
+Follow the instructions in [Installing SDR Drivers](https://github.com/5G-MAG/rt-mbms-modem#install-sdr-drivers) to adjust the configuration in `/etc/5gmag-rt.conf` for your SDR card.
 
 ***
 
