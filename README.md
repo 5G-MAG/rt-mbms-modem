@@ -1,6 +1,9 @@
-# 5G-MAG Reference Tools: MBMS Modem
-
-This repository holds the MBMS Modem part of the 5G-MAG Reference Tools.
+<h1 align="center">MBMS Modem</h1>
+<p align="center">
+  <img src="https://img.shields.io/badge/Status-Under_Development-yellow" alt="Under Development">
+  <img src="https://img.shields.io/github/v/tag/5G-MAG/rt-mbms-tx?label=version" alt="Version">
+  <img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License">
+</p>
 
 ## Introduction
 
@@ -10,7 +13,9 @@ be started/stopped manually. Configuration can be done in the config file or via
 
 ![Architecture](https://github.com/5G-MAG/Documentation-and-Architecture/blob/main/media/architecture/5G-MAG%20RT%20Architecture%20Current%20Architecture%205G%20Media%20Client%20v8.drawio.png)
 
-## How it works
+Additional information can be found at: https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/
+
+## About the implementation
 
 The main components of the *MBMS Modem* are implemented as modules for a better overview and to easier improve
 parts later:
@@ -26,8 +31,6 @@ parts later:
 
 <img src="https://github.com/5G-MAG/Documentation-and-Architecture/blob/main/media/wiki/modules-rp.png">
 
-### The 5G-MAG Reference Tools use srsRAN as library
-
 The *MBMS Modem* is implemented as a standalone C++ application which uses some parts of
 the [srsRAN](https://github.com/srsran/srsRAN library. In order to use FeMBMS, functional extensions and adjustments in
 srsRAN are necessary:
@@ -40,13 +43,6 @@ srsRAN are necessary:
 * phy/ue/: Dynamic selection of sample rate / number of PRB to support sample files and FeMBMS-Radioframestructure (1 +
   39)
 * asn1: Support for subcarrier_spacing_mbms_r14
-
-### Further open source software
-
-A list of other used open source software components can be
-found [here](https://github.com/5G-MAG/rt-mbms-modem/blob/main/ATTRIBUTION_NOTICE).
-
-***
 
 ## Install dependencies
 
@@ -417,7 +413,7 @@ can be used with the following OPTIONs:
 
 ### Example screenshot
 
-Click [here](https://github.com/5G-MAG/Documentation-and-Architecture/blob/main/media/wiki/v1.1.0_Console_rp.PNG) for an
+Click [here](https://github.com/5G-MAG/Getting-Started/blob/main/media/wiki/v1.1.0_Console_rp.PNG) for an
 example on what the console output should look like when running the *MBMS Modem* manually.
 
 ***
@@ -630,12 +626,12 @@ The API is only accessible when the *MBMS Modem* is running.
 
 #### API commands
 
-See <a href="https://5g-mag.github.io/rt-mbms-modem/api/" target="_blank">API
+See <a href="https://5g-mag.github.io/rt-mbms-modem/">API
 documentation</a> for *MBMS Modem*.
 
 #### Securing the RESTful API interface
 
-By default, the startup scripts for *5gmag-rt-modem* create a self-signed SSL certificate for the RESTful API
+By default, the startup scripts for *rt-mbms-modem* create a self-signed SSL certificate for the RESTful API
 in ``/usr/share/5gmag-rt``, so it can be accessed through https. When calling the API through a webbrowser, you may get a
 security warning (because of the self-signed certificate), the data stream however, is encrypted.
 
@@ -723,4 +719,4 @@ If you encounter segmentation faults in the rt-mbms-modem for higher bandwidths 
 
 ## Docker Implementation
 
-An easy to use docker Implentation is also available. The `modem` folder contains all the essential files for running the process in a container. Please check into the [wiki](https://github.com/5G-MAG/Documentation-and-Architecture/wiki/5G-MAG-Reference-Tools:-Docker-Implementation-of-RT-MBMS-processes) page for a detailed description on how to run the processes in a docker container. 
+An easy to use docker Implentation is also available. The `modem` folder contains all the essential files for running the process in a container. Please check this [page](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/docker-implementation.html) for a detailed description on how to run the processes in a docker container. 
