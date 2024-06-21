@@ -84,16 +84,12 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell) {
   _cell = cell;
   spdlog::debug("CAS processor setting cell ({} PRB / {} MBSFN PRB).", cell.nof_prb, cell.mbsfn_prb);
   srsran_ue_dl_set_cell(&_ue_dl, cell);
+  _started = true;
 }
 
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
   _sf_cfg.tti = tti;
   _sf_cfg.sf_type = SRSRAN_SF_NORM;
-
-  if ((tti/10)%100 == 0) {
-    _rest._pdsch.total = 0;
-    _rest._pdsch.errors = 0;
-  }
 
   _rest._pdsch.total++;
 

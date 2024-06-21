@@ -81,7 +81,7 @@ class RestHandler {
         int mcs = 0;
         double ber;
         float evm_rms = 0.0f;
-        unsigned total = 1;
+        unsigned total = 0;
         unsigned errors = 0;
       private:
         std::vector<uint8_t> _data = {};

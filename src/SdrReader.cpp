@@ -25,6 +25,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <csignal>
 
 #include "spdlog/spdlog.h"
 
@@ -63,12 +64,13 @@ void SdrReader::enumerateDevices()
 }
 
 auto SdrReader::init(const std::string& device_args, const char* sample_file,
-                         const char* write_sample_file) -> bool {
+                         const char* write_sample_file, bool repeat_sample_file) -> bool {
   if (sample_file != nullptr) {
     if (0 == srsran_filesource_init(&file_source,
                                     const_cast<char*>(sample_file),
                                     SRSRAN_COMPLEX_FLOAT_BIN)) {
       _reading_from_file = true;
+      _repeat_sample_file = repeat_sample_file;
     } else {
       spdlog::error("Could not open file {}", sample_file);
       return false;
@@ -84,7 +86,6 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
         return false;
       }
     }
-
     _device_args = SoapySDR::KwargsFromString(device_args);
     _sdr = SoapySDR::Device::make(_device_args);
     if (_sdr == nullptr)
@@ -275,8 +276,13 @@ void SdrReader::read() {
         entered = std::chrono::steady_clock::now();
 
         read = srsran_filesource_read_multi(&file_source, buffers.data(), std::min(writeable_samples, toRead), (int)_rx_channels);
-        if ( read == 0 ) {
-          srsran_filesource_seek(&file_source, 0);
+        if ( read == 0  ) {
+          if (_repeat_sample_file) {
+            srsran_filesource_seek(&file_source, 0);
+          } else {
+            spdlog::info("EOF, exiting...");
+            raise(SIGINT); //SIGINT to signal srsran that we want to exit.
+          }
         }
         read = read / _rx_channels;
         int64_t required_time_us = (1000000.0/_sampleRate) * read;

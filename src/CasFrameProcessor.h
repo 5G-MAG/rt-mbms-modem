@@ -81,7 +81,7 @@ class CasFrameProcessor {
    /**
     *  Get a handle of the signal buffer to store samples for processing in
     */
-   cf_t** rx_buffer() {  _mutex.lock(); return _signal_buffer_rx; }
+   cf_t** get_rx_buffer_and_lock() {  _mutex.lock(); return _signal_buffer_rx; }
 
    /**
     *  Size of the signal buffer
@@ -94,6 +94,8 @@ class CasFrameProcessor {
      *  @see get_rx_buffer_and_lock() 
      */
     void unlock() { _mutex.unlock(); }
+
+    void lock() { _mutex.lock(); }
 
    /**
     *  Get the CE values (time domain) for displaying the spectrum
@@ -111,6 +113,7 @@ class CasFrameProcessor {
     */
    float cinr_db() { return _ue_dl.chest_res.snr_db; }
 
+   bool inline is_started() { return _started; }
  private:
    const libconfig::Config& _cfg;
     srsran::rlc& _rlc;
@@ -130,4 +133,6 @@ class CasFrameProcessor {
     srsran_cell_t _cell;
     std::mutex _mutex;
     unsigned _rx_channels;
+
+    bool _started = 0;
 };

@@ -97,16 +97,6 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     srsran_ue_dl_set_non_mbsfn_region(&_ue_dl, mbsfn_cfg.non_mbsfn_region_length);
   }
 
-  if (sfn%50 == 0) {
-    if (mbsfn_cfg.is_mcch) {
-      _rest._mcch.errors = 0;
-      _rest._mcch.total = 1;
-    } else {
-      _rest._mch[mch_idx].errors = 0;
-      _rest._mch[mch_idx].total = 1;
-    }
-  }
-
   if (!mbsfn_cfg.enable) {
     spdlog::trace("PMCH: tti {}: neither MCCH nor MCH enabled. Skipping subframe");
     _mutex.unlock();
