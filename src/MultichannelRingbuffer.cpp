@@ -45,6 +45,19 @@ MultichannelRingbuffer::~MultichannelRingbuffer()
   }
 }
 
+auto MultichannelRingbuffer::read_head() -> std::vector<void*>
+{
+//  _mutex.lock();
+  std::lock_guard<std::mutex> lock(_mutex);
+  std::vector<void*> buffers(_channels, nullptr);
+  for (auto ch = 0; ch < _channels; ch++) {
+    buffers[ch] = (void*)(_buffers[ch]); // Return the beggining of the buffer;
+  }
+  _head = 0;
+  _used = 0;
+  return buffers;
+}
+
 auto MultichannelRingbuffer::write_head(size_t* writeable) -> std::vector<void*>
 {
 //  _mutex.lock();

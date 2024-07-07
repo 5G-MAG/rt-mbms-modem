@@ -102,11 +102,13 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
 void SdrReader::init_buffer() {
   auto buffer_size = (unsigned int)ceil(_sampleRate/1000.0 * _buffer_ms);
   _buffer = std::make_unique<MultichannelRingbuffer>(sizeof(cf_t) * buffer_size, _rx_channels);
+  _buffer_write = std::make_unique<MultichannelRingbuffer>(sizeof(cf_t) * buffer_size * 3, _rx_channels); // This is the buffer where we will store the samples to write a big chunk of samples instead many little ones. It's size is three times the main buffer.
   _buffer_ready = true;
 }
 
 void SdrReader::clear_buffer() {
   _buffer->clear();
+  _buffer_write->clear();
   _high_watermark_reached = false;
 }
 
@@ -226,7 +228,7 @@ void SdrReader::start() {
       SoapySDR::Device::unmake( sdr );
       return ;
     }
-    sdr->activateStream( (SoapySDR::Stream*)_stream, SOAPY_SDR_HAS_TIME, 4000000, 0); // Delayed start of the SDR reception, to avoid overfloas at the beggining.
+    sdr->activateStream( (SoapySDR::Stream*)_stream, SOAPY_SDR_HAS_TIME, 100000000, 0); // Delayed start of the SDR reception, to avoid overfloas at the beggining.
   }
   _running = true;
 
@@ -268,7 +270,9 @@ void SdrReader::read() {
     } else {
       int read = 0;
       size_t writeable = 0;
+      size_t writeable_write = 0;
       auto buffers = _buffer->write_head(&writeable);
+      auto buffers_write = _buffer_write->write_head(&writeable_write);
       int writeable_samples = (int)floor(writeable / sizeof(cf_t));
 
       if (_reading_from_file) {
@@ -303,11 +307,20 @@ void SdrReader::read() {
 
 
         if (read> 0) {
-          if (_writing_to_file && _write_samples) {
-            srsran_filesink_write_multi(&file_sink, buffers.data(), read, (int)_rx_channels);
+          auto wbuff = buffers_write.data();
+          auto rbuff = buffers.data();
+          for (int i = 0; i < _rx_channels; i++) {
+            memcpy(wbuff[i], rbuff[i], read * sizeof(cf_t)); // Copy the data in the input buffer to the toWrite buffer.
           }
           _buffer->commit( read * sizeof(cf_t) );
-          spdlog::debug("buffer: commited {}, requested {}, writeable {}, flags {}", read, toRead, writeable_samples, flags);
+          _buffer_write->commit( read * sizeof(cf_t) ); // We used another ring buffer for the written of the samples, to not block a lot we only write to the disk when the ring buffer is at 95% of its capacity
+     
+          if (_writing_to_file && _write_samples && _buffer_write->used_size() >= 0.95* _buffer_write->capacity()) {
+            int toWrite = _buffer_write->used_size(); // We are going to storage all the info
+            auto buff_to_write = _buffer_write->read_head(); // Gives the beggining of the buffer, it also puts _used and _head to 0, to start adding at the beggining again.
+            srsran_filesink_write_multi(&file_sink, buff_to_write.data(), toWrite, (int)_rx_channels); // From the begginin of the buffer we write used_size data
+          }
+              spdlog::debug("buffer: commited {}, requested {}, writeable {}, flags {}", read, toRead, writeable_samples, flags);
         }
         else {
           spdlog::error("readStream returned {}", read);

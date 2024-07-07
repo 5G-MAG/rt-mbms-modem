@@ -159,6 +159,7 @@ private:
     const libconfig::Config &_cfg;
 
     std::unique_ptr<MultichannelRingbuffer> _buffer;
+    std::unique_ptr<MultichannelRingbuffer> _buffer_write;
 
     std::thread _readerThread;
     bool _running;
