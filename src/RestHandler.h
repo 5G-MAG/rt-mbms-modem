@@ -35,8 +35,11 @@
 #include "cpprest/containerstream.h"
 #include "cpprest/producerconsumerstream.h"
 
-const int CINR_RAVG_CNT = 8;
+const int CINR_RAVG_CNT = 20;
 typedef enum { searching, syncing, processing } state_t;
+
+class CasFrameProcessor; // Forward declaration of CasFrameProcessor to avoid circular references.
+class MbsfnFrameProcessor;
 
 /**
  *  The RESTful API handler. Supports GET and PUT verbs for SDR parameters, and GET for reception info
@@ -109,12 +112,33 @@ class RestHandler {
     std::map<uint32_t, ChannelInfo> _mch;
 
     /**
-     *  Current CINR value
+     *  Current instantaneous CINR value
      */
-    float cinr_db() { return _cinr_db.size() ? (std::accumulate(_cinr_db.begin(), _cinr_db.end(), 0.0f) / (_cinr_db.size() * 1.0f)) : 0.0f; };
+    float cinr_db() { return _cinr_db.size() ? _cinr_db.back() : 0.0f; };
+    
+    /**
+     *  Current average CINR value
+     */
+    float cinr_db_avg() { return _cinr_db.size() ? (std::accumulate(_cinr_db.begin(), _cinr_db.end(), 0.0f) / (_cinr_db.size() * 1.0f)) : 0.0f; };
+    
     void add_cinr_value( float cinr);
 
+    /**
+     *  Save the pointer to the CasFrameProcessor
+     */
+    void set_cas_processor (CasFrameProcessor* cas_processor) { _cas_processor = cas_processor; };
+    
+    /**
+     *  Save the pointer to the vector cointaining the MbsfnFrameProcessors
+     */
+    void set_mbsfn_processor (MbsfnFrameProcessor* mbsfn_processor) { _mbsfn_processors.push_back(mbsfn_processor); };
+
+
   private:
+    // We need access to the processors to get the values to be displayed in the rt-wui.
+    CasFrameProcessor* _cas_processor;
+    std::vector<MbsfnFrameProcessor*> _mbsfn_processors; 
+    
     std::vector<float>  _cinr_db;
     void get(web::http::http_request message);
     void put(web::http::http_request message);

@@ -191,8 +191,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         }
 
         {
-          const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
+          const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _rlc.write_pdu_mch(mch_idx, lcid, mch_mac_msg.get()->get_sdu_ptr(), mch_mac_msg.get()->get_payload_size());
         }
       }
@@ -223,8 +223,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
       for (auto itr = _sched_stops.cbegin() ; itr != _sched_stops.cend() ;) {
         if ( sf_idx >= itr->second ) {
-          const std::lock_guard<std::mutex> lock(_rlc_mutex);
           spdlog::debug("Stopping LCID {} in tti {} (idx in rf {})", itr->first, tti, sf_idx);
+          const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _rlc.stop_mch(i, itr->first);
           itr = _sched_stops.erase(itr);
         } else {
@@ -233,6 +233,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
   } else {
+    const std::lock_guard<std::mutex> lock(_rlc_mutex);
     _rlc.stop_mch(0, 0);
     _rest._mcch.present = true;
   }
