@@ -67,6 +67,7 @@ auto CasFrameProcessor::init() -> bool {
   _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
   _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer;
 
+  _sf_cfg.sf_type = SRSRAN_SF_NORM;
   return true;
 }
 
@@ -89,7 +90,6 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell) {
 
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
   _sf_cfg.tti = tti;
-  _sf_cfg.sf_type = SRSRAN_SF_NORM;
 
   _rest._pdsch.total++;
 

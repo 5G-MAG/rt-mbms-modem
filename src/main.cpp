@@ -378,7 +378,10 @@ auto main(int argc, char **argv) -> int {
     spdlog::error("Failed to create CAS processor. Exiting.");
     exit(1);
   }
-
+  
+  // We need the cas processor to be accesible within the rest_handler object to gather all the values display in the rt-wui
+  rest_handler.set_cas_processor(&cas_processor);
+  
   std::vector<MbsfnFrameProcessor*> mbsfn_processors;
   for (int i = 0; i < thread_cnt; i++) {
     auto p = new MbsfnFrameProcessor(cfg, rlc, phy, mac_log, rest_handler, rx_channels);
@@ -389,6 +392,7 @@ auto main(int argc, char **argv) -> int {
     mbsfn_processors.push_back(p);
   }
 
+  rest_handler.start(); // Start the listener, we need to do it after storing the cas into the rest_handler, otherwise we will get segfault.
   // Start receiving sample data
   sdr.start();
 

@@ -70,7 +70,7 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
   _listener->support(methods::GET, std::bind(&RestHandler::get, this, std::placeholders::_1));  // NOLINT
   _listener->support(methods::PUT, std::bind(&RestHandler::put, this, std::placeholders::_1));  // NOLINT
 
-  _listener->open().wait();
+  //_listener->open().wait();
 }
 
 RestHandler::~RestHandler() = default;
@@ -110,6 +110,7 @@ void RestHandler::get(http_request message) {
       state["cell_id"] = value(_phy.cell().id);
       state["cfo"] = value(_phy.cfo());
       state["cinr_db"] = value(cinr_db());
+      state["cinr_db_avg"] = value(cinr_db_avg());
       state["subcarrier_spacing"] = value(_phy.mbsfn_subcarrier_spacing_khz());
 
       // CAS Chest params //

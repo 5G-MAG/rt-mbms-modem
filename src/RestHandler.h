@@ -68,6 +68,11 @@ class RestHandler {
     virtual ~RestHandler();
 
     /**
+     *  Start function for the listener.
+     */
+    void start() { _listener->open().wait(); }
+
+    /**
      *  RX Info pertaining to an SCH (MCCH/MCH or PDSCH)
      */
     class ChannelInfo {
