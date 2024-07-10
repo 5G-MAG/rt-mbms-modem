@@ -102,6 +102,28 @@ class RestHandler {
     std::vector<uint8_t> _ce_values = {};
 
     /**
+     *  Time domain channel impulse response of the CAS.
+     */
+    std::vector<uint8_t> _cir_values = {};
+
+    /**
+     *  Time domain channel impulse response of the mbsfn subframes
+     */
+    std::vector<uint8_t> _cir_values_mbsfn = {};
+
+
+    /**
+     *  Correlaton samples from the sync functions.
+     */
+    std::vector<uint8_t> _corr_values = {};
+
+
+    /**
+     *  Correlaton samples from the sync functions.
+     */
+    std::vector<uint8_t> _corr_values_mbsfn = {};
+
+    /**
      *  RX info for PDSCH
      */
     ChannelInfo _pdsch;

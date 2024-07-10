@@ -138,6 +138,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
     }
 
     _rest._pdsch.SetData(pdsch_data());
+    _rest._ce_values    = std::move(ce_values());
 
     // Decode PDSCH..
     auto ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
