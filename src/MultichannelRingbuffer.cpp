@@ -29,7 +29,8 @@ MultichannelRingbuffer::MultichannelRingbuffer(size_t size, size_t channels)
   , _head( 0 )
 {
   for (auto ch = 0; ch < _channels; ch++) {
-    auto buf = (char*)malloc(_size);
+    auto buf = (char*)srsran_vec_malloc( _size);
+    //auto buf = (char*)malloc(_size);
     if (buf == nullptr) {
       throw "Could not allocate memory";
     }
@@ -63,7 +64,7 @@ auto MultichannelRingbuffer::write_head(size_t* writeable) -> std::vector<void*>
 //  _mutex.lock();
   std::lock_guard<std::mutex> lock(_mutex);
   std::vector<void*> buffers(_channels, nullptr);
-  if (_size == _used) {
+  if (_size == _used) { // In this case we return a nullptr. Because read_head and read functions we should never see a situation where we try to read this returned nullptr. Usually never reach exactly te end of the buffer. 
     *writeable = 0;
   } else {
     auto tail = (_head + _used) % _size;

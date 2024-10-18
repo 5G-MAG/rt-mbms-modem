@@ -22,6 +22,9 @@
 #include <vector>
 #include <mutex>
 
+#include "srsran/srsran.h"
+#include "srsran/phy/common/phy_common.h"
+
 class MultichannelRingbuffer {
  public:
     explicit MultichannelRingbuffer(size_t size, size_t channels);
