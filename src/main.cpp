@@ -425,7 +425,6 @@ auto main(int argc, char **argv) -> int {
     switch (state) {
       case processing: {  // processing
         tti = (tti + 1) % 10240; // Clamp the TTI
-        unsigned sfn = tti / 10;
         if (phy.is_cas_subframe(tti)) {
           // Get the samples from the SDR interface, hand them to a CAS processor, and start it
           // on a thread from the pool.
@@ -469,7 +468,6 @@ auto main(int argc, char **argv) -> int {
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
             sync_losses++;
             state = syncing;
-            auto t2 = std::chrono::high_resolution_clock::now();
           }
         } else {
           // All other frames in FeMBMS dedicated mode are MBSFN frames.
@@ -477,10 +475,7 @@ auto main(int argc, char **argv) -> int {
 
           // Get the samples from the SDR interface, hand them to an MNSFN processor, and start it
           // on a thread from the pool. Getting the buffer pointer from the pool also locks this processor.
-          auto t1 = std::chrono::high_resolution_clock::now();
-          auto t2 = t1;
           if (!restart && phy.get_next_frame(mbsfn_processors[mb_idx]->get_rx_buffer_and_lock(), mbsfn_processors[mb_idx]->rx_buffer_size())) {
-            t2 = std::chrono::high_resolution_clock::now();
             if (phy.mcch_configured() && phy.is_mbsfn_subframe(tti)) {
               // If data frm SIB1/SIB13 has been received in CAS, configure the processors accordingly
               if (!mbsfn_processors[mb_idx]->mbsfn_configured()) {
@@ -505,7 +500,7 @@ auto main(int argc, char **argv) -> int {
             }
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
-            spdlog::warn("Synchronization lost while processing. Going back to searching state, we were waiting {} microseconds.", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+            spdlog::warn("Synchronization lost while processing. Going back to searching state.");
             sync_losses++; 
             state = syncing;
           }
@@ -523,7 +518,7 @@ auto main(int argc, char **argv) -> int {
         }
 
         // We're at the search sample rate, and there's no point in creating a sample file. rtop the sample writer, if enabled.
-        sdr.disableSampleFileWriting();
+        //sdr.disableSampleFileWriting();
 
         // In searching state, clear the receive buffer and try to find a cell at the configured frequency and synchronize with it
         restart = false;
@@ -613,7 +608,7 @@ auto main(int argc, char **argv) -> int {
       cols.reserve(11);
 
       if (state == processing) {
-        //spdlog::info("CINR {:.2f} dB", rest_handler.cinr_db() );
+        spdlog::info("CINR {:.2f} dB", rest_handler.cinr_db() );
         cols.push_back(std::to_string((float)rest_handler.cinr_db()));
 
         // Wait to finish and lock, we don't want to update total and errors independently. Yes, it's a blocking solution, but, what other way is possible?
