@@ -83,14 +83,15 @@ void MeasurementFileWriter::ReadGps() {
         if ((_gps_data->set & LATLON_SET) != 0) {
           _last_gps_lat = std::to_string(_gps_data->fix.latitude);
           _last_gps_lng = std::to_string(_gps_data->fix.longitude);
+          _last_gps_speed = std::to_string(_gps_data->fix.speed);
         }
       } else {
-        _last_gps_lat = _last_gps_lng = _last_gps_time = "";
+        _last_gps_speed = _last_gps_lat = _last_gps_lng = _last_gps_time = "";
       }
 
       std::this_thread::sleep_for(std::chrono::microseconds(kGpsWaitMicrosleep));
     } else {
-      _last_gps_lat = _last_gps_lng = _last_gps_time = "";
+      _last_gps_speed = _last_gps_lat = _last_gps_lng = _last_gps_time = "";
       std::this_thread::sleep_for(std::chrono::microseconds(kGpsReconnectTimeout));
       _gps->stream(WATCH_ENABLE|WATCH_JSON);
     }
@@ -106,7 +107,7 @@ void MeasurementFileWriter::WriteLogValues(
   strftime(&buf[0], buf.size(), "%FT%T", &ts);
 
   std::vector<std::string> cols = {buf, _last_gps_lat,
-    _last_gps_lng, _last_gps_time};
+    _last_gps_lng, _last_gps_speed, _last_gps_time};
 
   std::string line;
   for (const auto& col : cols) {

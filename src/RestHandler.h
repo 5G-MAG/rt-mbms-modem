@@ -35,8 +35,11 @@
 #include "cpprest/containerstream.h"
 #include "cpprest/producerconsumerstream.h"
 
-const int CINR_RAVG_CNT = 100;
+const int CINR_RAVG_CNT = 20;
 typedef enum { searching, syncing, processing } state_t;
+
+class CasFrameProcessor; // Forward declaration of CasFrameProcessor to avoid circular references.
+class MbsfnFrameProcessor;
 
 /**
  *  The RESTful API handler. Supports GET and PUT verbs for SDR parameters, and GET for reception info
@@ -65,6 +68,11 @@ class RestHandler {
     virtual ~RestHandler();
 
     /**
+     *  Start function for the listener.
+     */
+    void start() { _listener->open().wait(); }
+
+    /**
      *  RX Info pertaining to an SCH (MCCH/MCH or PDSCH)
      */
     class ChannelInfo {
@@ -80,7 +88,8 @@ class RestHandler {
         bool present = false;
         int mcs = 0;
         double ber;
-        unsigned total = 1;
+        float evm_rms = 0.0f;
+        unsigned total = 0;
         unsigned errors = 0;
       private:
         std::vector<uint8_t> _data = {};
@@ -91,6 +100,28 @@ class RestHandler {
      *  Time domain subcarrier CE values
      */
     std::vector<uint8_t> _ce_values = {};
+
+    /**
+     *  Time domain channel impulse response of the CAS.
+     */
+    std::vector<uint8_t> _cir_values = {};
+
+    /**
+     *  Time domain channel impulse response of the mbsfn subframes
+     */
+    std::vector<uint8_t> _cir_values_mbsfn = {};
+
+
+    /**
+     *  Correlaton samples from the sync functions.
+     */
+    std::vector<uint8_t> _corr_values = {};
+
+
+    /**
+     *  Correlaton samples from the sync functions.
+     */
+    std::vector<uint8_t> _corr_values_mbsfn = {};
 
     /**
      *  RX info for PDSCH
@@ -108,12 +139,33 @@ class RestHandler {
     std::map<uint32_t, ChannelInfo> _mch;
 
     /**
-     *  Current CINR value
+     *  Current instantaneous CINR value
      */
-    float cinr_db() { return _cinr_db.size() ? (std::accumulate(_cinr_db.begin(), _cinr_db.end(), 0) / (_cinr_db.size() * 1.0)) : 0.0; };
+    float cinr_db() { return _cinr_db.size() ? _cinr_db.back() : 0.0f; };
+    
+    /**
+     *  Current average CINR value
+     */
+    float cinr_db_avg() { return _cinr_db.size() ? (std::accumulate(_cinr_db.begin(), _cinr_db.end(), 0.0f) / (_cinr_db.size() * 1.0f)) : 0.0f; };
+    
     void add_cinr_value( float cinr);
 
+    /**
+     *  Save the pointer to the CasFrameProcessor
+     */
+    void set_cas_processor (CasFrameProcessor* cas_processor) { _cas_processor = cas_processor; };
+    
+    /**
+     *  Save the pointer to the vector cointaining the MbsfnFrameProcessors
+     */
+    void set_mbsfn_processor (MbsfnFrameProcessor* mbsfn_processor) { _mbsfn_processors.push_back(mbsfn_processor); };
+
+
   private:
+    // We need access to the processors to get the values to be displayed in the rt-wui.
+    CasFrameProcessor* _cas_processor;
+    std::vector<MbsfnFrameProcessor*> _mbsfn_processors; 
+    
     std::vector<float>  _cinr_db;
     void get(web::http::http_request message);
     void put(web::http::http_request message);

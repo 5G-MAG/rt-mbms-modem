@@ -39,6 +39,11 @@ const uint32_t kSubframesPerFrame = 10;
 
 const uint32_t kMaxCellsToDiscover = 3;
 
+const uint32_t kMaxScannedFrames = 10;
+const uint32_t kMaxValidFrames = 4;
+
+const uint32_t kMaxFramesTimeout = 80;
+
 Phy::Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb,
          int8_t override_nof_prb, uint8_t rx_channels)
     : _cfg(cfg),
@@ -125,7 +130,7 @@ auto Phy::cell_search() -> bool {
     return false;
   }
   srsran_ue_sync_reset(&_mib_sync.ue_sync);
-  ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, 40, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
+  ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, kMaxFramesTimeout, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
 
   if (!ret) { // MIB-MBMS failed, try to decode regular MIB
     init();
@@ -135,7 +140,7 @@ auto Phy::cell_search() -> bool {
       return false;
     }
     srsran_ue_sync_reset(&_mib_sync.ue_sync);
-    ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, 40, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
+    ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, kMaxFramesTimeout, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
   }
 
   if (ret == 1) {
@@ -190,12 +195,12 @@ auto Phy::set_cell() -> void {
 }
 
 auto Phy::init() -> bool {
-  if (srsran_ue_cellsearch_init_multi_prb_cp(&_cell_search, 8, receive_callback, _rx_channels,
+  if (srsran_ue_cellsearch_init_multi_prb_cp(&_cell_search, kMaxScannedFrames, receive_callback, _rx_channels,
                                       this, _cs_nof_prb, _search_extended_cp) != 0) {
     spdlog::error("Phy: error while initiating UE cell search\n");
     return false;
   }
-  srsran_ue_cellsearch_set_nof_valid_frames(&_cell_search, 4);
+  srsran_ue_cellsearch_set_nof_valid_frames(&_cell_search, kMaxValidFrames);
 
   if (srsran_ue_sync_init_multi(&_ue_sync, MAX_PRB, false, receive_callback, _rx_channels,
                                 this) != 0) {

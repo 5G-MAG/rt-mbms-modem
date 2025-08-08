@@ -81,7 +81,7 @@ class CasFrameProcessor {
    /**
     *  Get a handle of the signal buffer to store samples for processing in
     */
-   cf_t** rx_buffer() {  _mutex.lock(); return _signal_buffer_rx; }
+   cf_t** get_rx_buffer_and_lock() {  _mutex.lock(); return _signal_buffer_rx; }
 
    /**
     *  Size of the signal buffer
@@ -94,6 +94,8 @@ class CasFrameProcessor {
      *  @see get_rx_buffer_and_lock() 
      */
     void unlock() { _mutex.unlock(); }
+
+    void lock() { _mutex.lock(); }
 
    /**
     *  Get the CE values (time domain) for displaying the spectrum
@@ -110,6 +112,64 @@ class CasFrameProcessor {
     *  Get the CINR estimate (in dB)
     */
    float cinr_db() { return _ue_dl.chest_res.snr_db; }
+
+
+
+
+   /********************** Getters and setters for chest_cfg params for rt-wui **********************************/
+
+   /**
+    *  Set the filter order used to filter the channel estimates. 
+    */
+   void inline set_filter_order(uint8_t filter_order) { _ue_dl_cfg.chest_cfg.filter_coef[0]= filter_order; };
+   uint8_t inline get_filter_order() { return static_cast<uint8_t>(_ue_dl_cfg.chest_cfg.filter_coef[0]); };
+
+   /**
+    *  Set the coef for gauss filtering 
+    */
+   void inline set_filter_coef(float filter_coef) { _ue_dl_cfg.chest_cfg.filter_coef[1] = filter_coef; };
+   float inline get_filter_coef() { return static_cast<float>(_ue_dl_cfg.chest_cfg.filter_coef[1]); };
+
+   /**
+    *  Set the filter type for chest 
+    */
+   void inline set_filter_type(srsran_chest_filter_t filter_type) { _ue_dl_cfg.chest_cfg.filter_type = filter_type; };
+   uint8_t inline get_filter_type() { return static_cast<uint8_t>(_ue_dl_cfg.chest_cfg.filter_type); };
+
+   /**
+    *  Set the noise estimation algorithm used in the channel estimation stage
+    */
+   void inline set_noise_alg(srsran_chest_dl_noise_alg_t noise_alg) { _ue_dl_cfg.chest_cfg.noise_alg = noise_alg; };
+   uint8_t inline get_noise_alg() { return static_cast<uint8_t>(_ue_dl_cfg.chest_cfg.noise_alg); };
+ 
+   /**
+    * Enables the estimation os synchronization error 
+    */
+   void inline set_sync_error(bool enable) { _ue_dl_cfg.chest_cfg.sync_error_enable = enable; };
+   bool inline get_sync_error() { return static_cast<uint8_t>(_ue_dl_cfg.chest_cfg.sync_error_enable); };
+
+   /**
+    *  Set the method to estimate the channel estimates of the complete resource grid from the reference symbols. 
+    */
+   void inline set_estimator_alg(srsran_chest_dl_estimator_alg_t estimator_alg) { _ue_dl_cfg.chest_cfg.estimator_alg = estimator_alg; };
+   uint8_t inline get_estimator_alg() { return static_cast<uint8_t>(_ue_dl_cfg.chest_cfg.estimator_alg); };
+   
+   /**
+    * Enables the estimation of the carrier frequency offset 
+    */
+   void inline set_cfo_estimate(bool enable) { _ue_dl_cfg.chest_cfg.cfo_estimate_enable = enable; };
+   bool inline get_cfo_estimate() { return static_cast<uint8_t>(_ue_dl_cfg.chest_cfg.cfo_estimate_enable); };
+
+   /**
+    * Enables the computation of the error vector magnitude on the PDSCH. 
+    */
+   void inline set_evm_meas(bool enable) { _ue_dl_cfg.cfg.pdsch.meas_evm_en = enable; };
+   bool inline get_evm_meas() { return static_cast<uint8_t>(_ue_dl_cfg.cfg.pdsch.meas_evm_en); };
+
+   /**
+    * Returns if the CasFrameProcessor is started or not
+    */
+   bool inline is_started() { return _started; }
 
  private:
    const libconfig::Config& _cfg;
@@ -130,4 +190,6 @@ class CasFrameProcessor {
     srsran_cell_t _cell;
     std::mutex _mutex;
     unsigned _rx_channels;
+
+    bool _started = 0;
 };

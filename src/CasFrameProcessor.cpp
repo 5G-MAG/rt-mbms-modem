@@ -52,11 +52,11 @@ auto CasFrameProcessor::init() -> bool {
   srsran_chest_dl_cfg_t* chest_cfg = &_ue_dl_cfg.chest_cfg;
   bzero(chest_cfg, sizeof(srsran_chest_dl_cfg_t));
   chest_cfg->filter_coef[0] = 4;
-  chest_cfg->filter_coef[1] = 1.0f;
+  chest_cfg->filter_coef[1] = 0.2f;
   chest_cfg->filter_type = SRSRAN_CHEST_FILTER_GAUSS;
   chest_cfg->noise_alg = SRSRAN_NOISE_ALG_EMPTY;
   chest_cfg->rsrp_neighbour       = false;
-  chest_cfg->sync_error_enable    = false;
+  chest_cfg->sync_error_enable    = true;
   chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_AVERAGE;
   chest_cfg->cfo_estimate_enable  = true;
   chest_cfg->cfo_estimate_sf_mask = 1023;
@@ -67,6 +67,7 @@ auto CasFrameProcessor::init() -> bool {
   _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
   _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer;
 
+  _sf_cfg.sf_type = SRSRAN_SF_NORM;
   return true;
 }
 
@@ -84,16 +85,11 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell) {
   _cell = cell;
   spdlog::debug("CAS processor setting cell ({} PRB / {} MBSFN PRB).", cell.nof_prb, cell.mbsfn_prb);
   srsran_ue_dl_set_cell(&_ue_dl, cell);
+  _started = true;
 }
 
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
   _sf_cfg.tti = tti;
-  _sf_cfg.sf_type = SRSRAN_SF_NORM;
-
-  if ((tti/10)%100 == 0) {
-    _rest._pdsch.total = 0;
-    _rest._pdsch.errors = 0;
-  }
 
   _rest._pdsch.total++;
 
@@ -142,6 +138,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
     }
 
     _rest._pdsch.SetData(pdsch_data());
+    _rest._ce_values    = std::move(ce_values());
 
     // Decode PDSCH..
     auto ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
@@ -150,6 +147,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       _rest._pdsch.errors++;
     } else {
       spdlog::debug("Decoded PDSCH");
+      _rest._pdsch.evm_rms = pdsch_res[0].evm; // evm of the first codeword
       for (int i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
         // .. and pass received PDUs to RLC for further processing
         if (pdsch_cfg->grant.tb[i].enabled && pdsch_res[i].crc) {

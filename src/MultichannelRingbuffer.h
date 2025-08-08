@@ -22,6 +22,9 @@
 #include <vector>
 #include <mutex>
 
+#include "srsran/srsran.h"
+#include "srsran/phy/common/phy_common.h"
+
 class MultichannelRingbuffer {
  public:
     explicit MultichannelRingbuffer(size_t size, size_t channels);
@@ -33,6 +36,7 @@ class MultichannelRingbuffer {
 
     inline void clear() {std::lock_guard<std::mutex> lock(_mutex); _head = _used = 0; };
 
+    std::vector<void*> read_head();
     std::vector<void*> write_head(size_t* writeable);
     void commit(size_t written);
 

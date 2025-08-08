@@ -54,7 +54,10 @@ class MbsfnFrameProcessor {
       , _rest(rest)
       , mch_mac_msg(20, log_h)
       , _rx_channels(rx_channels)
-      {}
+      {
+        _allow_rrc_sn_across_periods = false;
+        cfg.lookupValue("modem.phy.allow_rrc_sn_across_periods", _allow_rrc_sn_across_periods); 
+      }
 
     /**
      *  Default destructor.
@@ -115,6 +118,13 @@ class MbsfnFrameProcessor {
     void unlock() { _mutex.unlock(); }
 
     /**
+     *  Lock the processor
+     *
+     *  Used when getting the BLER values.
+     */
+    void lock() { _mutex.lock(); }
+
+    /**
      *  Get the constellation diagram data (I/Q data of the subcarriers after CE)
      */
     const std::vector<uint8_t> mch_data() const;
@@ -153,6 +163,7 @@ class MbsfnFrameProcessor {
 
     unsigned _rx_channels;
 
+    bool _allow_rrc_sn_across_periods = false;
     static std::mutex _sched_stop_mutex;
     static std::map<uint8_t, uint16_t> _sched_stops;
 

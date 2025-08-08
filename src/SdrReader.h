@@ -57,7 +57,7 @@ public:
     /**
      * Initializes the SDR interface and creates a ring buffer according to the params from Cfg.
      */
-    bool init(const std::string &device_args, const char *sample_file, const char *write_sample_file);
+    bool init(const std::string &device_args, const char *sample_file, const char *write_sample_file, bool repeat_sample_file);
 
     /**
      * Tune the SDR to the desired frequency, and set gain, filter and antenna parameters.
@@ -159,6 +159,7 @@ private:
     const libconfig::Config &_cfg;
 
     std::unique_ptr<MultichannelRingbuffer> _buffer;
+    std::unique_ptr<MultichannelRingbuffer> _buffer_write;
 
     std::thread _readerThread;
     bool _running;
@@ -190,6 +191,7 @@ private:
     bool _reading_from_file = false;
     bool _writing_to_file = false;
     bool _write_samples = false;
+    bool _repeat_sample_file = false;
 
     uint32_t _rssi = 0;
 

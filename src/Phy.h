@@ -162,6 +162,84 @@ class Phy {
     bool is_cas_subframe(unsigned tti);
     bool is_mbsfn_subframe(unsigned tti);
 
+
+
+    /**************** Getters and setters for phy params of _ue_sync **************/
+
+    /**
+     * Set the factor for the PSS loopback. When the CFO is estimated, _ue_sync takes the previous value and ads it to the current estimated CFO, this parameters is the weight of the previous value, from 0 (nothing) to 1 (all). 
+     */
+    void inline set_ue_sync_cfo_loop_bw_pss(float bw) { _ue_sync.cfo_loop_bw_pss = bw; }; 
+    float inline get_ue_sync_cfo_loop_bw_pss() { return _ue_sync.cfo_loop_bw_pss; }; 
+
+    /**
+     * Enables or disables the CFO estimation from the PSS in the finding stage.
+     */
+    void inline set_ue_sync_find_cfo_pss_enable(bool enable) { srsran_sync_set_cfo_pss_enable(&_ue_sync.sfind, enable); }; 
+    bool inline get_ue_sync_find_cfo_pss_enable() { return _ue_sync.sfind.cfo_pss_enable; }; 
+
+    /**
+     * Enables or disables the CFO estimation from the PSS in the tracking stage.
+     */
+    void inline set_ue_sync_track_cfo_pss_enable(bool enable) { srsran_sync_set_cfo_pss_enable(&_ue_sync.strack, enable); }; 
+    bool inline get_ue_sync_track_cfo_pss_enable() { return _ue_sync.strack.cfo_pss_enable; }; 
+
+    /**
+     * Enables the CFO correction while finding the synchronization from previous estimations.
+     */
+    void inline set_ue_sync_find_cfo_correct_enable(bool enable) {
+      _ue_sync.cfo_correct_enable_find = enable;
+    } 
+    bool inline get_ue_sync_find_cfo_correct_enable() { return _ue_sync.cfo_correct_enable_find; } 
+
+    /**
+     * Enables the CFO correction while tracking the synchronization from previous estimations.
+     */
+    void inline set_ue_sync_track_cfo_correct_enable(bool enable) { _ue_sync.cfo_correct_enable_track = enable; } 
+    bool inline get_ue_sync_track_cfo_correct_enable() { return _ue_sync.cfo_correct_enable_track; } 
+
+    /**
+     * Sets the ema alpha value used for the tracking of the CFO in the trackin sync object, both in CP and PSS CFO estimation
+     */
+    void inline set_ue_sync_track_cfo_ema(float ema) { srsran_ue_sync_set_cfo_ema(&_ue_sync, ema); }; 
+    float inline get_ue_sync_track_cfo_ema() { return _ue_sync.strack.cfo_ema_alpha; }; 
+
+    /**
+     * Sets the ema alpha value used for the tracking of the CFO in the trackin sync object, both in CP and PSS CFO estimation.
+     */
+    void inline set_ue_sync_find_cfo_ema(float ema) { srsran_sync_set_cfo_ema_alpha(&_ue_sync.sfind, ema); }; 
+    float inline get_ue_sync_find_cfo_ema() { return _ue_sync.sfind.cfo_ema_alpha; }; 
+
+    /**
+     * Sets the ema alpha value used for the tracking of the SFO in ue_sync in the function track_peak_ok.
+     */
+    void inline set_ue_sync_track_sfo_ema(float ema) { srsran_ue_sync_set_sfo_ema(&_ue_sync, ema); }; 
+    float inline get_ue_sync_track_sfo_ema() { return _ue_sync.sfo_ema; }; 
+
+    /**
+     * Sets the weight factor alpha for the exponential moving average of the PSS correlation output  
+     */
+    void inline set_ue_sync_pss_cfo_ema_find(float ema) { srsran_sync_set_em_alpha(&_ue_sync.sfind, ema); }; 
+    float inline get_ue_sync_pss_cfo_ema_find() { return _ue_sync.sfind.pss.ema_alpha; }; 
+
+    /**
+     * Sets the weight factor alpha for the exponential moving average of the PSS correlation output    
+     */
+    void inline set_ue_sync_pss_cfo_ema_track(float ema) { srsran_sync_set_em_alpha(&_ue_sync.strack, ema); }; 
+    float inline get_ue_sync_pss_cfo_ema_track() { return _ue_sync.strack.pss.ema_alpha; }; 
+
+    /**
+     * Sets the threshold of the peak found while tracking for synchronization.     
+     */
+    void inline set_ue_sync_threshold_track(float threshold) { srsran_sync_set_threshold(&_ue_sync.strack, threshold); }; 
+    float inline get_ue_sync_threshold_track() { return _ue_sync.strack.threshold; }; 
+
+    /**
+     * Sets the threshold of the peak found while searching for synchronization.      
+     */
+    void inline set_ue_sync_threshold_find(float threshold) { srsran_sync_set_threshold(&_ue_sync.sfind, threshold); }; 
+    float inline get_ue_sync_threshold_find() { return _ue_sync.sfind.threshold; }; 
+
     typedef struct {
       std::string tmgi;
       std::string dest;
@@ -190,7 +268,7 @@ class Phy {
           default: return SubcarrierSpacing::df_15kHz;
         }
       } else {
-          return SubcarrierSpacing::df_15kHz;
+        return SubcarrierSpacing::df_15kHz;
       }
     }
 
@@ -202,7 +280,7 @@ class Phy {
           default: return 15;
         }
       } else {
-          return 15;
+        return 15;
       }
     }
 
