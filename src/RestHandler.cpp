@@ -17,7 +17,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
-#include "RestHandler.h"
+//#include "RestHandler.h"
+#include "CasFrameProcessor.h"
 
 #include <memory>
 #include <utility>
@@ -69,7 +70,7 @@ RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
   _listener->support(methods::GET, std::bind(&RestHandler::get, this, std::placeholders::_1));  // NOLINT
   _listener->support(methods::PUT, std::bind(&RestHandler::put, this, std::placeholders::_1));  // NOLINT
 
-  _listener->open().wait();
+  //_listener->open().wait();
 }
 
 RestHandler::~RestHandler() = default;
@@ -109,7 +110,33 @@ void RestHandler::get(http_request message) {
       state["cell_id"] = value(_phy.cell().id);
       state["cfo"] = value(_phy.cfo());
       state["cinr_db"] = value(cinr_db());
+      state["cinr_db_avg"] = value(cinr_db_avg());
       state["subcarrier_spacing"] = value(_phy.mbsfn_subcarrier_spacing_khz());
+
+      // CAS Chest params //
+      state["filter_order"] = value(_cas_processor->get_filter_order());
+      state["filter_coef"] = value(_cas_processor->get_filter_coef());
+      state["filter_type"] = value(_cas_processor->get_filter_type());
+      state["noise_alg"] = value(_cas_processor->get_noise_alg());
+      state["sync_error"] = value(_cas_processor->get_sync_error());
+      state["estimator_alg"] = value(_cas_processor->get_estimator_alg());
+      state["cfo_estimate"] = value(_cas_processor->get_cfo_estimate());
+      state["evm_meas"] = value(_cas_processor->get_evm_meas());
+      
+      // Phy params // 
+      state["cfo_est_pss_find"] = value(_phy.get_ue_sync_find_cfo_pss_enable());
+      state["cfo_est_pss_track"] = value(_phy.get_ue_sync_track_cfo_pss_enable());
+      state["cfo_correct_find"] = value(_phy.get_ue_sync_find_cfo_correct_enable());
+      state["cfo_correct_track"] = value(_phy.get_ue_sync_track_cfo_correct_enable());
+      state["cfo_pss_loop_bw"] = value(_phy.get_ue_sync_cfo_loop_bw_pss());
+      state["cfo_ema_alpha_find"] = value(_phy.get_ue_sync_find_cfo_ema());
+      state["cfo_ema_alpha_track"] = value(_phy.get_ue_sync_track_cfo_ema());
+      state["pss_ema_find"] = value(_phy.get_ue_sync_pss_cfo_ema_find());
+      state["pss_ema_track"] = value(_phy.get_ue_sync_pss_cfo_ema_track());
+      state["threshold_find"] = value(_phy.get_ue_sync_threshold_find());
+      state["threshold_track"] = value(_phy.get_ue_sync_threshold_track());
+
+
       message.reply(status_codes::OK, state);
     } else if (paths[0] == "sdr_params") {
       value sdr = value::object();
@@ -124,6 +151,18 @@ void RestHandler::get(http_request message) {
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "ce_values") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values);
+      message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "cir_values") {
+      auto cestream = Concurrency::streams::bytestream::open_istream(_cir_values);
+      message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "cir_values_mbsfn") {
+      auto cestream = Concurrency::streams::bytestream::open_istream(_cir_values_mbsfn);
+      message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "corr_values") {
+      auto cestream = Concurrency::streams::bytestream::open_istream(_corr_values);
+      message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "corr_values_mbsfn") {
+      auto cestream = Concurrency::streams::bytestream::open_istream(_corr_values_mbsfn);
       message.reply(status_codes::OK, cestream);
     } else if (paths[0] == "pdsch_status") {
       value sdr = value::object();
@@ -226,6 +265,104 @@ void RestHandler::put(http_request message) {
       }
       _set_params( a, f, g, sr, bw);
 
+      message.reply(status_codes::OK, answer);
+    } else if (paths[0] == "chest_cfg_params") {
+      value answer;
+
+      const auto & jval = message.extract_json().get();
+      spdlog::debug("Recieved JSON: {}", jval.serialize());
+
+      if (jval.has_field("noise_alg")) {
+        auto alg = jval.at("noise_alg").as_string();
+        spdlog::info("New alg est {}", alg);
+        _cas_processor->set_noise_alg(static_cast<srsran_chest_dl_noise_alg_t>(stoi(alg)));
+      }
+      if (jval.has_field("sync_error")) {
+        spdlog::info("New sync error value");
+        
+        bool alg = jval.at("sync_error").as_bool();
+
+        spdlog::info("{}", alg); 
+        _cas_processor->set_sync_error(alg);
+      }
+      if (jval.has_field("estimator_alg")) {
+        auto alg = jval.at("estimator_alg").as_string();
+        spdlog::info("New alg est {}", alg);
+        _cas_processor->set_estimator_alg(static_cast<srsran_chest_dl_estimator_alg_t>(stoi(alg)));
+      }
+      if (jval.has_field("filter_type")) {
+        auto type = jval.at("filter_type").as_string();
+        spdlog::info("New filter type {}", type);
+        _cas_processor->set_filter_type(static_cast<srsran_chest_filter_t>(stoi(type)));
+      }
+      if (jval.has_field("filter_order")) {
+        spdlog::info("New filter order");
+        auto order = jval.at("filter_order").as_integer();
+        _cas_processor->set_filter_order(order);
+      }
+      if (jval.has_field("filter_coef")) {
+        spdlog::info("New filter coef");
+        auto coef = jval.at("filter_coef").as_double();
+        _cas_processor->set_filter_coef(coef);
+      }
+
+      // Phy params
+      if (jval.has_field("cfo_est_pss_find")) {
+        spdlog::info("New cfo est pss find");
+        auto toggle = jval.at("cfo_est_pss_find").as_bool();
+        _phy.set_ue_sync_find_cfo_pss_enable(toggle);
+      }
+      if (jval.has_field("cfo_est_pss_track")) {
+        spdlog::info("New cfo est pss track");
+        auto toggle = jval.at("cfo_est_pss_track").as_bool();
+        _phy.set_ue_sync_track_cfo_pss_enable(toggle);
+      }
+      if (jval.has_field("cfo_correct_find")) {
+        spdlog::info("New cfo correct find");
+        auto toggle = jval.at("cfo_correct_find").as_bool();
+        _phy.set_ue_sync_find_cfo_correct_enable(toggle);
+      }
+      if (jval.has_field("cfo_correct_track")) {
+        spdlog::info("New cfo correct track");
+        auto toggle = jval.at("cfo_correct_track").as_bool();
+        _phy.set_ue_sync_track_cfo_correct_enable(toggle);
+      }
+      if (jval.has_field("cfo_pss_loop_bw")) {
+        spdlog::info("New BW pss CFO loop");
+        auto bw = jval.at("cfo_pss_loop_bw").as_double();
+        _phy.set_ue_sync_cfo_loop_bw_pss(bw);
+      }
+      if (jval.has_field("cfo_ema_alpha_find")) {
+        spdlog::info("New CFO ema alpha for find");
+        auto ema = jval.at("cfo_ema_alpha_find").as_double();
+        _phy.set_ue_sync_find_cfo_ema(ema);
+      }
+      if (jval.has_field("cfo_ema_alpha_track")) {
+        spdlog::info("New CFO ema alpha for track");
+        auto ema = jval.at("cfo_ema_alpha_track").as_double();
+        _phy.set_ue_sync_track_cfo_ema(ema); 
+      }
+      if (jval.has_field("pss_ema_find")) {
+        spdlog::info("New PSS corr  ema alpha for find");
+        auto ema = jval.at("pss_ema_find").as_double();
+        _phy.set_ue_sync_pss_cfo_ema_find(ema); 
+      }
+      if (jval.has_field("pss_ema_track")) {
+        spdlog::info("New PSS corr  ema alpha for track");
+        auto ema = jval.at("pss_ema_track").as_double();
+        _phy.set_ue_sync_pss_cfo_ema_track(ema); 
+      }
+      if (jval.has_field("threshold_find")) {
+        spdlog::info("New threshold for find");
+        auto ema = jval.at("threshold_find").as_double();
+        _phy.set_ue_sync_threshold_find(ema); 
+      }
+      if (jval.has_field("threshold_track")) {
+        spdlog::info("New threshold for track");
+        auto ema = jval.at("threshold_track").as_double();
+        _phy.set_ue_sync_threshold_track(ema); 
+      }
+      
       message.reply(status_codes::OK, answer);
     }
   }

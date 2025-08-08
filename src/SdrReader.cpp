@@ -25,6 +25,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <csignal>
 
 #include "spdlog/spdlog.h"
 
@@ -63,12 +64,13 @@ void SdrReader::enumerateDevices()
 }
 
 auto SdrReader::init(const std::string& device_args, const char* sample_file,
-                         const char* write_sample_file) -> bool {
+                         const char* write_sample_file, bool repeat_sample_file) -> bool {
   if (sample_file != nullptr) {
     if (0 == srsran_filesource_init(&file_source,
                                     const_cast<char*>(sample_file),
                                     SRSRAN_COMPLEX_FLOAT_BIN)) {
       _reading_from_file = true;
+      _repeat_sample_file = repeat_sample_file;
     } else {
       spdlog::error("Could not open file {}", sample_file);
       return false;
@@ -84,7 +86,6 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
         return false;
       }
     }
-
     _device_args = SoapySDR::KwargsFromString(device_args);
     _sdr = SoapySDR::Device::make(_device_args);
     if (_sdr == nullptr)
@@ -101,11 +102,13 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
 void SdrReader::init_buffer() {
   auto buffer_size = (unsigned int)ceil(_sampleRate/1000.0 * _buffer_ms);
   _buffer = std::make_unique<MultichannelRingbuffer>(sizeof(cf_t) * buffer_size, _rx_channels);
+  _buffer_write = std::make_unique<MultichannelRingbuffer>(sizeof(cf_t) * buffer_size / 2, _rx_channels); // This is the buffer where we will store the samples to write a big chunk of samples instead many little ones. 1 GB seems to be a sweet amount to write (16e6 * sizeof(cf_t) = 1GB).
   _buffer_ready = true;
 }
 
 void SdrReader::clear_buffer() {
   _buffer->clear();
+  _buffer_write->clear();
   _high_watermark_reached = false;
 }
 
@@ -217,6 +220,7 @@ void SdrReader::start() {
     for (auto ch = 0; ch < _rx_channels; ch++) {
       channels[ch] = ch;
     }
+    sdr->setHardwareTime(0); // Set SDR timestamp to zero.
     _stream = sdr->setupStream( SOAPY_SDR_RX, SOAPY_SDR_CF32, channels, _device_args);
     if( _stream == nullptr)
     {
@@ -224,7 +228,7 @@ void SdrReader::start() {
       SoapySDR::Device::unmake( sdr );
       return ;
     }
-    sdr->activateStream( (SoapySDR::Stream*)_stream, 0, 0, 0);
+    sdr->activateStream( (SoapySDR::Stream*)_stream, SOAPY_SDR_HAS_TIME, 100000000, 0); // Delayed start of the SDR reception, to avoid overfloas at the beggining.
   }
   _running = true;
 
@@ -232,9 +236,15 @@ void SdrReader::start() {
   _readerThread = std::thread{&SdrReader::read, this};
   struct sched_param thread_param = {};
   thread_param.sched_priority = 50;
+  int min_prio = sched_get_priority_min(SCHED_RR);
+  int max_prio = sched_get_priority_max(SCHED_RR);
+  
+  if (min_prio == -1 or max_prio == -1) 
+      spdlog::error("Something went wrong, error in sched_get_priority_min/max");
+
   _cfg.lookupValue("modem.sdr.reader_thread_priority_rt", thread_param.sched_priority);
 
-  spdlog::debug("Launching sample reader thread with realtime scheduling priority {}", thread_param.sched_priority);
+  spdlog::debug("Launching sample reader thread with realtime scheduling priority {}, available priorities, max: {}, min: {}", thread_param.sched_priority, max_prio, min_prio);
 
   int error = pthread_setschedparam(_readerThread.native_handle(), SCHED_RR, &thread_param);
   if (error != 0) {
@@ -245,13 +255,13 @@ void SdrReader::start() {
 void SdrReader::stop() {
   _running = false;
 
+  _readerThread.join();
   if (_sdr != nullptr) {
     auto sdr = (SoapySDR::Device*)_sdr;
     sdr->deactivateStream((SoapySDR::Stream*)_stream, 0, 0);
     sdr->closeStream((SoapySDR::Stream*)_stream);
   }
 
-  _readerThread.join();
   clear_buffer();
 }
 
@@ -266,16 +276,24 @@ void SdrReader::read() {
     } else {
       int read = 0;
       size_t writeable = 0;
+      size_t writeable_write = 0;
       auto buffers = _buffer->write_head(&writeable);
+      auto buffers_write = _buffer_write->write_head(&writeable_write);
       int writeable_samples = (int)floor(writeable / sizeof(cf_t));
+      int writeable_write_samples = (int)floor(writeable_write / sizeof(cf_t));
 
       if (_reading_from_file) {
         std::chrono::steady_clock::time_point entered = {};
         entered = std::chrono::steady_clock::now();
 
         read = srsran_filesource_read_multi(&file_source, buffers.data(), std::min(writeable_samples, toRead), (int)_rx_channels);
-        if ( read == 0 ) {
-          srsran_filesource_seek(&file_source, 0);
+        if ( read == 0  ) {
+          if (_repeat_sample_file) {
+            srsran_filesource_seek(&file_source, 0);
+          } else {
+            spdlog::info("EOF, exiting...");
+            raise(SIGINT); //SIGINT to signal srsran that we want to exit.
+          }
         }
         read = read / _rx_channels;
         int64_t required_time_us = (1000000.0/_sampleRate) * read;
@@ -291,20 +309,32 @@ void SdrReader::read() {
         auto sdr = (SoapySDR::Device*)_sdr;
         int flags = 0;
         long long time_ns = 0;
-
+        auto rbuff = buffers.data();
+        auto wbuff = buffers_write.data();
+ 
         read = sdr->readStream( (SoapySDR::Stream*)_stream, buffers.data(), std::min(writeable_samples, toRead), flags, time_ns);
 
-
-        if (read> 0) {
-          if (_writing_to_file && _write_samples) {
-            srsran_filesink_write_multi(&file_sink, buffers.data(), read, (int)_rx_channels);
+        if (read> 0 ) {
+         
+          if (_writing_to_file && _write_samples && writeable_write_samples) { // Only if we are going to write into a file.
+            for (int i = 0; i < _rx_channels; i++) {
+             memcpy(wbuff[i], rbuff[i], std::min(writeable_write_samples, read) * sizeof(cf_t)); // Copy the data in the input buffer to the toWrite buffer.
+            }
+            _buffer_write->commit( std::min(writeable_write_samples, read) * sizeof(cf_t)); // We used another ring buffer for the written of the samples, to not block a lot we only write to the disk when the ring buffer is at 90% of its capacity
           }
           _buffer->commit( read * sizeof(cf_t) );
-          spdlog::debug("buffer: commited {}, requested {}, writeable {}, flags {}", read, toRead, writeable_samples, flags);
+    
+          if (_writing_to_file && _write_samples && _buffer_write->used_size() >= 0.90* _buffer_write->capacity()) {
+            int toWrite_samples = _buffer_write->used_size() / sizeof(cf_t); // We are going to storage all the info
+            auto buff_to_write = _buffer_write->read_head(); // Gives the beggining of the buffer, it also puts _used and _head to 0, to start adding at the beggining again.
+            srsran_filesink_write_multi(&file_sink, buff_to_write.data(), toWrite_samples, (int)_rx_channels); // From the beggining of the buffer we write used_size data
+          }
+              spdlog::debug("buffer: commited {}, requested {}, writeable {}, writeable_write {}, flags {}", read, toRead, writeable_samples, writeable_write_samples, flags);
         }
         else {
           spdlog::error("readStream returned {}", read);
-          _buffer->commit(0);
+          _buffer->commit( toRead * sizeof(cf_t) );
+          _buffer_write->commit(toRead * sizeof(cf_t)); 
         }
       }
     }
@@ -337,7 +367,7 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
   for (auto ch = 0; ch < _rx_channels; ch++) {
     buffers[ch] = (char*)data[ch];
   }
-  _buffer->read(buffers, cnt);
+  _buffer->read(buffers, cnt); // Copy from the ringbuffer to the data array. This also decreases _used.
 
   if (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms / 4.0) * sizeof(cf_t)) {
     required_time_us += 500;

@@ -69,6 +69,7 @@ class MeasurementFileWriter {
     std::thread _gps_reader_thread;
     bool _running = true;
 
+    std::string _last_gps_speed = "";
     std::string _last_gps_lat = "";
     std::string _last_gps_lng = "";
     std::string _last_gps_time = "";

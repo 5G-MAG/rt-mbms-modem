@@ -48,10 +48,10 @@ auto MbsfnFrameProcessor::init() -> bool {
   srsran_chest_dl_cfg_t* chest_cfg = &_ue_dl_cfg.chest_cfg;
   bzero(chest_cfg, sizeof(srsran_chest_dl_cfg_t));
   chest_cfg->filter_coef[0] = 0.1;
-  chest_cfg->filter_type = SRSRAN_CHEST_FILTER_TRIANGLE;
+  chest_cfg->filter_type = SRSRAN_CHEST_FILTER_NONE;
   chest_cfg->noise_alg = SRSRAN_NOISE_ALG_EMPTY;
   chest_cfg->rsrp_neighbour       = false;
-  chest_cfg->sync_error_enable    = false;
+  chest_cfg->sync_error_enable    = true;
   chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_INTERPOLATE;
   chest_cfg->cfo_estimate_enable  = false;
 
@@ -91,20 +91,10 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   _pmch_cfg.area_id = _area_id;
   srsran_mbsfn_cfg_t mbsfn_cfg = _phy.mbsfn_config_for_tti(tti, mch_idx);
   _ue_dl_cfg.chest_cfg.mbsfn_area_id = _area_id;
-  srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, mbsfn_cfg.mbsfn_area_id);
+  //srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, mbsfn_cfg.mbsfn_area_id);
 
   if (!_cell.mbms_dedicated) {
     srsran_ue_dl_set_non_mbsfn_region(&_ue_dl, mbsfn_cfg.non_mbsfn_region_length);
-  }
-
-  if (sfn%50 == 0) {
-    if (mbsfn_cfg.is_mcch) {
-      _rest._mcch.errors = 0;
-      _rest._mcch.total = 1;
-    } else {
-      _rest._mch[mch_idx].errors = 0;
-      _rest._mch[mch_idx].total = 1;
-    }
   }
 
   if (!mbsfn_cfg.enable) {
@@ -201,8 +191,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         }
 
         {
-          const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
+          const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _rlc.write_pdu_mch(mch_idx, lcid, mch_mac_msg.get()->get_sdu_ptr(), mch_mac_msg.get()->get_payload_size());
         }
       }
@@ -214,7 +204,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       _rest._mch[mch_idx].errors++;
     }
 
-    spdlog::warn("PMCH in TTI {} failed with CRC error", tti);
+    spdlog::trace("PMCH in TTI {} failed with CRC error", tti);
     _mutex.unlock();
     return -1;
   }
@@ -233,9 +223,11 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
       for (auto itr = _sched_stops.cbegin() ; itr != _sched_stops.cend() ;) {
         if ( sf_idx >= itr->second ) {
-          const std::lock_guard<std::mutex> lock(_rlc_mutex);
           spdlog::debug("Stopping LCID {} in tti {} (idx in rf {})", itr->first, tti, sf_idx);
-          _rlc.stop_mch(i, itr->first);
+          const std::lock_guard<std::mutex> lock(_rlc_mutex);
+          if (!_allow_rrc_sn_across_periods) {
+            _rlc.stop_mch(i, itr->first);
+          }
           itr = _sched_stops.erase(itr);
         } else {
           itr = std::next(itr);
@@ -243,6 +235,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
   } else {
+    const std::lock_guard<std::mutex> lock(_rlc_mutex);
     _rlc.stop_mch(0, 0);
     _rest._mcch.present = true;
   }
