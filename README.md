@@ -235,7 +235,7 @@ git clone --recurse-submodules https://github.com/5G-MAG/rt-mbms-modem.git
 
 cd rt-mbms-modem
 
-git submodule update
+git submodule update --remote
 
 mkdir build && cd build
 ````
