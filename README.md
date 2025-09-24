@@ -32,7 +32,7 @@ parts later:
 <img src="https://github.com/5G-MAG/Documentation-and-Architecture/blob/main/media/wiki/modules-rp.png">
 
 The *MBMS Modem* is implemented as a standalone C++ application which uses some parts of
-the [srsRAN](https://github.com/srsran/srsRAN library. In order to use FeMBMS, functional extensions and adjustments in
+the [srsRAN](https://github.com/srsran/srsRAN) library. In order to use FeMBMS, functional extensions and adjustments in
 srsRAN are necessary:
 
 * phy/ch_estimation/: Implementation of channel estimation and reference signal for subcarrier spacings 1.25 and 7.5 kHz
