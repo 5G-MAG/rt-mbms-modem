@@ -435,4 +435,4 @@ If you encounter segmentation faults in the rt-mbms-modem for higher bandwidths 
 
 ## Docker Implementation
 
-An easy to use docker Implentation is also available. The `modem` folder contains all the essential files for running the process in a container. Please check this [page](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/docker-implementation.html) for a detailed description on how to run the processes in a docker container. 
+An easy to use docker Implentation is also available. The `modem` folder contains all the essential files for running the process in a container. Please check the [tutorial](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/tutorials/docker-implementation.html) for a detailed description on how to run the processes in docker containers. 
