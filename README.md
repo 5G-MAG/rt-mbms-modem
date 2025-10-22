@@ -114,7 +114,7 @@ sudo systemctl enable 5gmag-rt-modem
 ```
 
 ### Configuring the reverse path filter
-To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled. This has to be done in the file ``/etc/sysctl.conf``. Uncomment the two lines for reverse path filtering and set its values to 0:
+To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled. This has to be done in the file ``/etc/sysctl.conf``. Uncomment the two lines for reverse path filtering and set their values to 0:
 
 ```
 < ... >
@@ -162,19 +162,19 @@ The *modem* application outputs all received packets on a tunnel (*tun*) network
 route multicast packets arriving on this internal interface to a network interface, so they are streamed into the local
 network.
 
-By default, the tunnel interface is named **mbms_modem_tun**, and m'cast routing is configured to forward all packets to the
-default NUC ethernet interface **eno1**.
+By default, the tunnel interface is named **mbms_modem_tun**, and multicast routing is configured to forward all packets to the
+default ethernet interface **eno1**.
 
 This can be customized by editing the corresponding environment variables in ``/etc/default/5gmag-rt``:
 
-````
+```
 ### The tun interface to be created for the MBMS Modem
 MODEM_TUN_INTERFACE="mbms_modem_tun"
 
 ### Automatically set up multicast packet routing from the tun interface to a network interface
 ENABLE_MCAST_ROUTING=true
 MCAST_ROUTE_TARGET="eno1"
-````
+```
 
 In order to find the right network interface use `ifconfig`. It might look similar to this: `enp0s31f6: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>` with `enp0s31f6` being the correct string in this case.
 
@@ -184,7 +184,6 @@ sudo systemctl restart 5gmag-rt-modem
 ```
 
 ### Background Process
-
 The modem runs manually or as a background process (daemon). If the process terminates due to an error, it is automatically
 restarted. With systemd, execution, automatic start and manual restart of the process can be configured or triggered (
 systemctl enable / disable / start / stop / restart). Starting, stopping and configuring autostart for *modem*: The
@@ -199,14 +198,13 @@ standard systemd mechanisms are used to control *modem*.
 |  `` systemctl enable 5gmag-rt-modem `` | Enable autostart, modem will be started automatically after reboot |
 
 #### Troubleshooting: Insufficient permissions when trying to open SDR
-
 *MBMS Modem* daemon will run under the user fivegmag-rt (the user created in
 the [post installation configuration](https://github.com/5G-MAG/rt-mbms-modem#step-4-post-installation-configuration))
 . If this user doesn't have enough permissions to open a SDR through the USB port, you might get the following error
 when starting *modem* in the background:
 
-````
-obeca@NUC:~$ sudo systemctl status 5g-mag-rt-modem
+```
+obeca@NUC:~sudo systemctl status 5g-mag-rt-modem
 
 rp[10368]:  5g-mag-rt modem v1.1.0 starting up
 < ... >
@@ -214,30 +212,30 @@ rp[10368]:  5g-mag-rt modem v1.1.0 starting up
 [ERROR] bladerf_open_with_devinfo() returned -7 - No device(s) available
 < ... >
 Process: 10240 ExecStart=/usr/bin/modem (code=dumped, signal=ABRT)
-````
+```
 
 To solve this issue simply change the user and group in the corresponding systemd service
 file (``sudo vi /lib/systemd/system/5gmag-rt-modem.service``)
 
-````
+```
 < ... >
 [Service]
 < ... >
 User=fivegmag-rt
 Group=fivegmag-rt
 < ... >
-````
+```
 
 to **your** Ubuntu user (which is `user` in this example).
 
-````
+```
 < ... >
 [Service]
 < ... >
 User=user
 Group=user
 < ... >
-````
+```
 
 ### Manual start/stop
 
@@ -262,135 +260,6 @@ can be used with the following OPTIONs:
 
 Click [here](https://5g-mag.github.io/Getting-Started/assets/images/5gbc/v1.1.0_Console_rp.PNG) for an
 example on what the console output should look like when running the *MBMS Modem* manually.
-
-***
-
-<a name="samplefiles"></a>
-
-## Capture and running of sample files
-
-Before capturing or running a sample file, make sure that *MBMS Modem* isn't running in background. If it is,
-stop *MBMS Modem* with ``systemctl stop 5g-mag-rt-modem``.
-
-### Capture a sample file
-
-In order to capture sample files, you need to have a reception of a 5G BC signal.
-
-Run the command ``modem -w "PathToSample/samplefile.raw"`` to capture the raw I/Q data from the SDR.
-
-### Run a sample file
-
-**Important**: For correct pre-configuring of the MBMS Modem at system startup, it has to be run through systemd once, see https://github.com/5G-MAG/rt-mbms-modem#step-4-post-installation-configuration
-
-Based on the structure of the Service Announcement file the configuration file in `/etc/5gmag-rt.conf` needs to be adjusted. For details refer to the corresponding [documentation](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/additional/rt-common-shared/MBMS-service-announcement-files.html). 
-
-If you like to start *MBMS Modem* with a downloaded sample file (see [sample files](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/additional/sample-files.html)), you can run the
-following command:
-
-``modem -f "PathToSample/samplefile.raw" -b 10``
-
-> **Notice:** ``-b 10`` represents the used bandwith when the sample file was captured (see <a href="#Manual-startstop">Manual start/stop</a>). So for a 5 MHz bandwidth sample file you need to adjust the command to ``-b 5``
-
-***
-
-## Measurement recording (and GPS)
-
-### Configuring a GPS mouse
-
-*MBMS Modem* relies on GPSD (https://gpsd.gitlab.io/gpsd/) for GPS data aquisition.
-
-Please follow the setup instruction for gpsd to configure it for your GPS
-receiver: https://gpsd.gitlab.io/gpsd/installation.html
-
-Usually, this should boil down to:
-
-- ``sudo apt install libgps-dev gpsd``
-- Checking which (virtual) serial port your GPS mouse uses, once you plug it in (e.g. ``/dev/ttyACM0``)
-- Setting this device in /etc/default/gpsd:
-
-````
-# Devices gpsd should collect to at boot time.
-# They need to be read/writeable, either by user gpsd or the group dialout.
-DEVICES="/dev/ttyACM0"
-# Other options you want to pass to gpsd
-GPSD_OPTIONS=""
-````
-
-- Adding gpsd to the *dialout* group: `` sudo usermod -a -G dialout gpsd``
-- Checking if everything works with one of the client applications, e.g. `cgps` (can be installed
-  with `sudo apt install gpsd-clients`). This should show position data.
-
-### Logging measurement data to a CSV file
-
-#### Configuration for measurement file
-
-Is in ``/etc/5gmag-rt.conf``:
-
-```` 
-  measurement_file: {
-    enabled: true;
-    file_path: "/tmp/modem_measurements.csv";
-    interval_secs: 10;      
-    gpsd:
-    {
-      enabled: true;
-      host: "localhost";
-      port: "2947";
-    }
-}
-````
-
-You can modify the location of the created file here, set the interval in which measurement lines are written to it, and
-enable/disable GPS.
-
-#### File format
-
-The created file is in semicolo-separated CSV format.
-
-The columns contain:
-
-1. system timestamp
-2. latitude
-3. longitude
-4. gps timestamp
-5. CINR
-6. PDSCH MCS
-7. PDSCH BLER
-8. PDSCH BER
-9. MCCH MCS
-10. MCCH BLER
-11. MCCH BER
-12. First MCH index
-13. First MCH MCS
-14. First MCH BLER
-15. First MCH BER
-
-If there are more MCHs, they are appended at the end of the line:
-
-'16. Second MCH Index
-
-'17. Second MCH MCS
-
-'18. Second MCH BLER
-
-'19. Second MCH BER
-
-....
-
-#### Example output
-
-````
-2021-02-26T15:09:54;48.392428;16.104939;2021-02-26T15:09:54;22.847839;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-2021-02-26T15:10:00;48.392428;16.104939;2021-02-26T15:10:00;27.173386;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-2021-02-26T15:10:05;48.392428;16.104939;2021-02-26T15:10:05;26.828796;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-2021-02-26T15:10:11;48.392428;16.104939;2021-02-26T15:10:11;23.722340;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-2021-02-26T15:10:17;48.392428;16.104939;2021-02-26T15:10:17;24.914352;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-2021-02-26T15:10:22;48.392428;16.104939;2021-02-26T15:10:22;26.893414;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-2021-02-26T15:10:28;48.392428;16.104939;2021-02-26T15:10:28;22.102150;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-2021-02-26T15:10:34;48.392428;16.104939;2021-02-26T15:10:34;22.894867;4;0.000000;0.000000;2;0.000000;-;0;9;0.000000;-;
-````
-
-***
 
 ## Logfiles
 
