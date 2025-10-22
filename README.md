@@ -154,8 +154,7 @@ Follow the instructions in [SDR Platforms](https://5g-mag.github.io/Getting-Star
 
 ## Running the MBMS Modem
 
-The configuration for the *MBMS Modem* (center frequency, gain, ports for api, ...) can be changed in
-the <a href="#config-file">configuration file</a>.
+The configuration for the *MBMS Modem* (center frequency, gain, ports for api, ...) can be changed in the `/etc/5gmag-rt.conf` configuration file.
 
 ### Multicast Routing
 
