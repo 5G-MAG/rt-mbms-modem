@@ -29,10 +29,8 @@ parts later:
 * Rest API Server: provides an HTTP server for the RESTful API
 * Logging of status messages via syslog
 
-<img src="https://github.com/5G-MAG/Documentation-and-Architecture/blob/main/media/wiki/modules-rp.png">
-
 The *MBMS Modem* is implemented as a standalone C++ application which uses some parts of
-the [srsRAN](https://github.com/srsran/srsRAN) library. In order to use FeMBMS, functional extensions and adjustments in
+the [srsRAN](https://github.com/srsran/srsRAN) library. Functional extensions and adjustments in
 srsRAN are necessary:
 
 * phy/ch_estimation/: Implementation of channel estimation and reference signal for subcarrier spacings 1.25 and 7.5 kHz
@@ -49,100 +47,110 @@ srsRAN are necessary:
 Your system needs to have some dependencies before installing 5gmag-rt-modem. Please install them by running the commands below:
 
 ### Ubuntu 20.04 LTS
-````
+```
 sudo apt update
 sudo apt install ssh g++ git libboost-atomic-dev libboost-thread-dev libboost-system-dev libboost-date-time-dev libboost-regex-dev libboost-filesystem-dev libboost-random-dev libboost-chrono-dev libboost-serialization-dev libwebsocketpp-dev openssl libssl-dev ninja-build libspdlog-dev libmbedtls-dev libboost-all-dev libconfig++-dev libsctp-dev libfftw3-dev vim libcpprest-dev libusb-1.0-0-dev net-tools smcroute python-psutil python3-pip clang-tidy gpsd gpsd-clients libgps-dev
 sudo snap install cmake --classic
 sudo pip3 install cpplint
-````
+```
 
 ### Ubuntu 22.04 LTS
-````
+```
 sudo apt update
 sudo apt install ssh g++ git libboost-atomic-dev libboost-thread-dev libboost-system-dev libboost-date-time-dev libboost-regex-dev libboost-filesystem-dev libboost-random-dev libboost-chrono-dev libboost-serialization-dev libwebsocketpp-dev openssl libssl-dev ninja-build libspdlog-dev libmbedtls-dev libboost-all-dev libconfig++-dev libsctp-dev libfftw3-dev vim libcpprest-dev libusb-1.0-0-dev net-tools smcroute python3-pip clang-tidy gpsd gpsd-clients libgps-dev
 sudo snap install cmake --classic
 sudo pip3 install cpplint
 sudo pip3 install psutil
-````
+```
 
 ## Downloading
-````
+```
 cd ~
 git clone --recurse-submodules https://github.com/5G-MAG/rt-mbms-modem.git
-
 cd rt-mbms-modem
-
 git submodule update
-
 mkdir build && cd build
-````
+```
 
 ## Building
-`` cmake -DCMAKE_INSTALL_PREFIX=/usr -GNinja .. ``
+```
+cmake -DCMAKE_INSTALL_PREFIX=/usr -GNinja ..
+```
 
 Alternatively, to configure a debug build:
-`` cmake -DCMAKE_INSTALL_PREFIX=/usr -GNinja -DCMAKE_BUILD_TYPE=Debug .. ``
+```
+cmake -DCMAKE_INSTALL_PREFIX=/usr -GNinja -DCMAKE_BUILD_TYPE=Debug ..
+```
 
 Build with:
-`` ninja ``
+```
+ninja
+```
 
 ## Installing
-`` sudo ninja install `` 
+```
+sudo ninja install
+```
 
 The application installs a systemd unit and some helper scripts for setting up the TUN network interface and multicast routing.
 
 ## Configuration
+
 ### Adding fivegmag-rt user
-Create a user named "fivegmag-rt" for correct pre-configuration of receive process: `` sudo useradd fivegmag-rt ``
+Create a user named "fivegmag-rt" for correct pre-configuration of receive process: ``sudo useradd fivegmag-rt``
 
 ### Enabling Receive Process daemon for correct pre-configuring
 For correct pre-configuring of the Receive Process at a system startup, it has to be run through systemd once:
-````
+
+```
 sudo systemctl start 5gmag-rt-modem
 sudo systemctl stop 5gmag-rt-modem
-````
+```
+
 To enable automatic startup at every boot type in:
-```` 
+
+``` 
 sudo systemctl enable 5gmag-rt-modem 
-````
+```
 
 ### Configuring the reverse path filter
 To avoid the kernel filtering away multicast packets received on the tunnel interface, the rp_filter needs to be disabled. This has to be done in the file ``/etc/sysctl.conf``. Uncomment the two lines for reverse path filtering and set its values to 0:
 
-````
+```
 < ... >
 net.ipv4.conf.default.rp_filter=0
 net.ipv4.conf.all.rp_filter=0
 < ... >
-````
+```
 
 Load in sysctl settings from the file
-````
+```
 sudo sysctl -p
-````
+```
 
 You can check if the values are set correctly by running:
 
-````
+```
 sysctl -ar 'rp_filter'
-````
+```
 
 The individual lines of the output should look like this:
-````
+```
 net.ipv4.conf.all.rp_filter = 0
 net.ipv4.conf.default.rp_filter = 0
-````
+```
 
 ### Set superuser rights for 5gmag-rt-modem (optional)
 To allow the application to run at realtime scheduling without superuser privileges, set its capabilities 
 accordingly. Alternatively, you can run it with superuser rights (``sudo ./modem``).
 
-`` sudo setcap 'cap_sys_nice=eip' ./modem ``
+```
+sudo setcap 'cap_sys_nice=eip' ./modem
+```
 
 ### Adjust SDR configuration
-Follow the instructions in [SDR Platforms](https://5g-mag.github.io/Getting-Started/pages/3gpp-ran-and-core-platforms/tutorials/sdr-platforms.html) to adjust the configuration in `/etc/5gmag-rt.conf` for your SDR card.
 
-***
+Follow the instructions in [SDR Platforms](https://5g-mag.github.io/Getting-Started/pages/3gpp-ran-and-core-platforms/tutorials/sdr-platforms.html) to adjust the configuration in `/etc/5gmag-rt.conf` for your SDR card.
 
 ## Running the MBMS Modem
 
@@ -171,7 +179,10 @@ MCAST_ROUTE_TARGET="eno1"
 
 In order to find the right network interface use `ifconfig`. It might look similar to this: `enp0s31f6: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>` with `enp0s31f6` being the correct string in this case.
 
-For changes to take effect, *MBMS Modem* needs to be restarted: `` sudo systemctl restart 5gmag-rt-modem ``
+For changes to take effect, *MBMS Modem* needs to be restarted:
+```
+sudo systemctl restart 5gmag-rt-modem
+```
 
 ### Background Process
 
@@ -250,7 +261,7 @@ can be used with the following OPTIONs:
 
 ### Example screenshot
 
-Click [here](https://github.com/5G-MAG/Getting-Started/blob/main/media/wiki/v1.1.0_Console_rp.PNG) for an
+Click [here](https://5g-mag.github.io/Getting-Started/assets/images/5gbc/v1.1.0_Console_rp.PNG) for an
 example on what the console output should look like when running the *MBMS Modem* manually.
 
 ***
@@ -272,9 +283,9 @@ Run the command ``modem -w "PathToSample/samplefile.raw"`` to capture the raw I/
 
 **Important**: For correct pre-configuring of the MBMS Modem at system startup, it has to be run through systemd once, see https://github.com/5G-MAG/rt-mbms-modem#step-4-post-installation-configuration
 
-Based on the structure of the Service Announcement file the configuration file in `/etc/5gmag-rt.conf` needs to be adjusted. For details refer to the corresponding [documentation](https://github.com/5G-MAG/Documentation-and-Architecture/wiki/MBMS-Service-Announcement-Files). 
+Based on the structure of the Service Announcement file the configuration file in `/etc/5gmag-rt.conf` needs to be adjusted. For details refer to the corresponding [documentation](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/additional/rt-common-shared/MBMS-service-announcement-files.html). 
 
-If you like to start *MBMS Modem* with a downloaded sample file (see [sample files](sample-files)), you can run the
+If you like to start *MBMS Modem* with a downloaded sample file (see [sample files](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/additional/sample-files.html)), you can run the
 following command:
 
 ``modem -f "PathToSample/samplefile.raw" -b 10``
