@@ -1,0 +1,8 @@
+<map id="MbsfnFrameProcessor" name="MbsfnFrameProcessor">
+<area shape="rect" id="node1" title="Frame processor for MBSFN subframes." alt="" coords="5,1019,185,1507"/>
+<area shape="rect" id="node2" href="$classRestHandler.html" title="The RESTful API handler." alt="" coords="237,556,404,956"/>
+<area shape="rect" id="node5" href="$classCasFrameProcessor.html" title="Frame processor for CAS subframes." alt="" coords="209,1055,384,1470"/>
+<area shape="rect" id="node3" href="$classSdrReader.html" title="Interface to the SDR stick." alt="" coords="246,5,395,479"/>
+<area shape="rect" id="node4" href="$classRestHandler_1_1ChannelInfo.html" title="RX Info pertaining to an SCH (MCCH/MCH or PDSCH)" alt="" coords="420,145,589,339"/>
+<area shape="rect" id="node6" href="$classPhy.html" title="The PHY component." alt="" coords="51,42,222,442"/>
+</map>
