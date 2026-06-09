@@ -60,7 +60,9 @@ MeasurementFileWriter::MeasurementFileWriter(const libconfig::Config& cfg)
 
 MeasurementFileWriter::~MeasurementFileWriter() {
   _running = false;
-  _gps_reader_thread.join();
+  if (_gps_reader_thread.joinable()) {
+    _gps_reader_thread.join();
+  }
 }
 
 void MeasurementFileWriter::ReadGps() {

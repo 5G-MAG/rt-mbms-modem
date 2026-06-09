@@ -73,6 +73,7 @@ void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buff
       }
 
       _wr_mutex.lock();
+//      spdlog::info("GW write: {} bytes to TUN", pdu->N_bytes);
       int n = write(_tun_fd, pdu->msg, pdu->N_bytes);
       _wr_mutex.unlock();
 

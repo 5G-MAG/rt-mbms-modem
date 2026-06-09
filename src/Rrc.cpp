@@ -77,7 +77,7 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
 
     bcch_dl_sch_msg_s dlsch_msg1;
     asn1::cbit_ref    dlsch_bref(pdu->msg, pdu->N_bytes);
-    asn1::SRSASN_CODE err = dlsch_msg1.unpack(dlsch_bref);
+//    asn1::SRSASN_CODE err = dlsch_msg1.unpack(dlsch_bref);
 
     asn1::json_writer json_writer;
     dlsch_msg1.to_json(json_writer);
@@ -112,7 +112,7 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
           //handle_sib13();
           break;
         default:
-          spdlog::debug("SIB{} is not supported\n", sib.type().to_number());
+          spdlog::debug("SIB{} is not supported\n", sib.type().to_string());
       }
     }
   }

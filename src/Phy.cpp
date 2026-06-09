@@ -32,7 +32,7 @@ static auto receive_callback(void* obj, cf_t* data[SRSRAN_MAX_CHANNELS],        
   return (static_cast<Phy*>(obj))->_sample_cb(data, nsamples, rx_time);       // NOLINT
 }
 
-const uint32_t kMaxBufferSamples = 2 * 15360;
+const uint32_t kMaxBufferSamples = 2 * 15360; // The buffer needs to be at least sf_samples * 40.
 const uint32_t kMaxSfn = 1024;
 const uint32_t kSfnOffset = 4;
 const uint32_t kSubframesPerFrame = 10;
@@ -44,10 +44,10 @@ const uint32_t kMaxValidFrames = 4;
 
 const uint32_t kMaxFramesTimeout = 80;
 
-Phy::Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb,
+Phy::Phy(get_samples_t cb, /*const libconfig::Config& cfg,*/ uint8_t cs_nof_prb,
          int8_t override_nof_prb, uint8_t rx_channels)
-    : _cfg(cfg),
-      _sample_cb(std::move(std::move(cb))),
+    : _sample_cb(std::move(std::move(cb))),
+//      _cfg(cfg),
       _cs_nof_prb(cs_nof_prb),
       _override_nof_prb(override_nof_prb),
       _rx_channels(rx_channels) {
@@ -57,8 +57,13 @@ Phy::Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb,
 }
 
 Phy::~Phy() {
+
   srsran_ue_sync_free(&_ue_sync);
-  free(_mib_buffer[0]);  // NOLINT
+  srsran_ue_mib_sync_free(&_mib_sync);
+  srsran_ue_mib_free(&_mib);
+  srsran_ue_cellsearch_free(&_cell_search);
+  free(_mib_buffer[0]);  // NOLINT 
+  free(_mib_buffer[1]);  // NOLINT 
 }
 
 auto Phy::synchronize_subframe() -> bool {
@@ -94,7 +99,7 @@ auto Phy::synchronize_subframe() -> bool {
 }
 
 auto Phy::cell_search() -> bool {
-  std::array<srsran_ue_cellsearch_result_t, kMaxCellsToDiscover> found_cells = {0};
+  std::array<srsran_ue_cellsearch_result_t, kMaxCellsToDiscover> found_cells = {{{0, SRSRAN_CP_EXT, SRSRAN_TDD, 0.0, 0.0, 0.0, 0.0}}}; // Default values to initialize the array.
 
   uint32_t max_peak_cell = 0;
   int ret = srsran_ue_cellsearch_scan(&_cell_search, found_cells.data(), &max_peak_cell);
@@ -133,7 +138,7 @@ auto Phy::cell_search() -> bool {
   ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, kMaxFramesTimeout, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
 
   if (!ret) { // MIB-MBMS failed, try to decode regular MIB
-    init();
+  //  init();
     new_cell.mbms_dedicated = false;
     if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
       spdlog::error("Phy: Error setting UE MIB sync cell");
@@ -218,6 +223,13 @@ auto Phy::init() -> bool {
     spdlog::error("Cannot init ue_mib");
     return false;
   }
+
+  // If we initialize this buffer the reception brokes
+/*  if (srsran_ue_mib_init(&_mib, _mib_buffer[1], MAX_PRB) != 0) {
+    spdlog::error("Cannot init ue_mib");
+    return false;
+  }*/
+
 
   return true;
 }
@@ -311,7 +323,7 @@ auto Phy::is_cas_subframe(unsigned tti) -> bool
     // This is subframe 0 in a radio frame divisible by 4, and hence a CAS frame. 
     return tti%40 == 0;
   } else {
-    unsigned sfn = tti / 10;
+    //unsigned sfn = tti / 10; //unused
     return (tti%10 == 0 || tti%10 == 5); 
   }
 }
@@ -365,7 +377,7 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
 
       for (uint32_t i = 0; i < _mcch.nof_pmch_info; i++) {
         unsigned fn_in_scheduling_period =  sfn % enum_to_number(_mcch.pmch_info_list[i].mch_sched_period);
-        unsigned sf_idx = fn_in_scheduling_period * 10 + sf 
+        uint16_t sf_idx = fn_in_scheduling_period * 10 + sf 
           - (fn_in_scheduling_period / 4) // minus 1 CAS SF per 4 SFNs 
           - 1; // minus 1 MCCH SF per scheduling period;
 
@@ -374,7 +386,7 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
         if (sf_idx <= _mcch.pmch_info_list[i].sf_alloc_end) {
           area = i;
           if ((i == 0 && fn_in_scheduling_period == 0 && sf == 1) ||
-              (i > 0 && _mcch.pmch_info_list[i-1].sf_alloc_end + 1 == sf_idx)) {
+              (i > 0 && _mcch.pmch_info_list[i-1].sf_alloc_end + 1U == sf_idx)) {
             spdlog::debug("assigning sig_mcs {}, mch_idx is {}",  area_info.mcch_cfg.sig_mcs, area);
             cfg.mbsfn_mcs = enum_to_number(area_info.mcch_cfg.sig_mcs);
           } else {

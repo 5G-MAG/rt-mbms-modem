@@ -51,9 +51,9 @@ void SdrReader::enumerateDevices()
   auto results = SoapySDR::Device::enumerate();
 	SoapySDR::Kwargs::iterator it;
 
-	for( int i = 0; i < results.size(); ++i)
+	for( size_t i = 0; i < results.size(); ++i)
 	{
-		printf("Device #%d:\n", i);
+		printf("Device #%zu:\n", i);
 		for( it = results[i].begin(); it != results[i].end(); ++it)
 		{
 			printf("%s = %s\n", it->first.c_str(), it->second.c_str());
@@ -101,6 +101,7 @@ auto SdrReader::init(const std::string& device_args, const char* sample_file,
 
 void SdrReader::init_buffer() {
   auto buffer_size = (unsigned int)ceil(_sampleRate/1000.0 * _buffer_ms);
+  spdlog::info("SoapySDR: initiating _buffer (RingBuffer) of size {}", buffer_size);
   _buffer = std::make_unique<MultichannelRingbuffer>(sizeof(cf_t) * buffer_size, _rx_channels);
   _buffer_write = std::make_unique<MultichannelRingbuffer>(sizeof(cf_t) * buffer_size / 2, _rx_channels); // This is the buffer where we will store the samples to write a big chunk of samples instead many little ones. 1 GB seems to be a sweet amount to write (16e6 * sizeof(cf_t) = 1GB).
   _buffer_ready = true;
@@ -188,7 +189,7 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
 
   auto sdr = (SoapySDR::Device*)_sdr;
 
-  for (auto ch = 0; ch < _rx_channels; ch++) {
+  for (size_t ch = 0; ch < _rx_channels; ch++) {
     set_antenna(antenna, ch);
     set_gain(_use_agc, gain, ch);
     set_frequency(frequency, ch);
@@ -217,7 +218,7 @@ void SdrReader::start() {
   if (_sdr != nullptr) {
     auto sdr = (SoapySDR::Device*)_sdr;
     std::vector<size_t> channels(_rx_channels);
-    for (auto ch = 0; ch < _rx_channels; ch++) {
+    for (size_t ch = 0; ch < _rx_channels; ch++) {
       channels[ch] = ch;
     }
     sdr->setHardwareTime(0); // Set SDR timestamp to zero.
@@ -266,15 +267,21 @@ void SdrReader::stop() {
 }
 
 void SdrReader::read() {
-  std::array<void*, SRSRAN_MAX_CHANNELS> radio_buffers = { nullptr };
+  //std::array<void*, SRSRAN_MAX_CHANNELS> radio_buffers = { nullptr }; // unused
+
+  auto next_tick = std::chrono::steady_clock::now();
   while (_running) {
     int toRead = ceil(_sampleRate / 1000.0);
+
+    auto tick_step = std::chrono::microseconds((int64_t)(1000000.0 / _sampleRate * toRead));
     //int toRead = 254;
     if (_buffer->free_size() < toRead * sizeof(cf_t)) {
       spdlog::debug("ringbuffer overflow");
-      std::this_thread::sleep_for(std::chrono::microseconds(1000));
+  //    std::this_thread::sleep_for(std::chrono::microseconds(1000));
+      next_tick += tick_step;//std::chrono::microseconds((int64_t)(1000000.0 / _sampleRate * toRead));
+    //  std::this_thread::sleep_until(next_tick);
     } else {
-      int read = 0;
+      unsigned int read = 0;
       size_t writeable = 0;
       size_t writeable_write = 0;
       auto buffers = _buffer->write_head(&writeable);
@@ -283,8 +290,8 @@ void SdrReader::read() {
       int writeable_write_samples = (int)floor(writeable_write / sizeof(cf_t));
 
       if (_reading_from_file) {
-        std::chrono::steady_clock::time_point entered = {};
-        entered = std::chrono::steady_clock::now();
+  //      std::chrono::steady_clock::time_point entered = {};
+  //      entered = std::chrono::steady_clock::now();
 
         read = srsran_filesource_read_multi(&file_source, buffers.data(), std::min(writeable_samples, toRead), (int)_rx_channels);
         if ( read == 0  ) {
@@ -292,42 +299,49 @@ void SdrReader::read() {
             srsran_filesource_seek(&file_source, 0);
           } else {
             spdlog::info("EOF, exiting...");
-            raise(SIGINT); //SIGINT to signal srsran that we want to exit.
+            //raise(SIGINT); //SIGINT to signal srsran that we want to exit.
+            _running = false; //stop();
           }
         }
         read = read / _rx_channels;
-        int64_t required_time_us = (1000000.0/_sampleRate) * read;
+       // int64_t required_time_us = (1000000.0/_sampleRate) * read;
 
         if (read > 0) {
           _buffer->commit( read * sizeof(cf_t) );
         }
 
-        std::chrono::microseconds sleep = (std::chrono::microseconds(required_time_us) -
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - entered));
-        std::this_thread::sleep_for(sleep);
+     //   std::chrono::microseconds sleep = (std::chrono::microseconds(required_time_us) -
+     //       std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - entered));
+     
+  //  tick_step = std::chrono::microseconds((int64_t)(1000000.0 / _sampleRate * read));
+       next_tick += std::chrono::microseconds((int64_t)(1000000.0 / _sampleRate * read)); 
+        //spdlog::info("We spend {} microseconds reading from file",std::chrono::duration_cast<std::chrono::microseconds>(sleep).count());
+      //  std::this_thread::sleep_for(sleep);
+      //  std::this_thread::sleep_until(next_tick);
       } else {
         auto sdr = (SoapySDR::Device*)_sdr;
         int flags = 0;
         long long time_ns = 0;
-        auto rbuff = buffers.data();
-        auto wbuff = buffers_write.data();
  
         read = sdr->readStream( (SoapySDR::Stream*)_stream, buffers.data(), std::min(writeable_samples, toRead), flags, time_ns);
 
         if (read> 0 ) {
-         
+          auto rbuff = buffers.data();
+          
           if (_writing_to_file && _write_samples && writeable_write_samples) { // Only if we are going to write into a file.
-            for (int i = 0; i < _rx_channels; i++) {
-             memcpy(wbuff[i], rbuff[i], std::min(writeable_write_samples, read) * sizeof(cf_t)); // Copy the data in the input buffer to the toWrite buffer.
+            auto wbuff = buffers_write.data();
+            for (size_t  i = 0; i < _rx_channels; i++) {
+      //        spdlog::info("muestras leídas (read) {}, buffer usado para escribir {}, capacidad {}, buffer de lectura usado {}, capacidad de lectura {}", read, _buffer_write->used_size(), _buffer_write->capacity(), _buffer->used_size(), _buffer->capacity()); 
+             memcpy(wbuff[i], rbuff[i], std::min(writeable_write_samples, toRead) * sizeof(cf_t)); // Copy the data in the input buffer to the toWrite buffer.
             }
-            _buffer_write->commit( std::min(writeable_write_samples, read) * sizeof(cf_t)); // We used another ring buffer for the written of the samples, to not block a lot we only write to the disk when the ring buffer is at 90% of its capacity
+            _buffer_write->commit( std::min(writeable_write_samples, toRead) * sizeof(cf_t)); // We used another ring buffer for the written of the samples, to not block a lot we only write to the disk when the ring buffer is at 95% of its capacity
           }
           _buffer->commit( read * sizeof(cf_t) );
     
-          if (_writing_to_file && _write_samples && _buffer_write->used_size() >= 0.90* _buffer_write->capacity()) {
-            int toWrite_samples = _buffer_write->used_size() / sizeof(cf_t); // We are going to storage all the info
+          if (_writing_to_file && _write_samples && _buffer_write->used_size() >= 0.95* _buffer_write->capacity()) {
+            unsigned int toWrite_samples = _buffer_write->used_size() / sizeof(cf_t); // We are going to storage all the info
             auto buff_to_write = _buffer_write->read_head(); // Gives the beggining of the buffer, it also puts _used and _head to 0, to start adding at the beggining again.
-            srsran_filesink_write_multi(&file_sink, buff_to_write.data(), toWrite_samples, (int)_rx_channels); // From the beggining of the buffer we write used_size data
+            srsran_filesink_write_multi(&file_sink, buff_to_write.data(), static_cast<int>(toWrite_samples), static_cast<int>(_rx_channels)); // From the begginin of the buffer we write used_size data
           }
               spdlog::debug("buffer: commited {}, requested {}, writeable {}, writeable_write {}, flags {}", read, toRead, writeable_samples, writeable_write_samples, flags);
         }
@@ -338,6 +352,13 @@ void SdrReader::read() {
         }
       }
     }
+    auto now = std::chrono::steady_clock::now();
+    if (next_tick < now) {
+        //  auto overrun_us = std::chrono::duration_cast<std::chrono::microseconds>(now - next_tick).count();
+        //  auto remainder_us = tick_step.count() - (overrun_us);
+        next_tick = now;
+    }
+    std::this_thread::sleep_until(next_tick);
   }
   spdlog::debug("Sample reader thread exited");
 }
@@ -349,35 +370,58 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
   entered = std::chrono::steady_clock::now();
 
   int64_t required_time_us = (1000000.0/_sampleRate) * nsamples;
+  double half_buffer_size = (_sampleRate / 1000.0f) * (static_cast<double>(_buffer_ms) * 0.50f) * sizeof(cf_t);
   size_t cnt = nsamples * sizeof(cf_t);
 
-  if (_high_watermark_reached &&  _buffer->used_size() < (_sampleRate / 1000.0) * 10 * sizeof(cf_t)) {
+  if (_high_watermark_reached &&  _buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms * 0.2) * sizeof(cf_t)) {
     _high_watermark_reached = false;
   }
 
   if (!_high_watermark_reached) {
-    while (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms / 2.0) * sizeof(cf_t)) {
-      std::this_thread::sleep_for(std::chrono::microseconds(500));
+    while (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms * 0.2) * sizeof(cf_t)) {
+      std::this_thread::sleep_for(std::chrono::microseconds(5));
     }
     spdlog::debug("Filled ringbuffer to half capacity");
     _high_watermark_reached = true;
   }
 
+//  spdlog::info("_buffer->used_size() {}", _buffer->used_size());
+/*    while (_buffer->used_size() < cnt) {
+          std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    
+    */
+
+//  if (_buffer->used_size() < cnt*4) {
+//    spdlog::info(" WARNING: We are consuming the buffer TOO fast (4 hilos)");
+//  }
   std::vector<char*> buffers(_rx_channels);
-  for (auto ch = 0; ch < _rx_channels; ch++) {
+  for (size_t ch = 0; ch < _rx_channels; ch++) {
     buffers[ch] = (char*)data[ch];
   }
   _buffer->read(buffers, cnt); // Copy from the ringbuffer to the data array. This also decreases _used.
 
-  if (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms / 4.0) * sizeof(cf_t)) {
-    required_time_us += 500;
-  } else {
-    required_time_us -= 500;
-  }
+//    if (_reading_from_file) {
+//      return 0;
+//    }
 
-  spdlog::debug("took {}, read {} samples, adjusted required {} us, delta {} us, sleep adj {},  sleeping for {} us",
+
+/*
+  if (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms * 0.45) * sizeof(cf_t)) {
+    required_time_us += 40;
+    //spdlog::info(" WARNING: We are consuming the buffer TOO fast ");
+  } else if (_buffer->used_size() > (_sampleRate / 1000.0) * (_buffer_ms * 0.55) * sizeof(cf_t)) {
+    //spdlog::info(" We are SLOOW ");
+    required_time_us -= 40;
+  }
+  */
+
+  required_time_us += static_cast<int>(((half_buffer_size - _buffer->used_size()) / half_buffer_size) * 500.0); // We adjust the required time respect to the middle of the buffer, the objetive is to have the buffer always at the half.
+
+  spdlog::debug("took {}, read {} samples, samplerate is {}, adjusted required {} us, delta {} us, sleep adj {},  sleeping for {} us",
       std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - entered).count(),
       nsamples,
+      _sampleRate,
       std::chrono::microseconds(required_time_us).count(),
       std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - _last_read).count(),
       _sleep_adjustment,
@@ -393,6 +437,7 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
   }
 
   _last_read = std::chrono::steady_clock::now();
+  //  }*/
   return 0;
 }
 

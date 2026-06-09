@@ -45,10 +45,10 @@ public:
 	}
 
 	thread_pool(thread_pool const &) = delete;
-	thread_pool(thread_pool &&) = default;
+//	thread_pool(thread_pool &&) = default;
 
 	thread_pool &operator=(thread_pool const &) = delete;
-	thread_pool &operator=(thread_pool &&) = default;
+//	thread_pool &operator=(thread_pool &&) = default;
 
 	// Push a new task into the queue
 	template <class Func, class... Args>

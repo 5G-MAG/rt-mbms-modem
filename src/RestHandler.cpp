@@ -36,7 +36,7 @@ using web::http::experimental::listener::http_listener_config;
 RestHandler::RestHandler(const libconfig::Config& cfg, const std::string& url,
                          state_t& state, SdrReader& sdr, Phy& phy,
                          set_params_t set_params)
-    : _cfg(cfg),
+    :/* _cfg(cfg),*/
       _state(state),
       _sdr(sdr),
       _phy(phy),
