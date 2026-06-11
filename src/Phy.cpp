@@ -130,13 +130,15 @@ auto Phy::cell_search() -> bool {
 
   // Try to decode MIB-MBMS
   new_cell.mbms_dedicated = true;
-  new_cell.is_mbms_r16 = false;
   if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
     spdlog::error("Phy: Error setting UE MIB sync cell");
     return false;
   }
   srsran_ue_sync_reset(&_mib_sync.ue_sync);
   ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, kMaxFramesTimeout, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
+
+  spdlog::info("Rel-16 PBCH repetition detected: {}", _mib_sync.ue_mib.pbch.cell.is_mbms_r16);
+  new_cell.is_mbms_r16 = _mib_sync.ue_mib.pbch.cell.is_mbms_r16;
 
   if (!ret) { // MIB-MBMS failed, try to decode regular MIB
   //  init();
@@ -257,11 +259,16 @@ void Phy::set_mch_scheduling_info(const srsran::sib13_t& sib13) {
           &_mcch_table[0],
           static_cast<uint32_t>(
             sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info));
+
+//      spdlog::info("Rel-16 MBSFN {}", sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info_is_r16);
+
+
     } else {
       generate_mcch_table(
           &_mcch_table[0],
           static_cast<uint32_t>(
             sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info));
+//      spdlog::info("Non Rel-16 MBSFN {}", sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info_is_r16);
     }
 
     std::stringstream ss;
