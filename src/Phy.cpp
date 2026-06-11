@@ -130,6 +130,7 @@ auto Phy::cell_search() -> bool {
 
   // Try to decode MIB-MBMS
   new_cell.mbms_dedicated = true;
+  new_cell.is_mbms_r16 = false;
   if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
     spdlog::error("Phy: Error setting UE MIB sync cell");
     return false;
@@ -346,6 +347,7 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
 
   if (!_mcch_configured) {
     {
+      spdlog::debug("MCCH not configured tti= {}",  tti);
       return cfg;
     }
   }
