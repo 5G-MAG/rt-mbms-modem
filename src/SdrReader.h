@@ -62,8 +62,7 @@ public:
     /**
      * Tune the SDR to the desired frequency, and set gain, filter and antenna parameters.
      */
-    bool tune(uint32_t frequency, uint32_t sample_rate, uint32_t bandwidth, double gain, const std::string &antenna,
-              bool use_agc);
+    bool tune(uint32_t frequency, uint32_t sample_rate, uint32_t bandwidth, double gain, const std::string &antenna, bool use_agc);
 
     /**
      * Start reading samples from the SDR

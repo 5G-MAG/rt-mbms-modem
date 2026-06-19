@@ -173,7 +173,7 @@ static Config cfg;  /**< Global configuration object. */
 
 static unsigned sample_rate = 7680000;  /**< Sample rate of the SDR */
 static unsigned search_sample_rate = 7680000;  /**< Sample rate of the SDR */
-static unsigned frequency = 667000000;  /**< Center freqeuncy the SDR is tuned to */
+static unsigned frequency = 667000000;  /**< Center frequency the SDR is tuned to */
 static uint32_t bandwidth = 10000000;   /**< Low pass filter bandwidth for the SDR */
 static double gain = 0.9;               /**< Overall system gain for the SDR */
 static std::string antenna = "LNAW";    /**< Antenna input to be used */
@@ -365,19 +365,7 @@ auto main(int argc, char **argv) -> int {
   }
 
 
-  // Configurar sink de srslog — redirigir a stdout
- /* auto* log_sink = srslog::create_stdout_sink();
-  if (!log_sink) {
-  spdlog::error("Failed to create srslog stdout sink");
-  exit(1);
-  }
-  srslog::log_channel* chan = srslog::create_log_channel("main_channel", *log_sink);
-  srslog::set_default_sink(*log_sink);
-  
- // Arrancar el backend de srslog — SIN esto ningún log aparece
-  srslog::init();
-  */
-  // Configure srsLTE logging
+  // Configure srsRAN logging
  auto& mac_log = srslog::fetch_basic_logger("MAC", false);
   mac_log.set_level(srs_level);
  auto& phy_log = srslog::fetch_basic_logger("PHY", false);
@@ -419,10 +407,8 @@ auto main(int argc, char **argv) -> int {
   }
 
 
-//  for (auto& p : mbsfn_processors)
-//  {
-//  }
   rest_handler.start(); // Start the listener, we need to do it after storing the cas into the rest_handler, otherwise we will get segfault.
+  
   // Start receiving sample data
   sdr.start();
 
@@ -480,30 +466,27 @@ auto main(int argc, char **argv) -> int {
 
               // ...adjust the SDR's sample rate to fit the wider MBSFN bandwidth...
               unsigned new_srate = srsran_sampling_freq_hz(mbsfn_nof_prb);
-              spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
-                  mbsfn_nof_prb * 0.2);
-              sdr.stop();
-
-              bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
-              sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
-
+              bandwidth = (mbsfn_nof_prb * 200000);
               // ... configure the PHY and CAS processor to decode a narrow CAS and wider MBSFN, and move back to syncing state
               // after reconfiguring and restarting the SDR.
               phy.set_cell();
               cas_processor.set_cell(phy.cell());
 
-              sdr.start();
+              if (new_srate != sample_rate) {
+                spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
+                    mbsfn_nof_prb * 0.2);
+                sdr.stop();
+                sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
+                sdr.start();
+              }
               spdlog::info("Synchronizing subframe after PRB extension");
-              //MbsfnFrameProcessor::stop_delivery_worker();
               state = syncing;
             }
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
             sync_losses++;
-//            MbsfnFrameProcessor::stop_delivery_worker();
             state = syncing;
-//            auto t2 = std::chrono::high_resolution_clock::now();
           }
         } else {
           // All other frames in FeMBMS dedicated mode are MBSFN frames.
@@ -514,68 +497,42 @@ auto main(int argc, char **argv) -> int {
           auto t1 = std::chrono::high_resolution_clock::now();
           auto t2 = t1;
 
-        //  while (true) // Let's see which mbsfn processor is available
-        //  {
-        //    mb_idx = static_cast<int>((++mb_idx) % thread_cnt);
-          //  spdlog::debug("Probing mbs_processor {}.", mb_idx);
-            auto* proc = free_processors.pop();//mbsfn_processors[mb_idx]; // Grab a processor
+          auto* proc = free_processors.pop();//mbsfn_processors[mb_idx]; // Grab a processor
 
-//            if (/*auto buf = proc->try_get_rx_buffer_and_lock()*/ !proc->busy.exchange(true, std::memory_order_acquire)) { // Try to catch mbsfn processor i
-          //  spdlog::info("Grab processor {}.", proc->get_id());
-              // If its available we can launch it
-              if (!restart && phy.get_next_frame(proc->get_rx_buffer(), proc->rx_buffer_size())) {
-                t2 = std::chrono::high_resolution_clock::now();
-                if (phy.mcch_configured() && phy.is_mbsfn_subframe(tti)) {
-                  // If data frm SIB1/SIB13 has been received in CAS, configure the processors accordingly
-                  if (!/*mbsfn_processors[mb_idx]*/proc->mbsfn_configured()) {
-                    srsran_scs_t scs = SRSRAN_SCS_15KHZ;
-                    switch (phy.mbsfn_subcarrier_spacing()) {
-                      case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ; break;
-                      case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSRAN_SCS_7KHZ5; break;
-                      case Phy::SubcarrierSpacing::df_1kHz25: scs = SRSRAN_SCS_1KHZ25; break;
-                    }
-                    auto cell = phy.cell();
-                    cell.nof_prb = cell.mbsfn_prb;
-                    /*mbsfn_processors[mb_idx]->set_cell(cell);
-                    mbsfn_processors[mb_idx]->configure_mbsfn(phy.mbsfn_area_id(), scs);
-                    */
-                    proc->set_cell(cell);
-                    proc->configure_mbsfn(phy.mbsfn_area_id(), scs);
-
-                  }
-          //  spdlog::info("Before push.");
-                  pool.push([ObjectPtr = proc /*mbsfn_processors[mb_idx]*/, tti, &free_processors] {
-          //  spdlog::info("Lnching process {}.", ObjectPtr->get_id());
-                    ObjectPtr->process(tti);
-                    //proc->process(tti);
-         //   spdlog::info("Queueing processor {}.", ObjectPtr->get_id());
-                    free_processors.push(ObjectPtr);
-                    //ObjectPtr->unlock();
-                  });
-                } else {
-                  // Nothing to do yet, we lack the data from SIB1/SIB13
-                  // Discard the samples and unlock the processor.
-                //  mbsfn_processors[mb_idx]->unlock();
-                  //proc->unlock();
-                  //proc->release();
-                  free_processors.push(proc); // Back to the queue
+          // If its available we can launch it
+          if (!restart && phy.get_next_frame(proc->get_rx_buffer(), proc->rx_buffer_size())) {
+            t2 = std::chrono::high_resolution_clock::now();
+            if (phy.mcch_configured() && phy.is_mbsfn_subframe(tti)) {
+              // If data frm SIB1/SIB13 has been received in CAS, configure the processors accordingly
+              if (!/*mbsfn_processors[mb_idx]*/proc->mbsfn_configured()) {
+                srsran_scs_t scs = SRSRAN_SCS_15KHZ;
+                switch (phy.mbsfn_subcarrier_spacing()) {
+                  case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ; break;
+                  case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSRAN_SCS_7KHZ5; break;
+                  case Phy::SubcarrierSpacing::df_1kHz25: scs = SRSRAN_SCS_1KHZ25; break;
                 }
-              } else {
-                // Failed to receive data, or sync lost. Go back to searching state.
-                spdlog::warn("Synchronization lost while processing. Going back to searching state, we were waiting {} microseconds.", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
-                sync_losses++; 
-//                MbsfnFrameProcessor::stop_delivery_worker();
-                state = syncing;
-                free_processors.push(proc); // Back to the queue
+                auto cell = phy.cell();
+                cell.nof_prb = cell.mbsfn_prb;
+                proc->set_cell(cell);
+                proc->configure_mbsfn(phy.mbsfn_area_id(), scs);
+
               }
-              //mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
-            //  break; // Stops searching in this iteration for an available processor
- //           }
-            
-         // }
-        //  if (std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() > 2000)
-           // spdlog::info("We waited {} microseconds for mbs_processor {}.", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count(), proc->get_id());
-//          mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
+              pool.push([ObjectPtr = proc /*mbsfn_processors[mb_idx]*/, tti, &free_processors] {
+                ObjectPtr->process(tti);
+                free_processors.push(ObjectPtr);
+              });
+            } else {
+              // Nothing to do yet, we lack the data from SIB1/SIB13
+              // Discard the samples and unlock the processor.
+              free_processors.push(proc); // Back to the queue
+            }
+          } else {
+            // Failed to receive data, or sync lost. Go back to searching state.
+            spdlog::warn("Synchronization lost while processing. Going back to searching state, we were waiting {} microseconds.", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+            sync_losses++; 
+            state = syncing;
+            free_processors.push(proc); // Back to the queue
+          }
         }
       }
       break;
@@ -593,7 +550,6 @@ auto main(int argc, char **argv) -> int {
 
         // In searching state, clear the receive buffer and try to find a cell at the configured frequency and synchronize with it
         restart = false;
-       // sdr.clear_buffer();
         bool cell_found = phy.cell_search();
         if (cell_found) {
           // A cell has been found. We now know the required number of PRB = bandwidth of the carrier. Set the approproiate
@@ -610,21 +566,21 @@ auto main(int argc, char **argv) -> int {
           } else {
             // When decoding from the air, configure the SDR accordingly
             unsigned new_srate = srsran_sampling_freq_hz(cas_nof_prb);
-            spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
-                phy.nr_prb() * 0.2);
-            sdr.stop();
-            sdr.clear_buffer();
-            bandwidth = (cas_nof_prb * 200000) * 1.2;
-            sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
-            //sleep(1);
-
-            sdr.start();
+            if (new_srate != sample_rate) {
+	      sample_rate = new_srate;
+	      spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
+		  phy.nr_prb() * 0.2);
+	      sdr.stop();
+	      bandwidth = (cas_nof_prb * 200000);
+	      sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
+	      sdr.start();
+            }
           }
           spdlog::debug("Synchronizing subframe");
           // ... and move to syncing state.
           state = syncing;
         } else {
-          //sleep(1);
+          // Do nothing...
         }
       } 
       break;
@@ -648,17 +604,12 @@ auto main(int argc, char **argv) -> int {
           // Set the cell parameters in the CAS processor, and set started to true
           cas_processor.set_cell(phy.cell());
 
-//          for (int i = 0; i < thread_cnt; i++) {
-            //mbsfn_processors[i]->unlock();
-//            mbsfn_processors[i]->release();
-//          }
           cas_processor.unlock(); // We need to unlock because we felt here from processing after calling get_rx_buffer_and_lock()
 
           // Get the initial TTI / subframe ID (= system frame number * 10 + subframe number)
           tti = phy.tti();
           // Reset the RRC
           rrc.reset();
-//          MbsfnFrameProcessor::start_delivery_worker(rlc, phy/*, timers*/);
           // Ready to receive actual data. Go to processing state.
           state = processing;
 
@@ -674,13 +625,6 @@ auto main(int argc, char **argv) -> int {
     
     tick++;
     timers.step_all();
-   /* {
-        std::lock_guard<std::mutex> lock(MbsfnFrameProcessor::_delivery_mutex);
-          MbsfnFrameProcessor::_delivery_queue.push(
-                    {MbsfnFrameProcessor::PendingPdu::Type::Tick, 0, 0, 0, 0, {}});
-    }
-    MbsfnFrameProcessor::_delivery_cv.notify_one();
-    */
     if (tick%measurement_interval == 0/* false*/) {
       auto t1 = std::chrono::high_resolution_clock::now();
       auto t2 = t1;
@@ -695,9 +639,6 @@ auto main(int argc, char **argv) -> int {
         spdlog::info("CINR {:.2f} dB", rest_handler.cinr_db() );
         cols.push_back(std::to_string((float)rest_handler.cinr_db()));
 
-        // Wait to finish and lock, we don't want to update total and errors independently. Yes, it's a blocking solution, but, what other way is possible?
-   //     cas_processor.lock();
-        
         spdlog::info("PDSCH: MCS {}, BLER {}",
             rest_handler._pdsch.mcs,
             ((rest_handler._pdsch.errors > 0 && rest_handler._pdsch.total > 0) ? (rest_handler._pdsch.errors * 1.0) / (rest_handler._pdsch.total * 1.0) : 0));
@@ -705,23 +646,8 @@ auto main(int argc, char **argv) -> int {
         cols.push_back(std::to_string(rest_handler._pdsch.mcs));
         cols.push_back(std::to_string(((rest_handler._pdsch.errors * 1.0) / (rest_handler._pdsch.total * 1.0))));
 
-   /*     pdsch_bler_global += rest_handler._pdsch.errors;
-        pdsch_total_global += rest_handler._pdsch.total;
-        */
-
         std::tie(pdsch_bler_global, pdsch_total_global) =
               rest_handler._pdsch.snapshot_and_reset();
-
-    //    rest_handler._pdsch.errors = 0;
-    //    rest_handler._pdsch.total = 0;
-        // We are done with the CAS
-   //     cas_processor.unlock();
-        
-        // Wait for all the mbsfn processors to finish, to avoid having an update on total or errors while accesing to the values that leads to having a wrong BLER.
-   //     for (int i = 0; i < thread_cnt; i++) {
-   //         mbsfn_processors[i]->lock();
-   //     }
-
 
         auto [mcch_bler_iter, mcch_total_iter] = rest_handler._mcch.snapshot_and_reset();
 
@@ -762,26 +688,11 @@ auto main(int argc, char **argv) -> int {
               mtch_idx++;
                 });
 
-             /* mch_bler_global  += rest_handler._mch[mch_idx].errors;
-              mch_total_global += rest_handler._mch[mch_idx].total;
-              */
-
               mch_bler_global  += mch_bler_iter;
               mch_total_global += mch_total_iter;
 
-//              rest_handler._mch[mch_idx].errors = 0;
-//              rest_handler._mch[mch_idx].total = 0;
               mch_idx++;
             });
-
-/*        mcch_bler_global += rest_handler._mcch.errors;
-        mcch_total_global += rest_handler._mcch.total;
-        rest_handler._mcch.errors = 0;
-        rest_handler._mcch.total = 0;*/
-        // We can unlock cas and mbsfn processor at this point, every variable has been saved in the rest_handler.
-//        for (int i = 0; i < thread_cnt; i++) {
-//          mbsfn_processors[i]->unlock();
-//        }
       } else if (state == syncing) { // In syncing and searching states we place in every row and column NaN, this way is easier to process after, since every time measured theres always a row in the csv.
         cols.emplace_back(std::string("NOT SYNC - SYNCING...")); 
         cols.emplace_back(std::string("nan")); 
@@ -825,20 +736,17 @@ auto main(int argc, char **argv) -> int {
       spdlog::info("Total subframe lost {}, sync losses {}.", lost_subframes, sync_losses);
 
       t2 = std::chrono::high_resolution_clock::now();
-      spdlog::info("We lasted {} microseconds taking measurements.", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+      spdlog::debug("We lasted {} microseconds taking measurements.", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
     }
   }
 
   // Main loop ended by signal. Free the MBSFN processors, and bail.
   sdr.stop();
-//  rlc.stop();
-//  pdcp.stop();
+  rlc.stop();
+  pdcp.stop();
   rest_handler.stop();
-  //gw.stop();
-  //phy.stop();
   pool.clear();
   pool.join();
-  //delete(cas_processor);
   
   for (size_t i = 0; i < thread_cnt; i++) {
     delete( mbsfn_processors[i] );

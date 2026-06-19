@@ -76,7 +76,9 @@ auto Phy::synchronize_subframe() -> bool {
 
   if (ret == 1) {
     std::array<uint8_t, SRSRAN_BCH_PAYLOAD_LEN> bch_payload = {};
-    if (srsran_ue_sync_get_sfidx(&_ue_sync) == 0) {
+    auto sfn = srsran_ue_sync_get_sfn(&_ue_sync);
+    auto sf = srsran_ue_sync_get_sfidx(&_ue_sync);
+    if ((_cell.mbms_dedicated && sf == 0 && sfn % 4 == 0) || (!_cell.mbms_dedicated && sf == 0)) { 
       int sfn_offset = 0;
       int n =
           srsran_ue_mib_decode(&_mib, bch_payload.data(), nullptr, &sfn_offset);
@@ -137,8 +139,9 @@ auto Phy::cell_search() -> bool {
   srsran_ue_sync_reset(&_mib_sync.ue_sync);
   ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, kMaxFramesTimeout, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
 
-  spdlog::info("Rel-16 PBCH repetition detected: {}", _mib_sync.ue_mib.pbch.cell.is_mbms_r16);
   new_cell.is_mbms_r16 = _mib_sync.ue_mib.pbch.cell.is_mbms_r16;
+  if (new_cell.is_mbms_r16) 
+    spdlog::info("Rel-16 cell detected");
 
   if (!ret) { // MIB-MBMS failed, try to decode regular MIB
   //  init();

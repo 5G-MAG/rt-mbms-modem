@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 
-project (modem VERSION 1.2.2)
+project (modem VERSION 1.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -72,7 +72,7 @@ target_compile_options(modem PRIVATE
 )
 
 target_link_options(modem PRIVATE
-  # -fsanitize=address
+  #-fsanitize=address
   #-fsanitize=undefined
   #-fsanitize=leak
   #-fsanitize=thread
