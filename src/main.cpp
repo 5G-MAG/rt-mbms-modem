@@ -425,6 +425,30 @@ auto main(int argc, char **argv) -> int {
     switch (state) {
       case processing: {  // processing
         tti = (tti + 1) % 10240; // Clamp the TTI
+
+        if (phy.rom_redirect_pending()) {
+          auto [rom_earfcn, rom_prb] = phy.consume_rom_redirect();
+          if (rom_earfcn != 0) {
+            double freq_mhz = srsran_band_fd(rom_earfcn);
+            // freq_mhz > 0.0 does not catch EARFCNs that land in inter-band gap ranges;
+            // those resolve against a dummy sentinel with a nonzero frequency. Acceptable
+            // because ROM targets in practice are always valid broadcast EARFCNs.
+            if (freq_mhz > 0.0) {
+              unsigned rom_freq_hz = static_cast<unsigned>(freq_mhz * 1e6);
+              if (rom_freq_hz != frequency) {
+                spdlog::info("ROM redirect: retuning SDR to EARFCN={} ({:.3f} MHz, {} PRB)",
+                             rom_earfcn, freq_mhz, rom_prb);
+                frequency = rom_freq_hz;
+                restart = true;
+              } else {
+                spdlog::debug("ROM redirect: EARFCN={} matches current frequency, no retune needed", rom_earfcn);
+              }
+            } else {
+              spdlog::warn("ROM redirect: cannot resolve EARFCN={} to a frequency, ignoring", rom_earfcn);
+            }
+          }
+        }
+
         if (phy.is_cas_subframe(tti)) {
           // Get the samples from the SDR interface, hand them to a CAS processor, and start it
           // on a thread from the pool.
@@ -446,7 +470,17 @@ auto main(int argc, char **argv) -> int {
               mbsfn_nof_prb = phy.nof_mbsfn_prb();
 
               // ...adjust the SDR's sample rate to fit the wider MBSFN bandwidth...
-              unsigned new_srate = srsran_sampling_freq_hz(mbsfn_nof_prb);
+              srsran_scs_t mbsfn_scs = SRSRAN_SCS_15KHZ;
+              switch (phy.mbsfn_subcarrier_spacing()) {
+                case Phy::SubcarrierSpacing::df_7kHz5:     mbsfn_scs = SRSRAN_SCS_7KHZ5;      break;
+                case Phy::SubcarrierSpacing::df_2kHz5:     mbsfn_scs = SRSRAN_SCS_2KHZ5;      break;
+                case Phy::SubcarrierSpacing::df_1kHz25:    mbsfn_scs = SRSRAN_SCS_1KHZ25;     break;
+                case Phy::SubcarrierSpacing::df_370Hz:     mbsfn_scs = SRSRAN_SCS_370HZ;      break;
+                case Phy::SubcarrierSpacing::df_370Hz_sl4: mbsfn_scs = SRSRAN_SCS_370HZ_SL4;  break;
+                case Phy::SubcarrierSpacing::df_370Hz_sl2: mbsfn_scs = SRSRAN_SCS_370HZ_SL2;  break;
+                default: break;
+              }
+              unsigned new_srate = (unsigned)srsran_sampling_freq_hz_scs(mbsfn_nof_prb, mbsfn_scs);
               spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
                   mbsfn_nof_prb * 0.2);
               sdr.stop();
@@ -481,9 +515,13 @@ auto main(int argc, char **argv) -> int {
               if (!mbsfn_processors[mb_idx]->mbsfn_configured()) {
                 srsran_scs_t scs = SRSRAN_SCS_15KHZ;
                 switch (phy.mbsfn_subcarrier_spacing()) {
-                  case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ; break;
-                  case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSRAN_SCS_7KHZ5; break;
-                  case Phy::SubcarrierSpacing::df_1kHz25: scs = SRSRAN_SCS_1KHZ25; break;
+                  case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ;  break;
+                  case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSRAN_SCS_7KHZ5;  break;
+                  case Phy::SubcarrierSpacing::df_2kHz5:     scs = SRSRAN_SCS_2KHZ5;      break;
+                  case Phy::SubcarrierSpacing::df_1kHz25:    scs = SRSRAN_SCS_1KHZ25;     break;
+                  case Phy::SubcarrierSpacing::df_370Hz:     scs = SRSRAN_SCS_370HZ;      break;
+                  case Phy::SubcarrierSpacing::df_370Hz_sl4: scs = SRSRAN_SCS_370HZ_SL4;  break;
+                  case Phy::SubcarrierSpacing::df_370Hz_sl2: scs = SRSRAN_SCS_370HZ_SL2;  break;
                 }
                 auto cell = phy.cell();
                 cell.nof_prb = cell.mbsfn_prb;
