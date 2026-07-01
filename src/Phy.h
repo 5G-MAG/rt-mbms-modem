@@ -24,6 +24,8 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <atomic>
+#include <utility>
 #include <thread>
 #include <libconfig.h++>
 
@@ -145,7 +147,12 @@ class Phy {
     /**
      * Enable MCCH decoding
      */
-    void set_decode_mcch(bool d) { _decode_mcch = d; }
+    void set_decode_mcch(bool d) { _decode_mcch.store(d, std::memory_order_release); }
+
+    /**
+     * Return the most recently decoded MCCH message (for change detection)
+     */
+    const srsran::mcch_msg_t& current_mcch() const { return _mcch; }
 
     /**
      * Get number of PRB in MBSFN/PMCH
@@ -156,6 +163,32 @@ class Phy {
      * Override number of PRB in MBSFN/PMCH
      */
     void set_nof_mbsfn_prb(uint8_t prb) { _cell.mbsfn_prb = prb; }
+
+    void set_cas_muting(bool enabled, uint8_t k, uint8_t n) {
+      _cell.cas_muting = enabled;
+      _cell.k_cas      = k;
+      _cell.n_cas      = n;
+    }
+
+    /**
+     * Set a pending ROM cross-carrier redirect (TS 36.331 Rel-16 mbms_rom_info_list_r16).
+     * Called by RRC when SIB13 carries redirect info; consumed by the main loop via
+     * consume_rom_redirect(). Thread-safe: written from the CAS processor thread,
+     * read from the main thread.
+     * EARFCN and PRB are packed into a single 64-bit atomic so they are always a
+     * consistent pair. EARFCN 0 is the "no pending" sentinel and cannot be redirected to.
+     */
+    void set_rom_redirect(uint32_t earfcn, uint32_t nof_prb) {
+      _rom_redirect.store(((uint64_t)earfcn << 32) | nof_prb, std::memory_order_release);
+    }
+    bool rom_redirect_pending() const {
+      return (_rom_redirect.load(std::memory_order_acquire) >> 32) != 0;
+    }
+    // Returns {earfcn, nof_prb} as an atomic pair; earfcn=0 means nothing was pending.
+    std::pair<uint32_t, uint32_t> consume_rom_redirect() {
+      uint64_t v = _rom_redirect.exchange(0, std::memory_order_acq_rel);
+      return {static_cast<uint32_t>(v >> 32), static_cast<uint32_t>(v & 0xFFFFFFFFu)};
+    }
 
     void set_cell();
 
@@ -257,14 +290,24 @@ class Phy {
     enum class SubcarrierSpacing {
       df_15kHz,
       df_7kHz5,
-      df_1kHz25
+      df_2kHz5,
+      df_1kHz25,
+      df_370Hz,       /* 0.37 kHz, RS pattern not yet determined */
+      df_370Hz_sl4,  /* 0.37 kHz + RS type 1 (timeSeparation=sl4) */
+      df_370Hz_sl2   /* 0.37 kHz + RS type 2 (timeSeparation=sl2) */
     };
 
     SubcarrierSpacing mbsfn_subcarrier_spacing() {
       if (_cell.mbms_dedicated) {
-        switch (_sib13.mbsfn_area_info_list[0].subcarrier_spacing) {
+        const auto& info = _sib13.mbsfn_area_info_list[0];
+        if (info.subcarrier_spacing == srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_0dot37) {
+          if (info.time_separation == srsran::mbsfn_area_info_t::time_separation_t::sl2) return SubcarrierSpacing::df_370Hz_sl2;
+          return SubcarrierSpacing::df_370Hz_sl4;  /* SL4 is default when absent (TS 36.211 §4.1) */
+        }
+        switch (info.subcarrier_spacing) {
           case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return SubcarrierSpacing::df_1kHz25;
-          case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5: return SubcarrierSpacing::df_7kHz5;
+          case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_2dot5:  return SubcarrierSpacing::df_2kHz5;
+          case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5:  return SubcarrierSpacing::df_7kHz5;
           default: return SubcarrierSpacing::df_15kHz;
         }
       } else {
@@ -276,7 +319,9 @@ class Phy {
       if (_cell.mbms_dedicated) {
         switch (_sib13.mbsfn_area_info_list[0].subcarrier_spacing) {
           case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return 1.25;
-          case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5: return 7.5;
+          case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_2dot5:  return 2.5;
+          case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5:  return 7.5;
+          case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_0dot37: return 0.37f;
           default: return 15;
         }
       } else {
@@ -297,7 +342,7 @@ class Phy {
     srsran_ue_mib_t  _mib = {};
     srsran_cell_t _cell = {};
 
-    bool _decode_mcch = false;
+    std::atomic<bool> _decode_mcch{false};
 
     cf_t* _mib_buffer[SRSRAN_MAX_CHANNELS] = {};
     uint32_t _buffer_max_samples = 0;
@@ -319,4 +364,6 @@ class Phy {
     int8_t _override_nof_prb;
     uint8_t _rx_channels;
     bool _search_extended_cp = true;
+
+    std::atomic<uint64_t> _rom_redirect{0}; // upper 32 bits = EARFCN, lower 32 bits = nof_prb
 };
