@@ -24,6 +24,7 @@
 #include <thread>
 #include <vector>
 #include <map>
+#include <utility>
 #include "srsran/srsran.h"
 #include "srsran/rlc/rlc.h"
 #include "srsran/upper/pdcp.h"
@@ -165,7 +166,7 @@ class MbsfnFrameProcessor {
 
     bool _allow_rrc_sn_across_periods = false;
     static std::mutex _sched_stop_mutex;
-    static std::map<uint8_t, uint16_t> _sched_stops;
+    static std::map<std::pair<uint8_t,uint8_t>, uint16_t> _sched_stops;
 
     static std::mutex _rlc_mutex;
     static int _current_mcs;

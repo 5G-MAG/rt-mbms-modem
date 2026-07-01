@@ -20,7 +20,7 @@
 #include "MbsfnFrameProcessor.h"
 #include "spdlog/spdlog.h"
 
-std::map<uint8_t, uint16_t> MbsfnFrameProcessor::_sched_stops;
+std::map<std::pair<uint8_t,uint8_t>, uint16_t> MbsfnFrameProcessor::_sched_stops;
 
 std::mutex MbsfnFrameProcessor::_sched_stop_mutex;
 std::mutex MbsfnFrameProcessor::_rlc_mutex;
@@ -109,6 +109,24 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rest._mch[mch_idx].total++;
   }
 
+  /* Switch FFT SCS and chest refs for MCCH subframes when MCCH SCS differs from data SCS.
+   * For 0.37 kHz and 2.5 kHz data carriers the MCCH is transmitted at 1.25 kHz;
+   * for 7.5 kHz the MCCH SCS matches the data SCS (no switch needed).
+   * Mirror TX cc_worker which calls srsran_enb_dl_set_mbsfn_subcarrier_spacing() per-TTI. */
+  srsran_scs_t saved_scs = _sf_cfg.subcarrier_spacing;
+  bool scs_switched = mbsfn_cfg.subcarrier_spacing != saved_scs;
+  if (scs_switched) {
+    srsran_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, mbsfn_cfg.subcarrier_spacing);
+    srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, _area_id);
+    _sf_cfg.subcarrier_spacing = mbsfn_cfg.subcarrier_spacing;
+  }
+
+  auto restore_scs = [&]() {
+    srsran_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, saved_scs);
+    srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, _area_id);
+    _sf_cfg.subcarrier_spacing = saved_scs;
+  };
+
   if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
@@ -116,6 +134,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       _rest._mch[mch_idx].errors++;
     }
     spdlog::error("Getting PDCCH FFT estimate");
+    if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
   }
@@ -123,7 +142,17 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   srsran_configure_pmch(&_pmch_cfg, &_cell, &mbsfn_cfg);
   srsran_ra_dl_compute_nof_re(&_cell, &_sf_cfg, &_pmch_cfg.pdsch_cfg.grant);
 
-  _pmch_cfg.area_id = _area_id;
+  _pmch_cfg.area_id             = _area_id;
+  _pmch_cfg.cyclic_shift        = mbsfn_cfg.cyclic_shift;
+  _pmch_cfg.cyclic_shift_alpha  = mbsfn_cfg.cyclic_shift_alpha;
+  _pmch_cfg.freq_interleaving   = mbsfn_cfg.freq_interleaving;
+  _pmch_cfg.use_mcs_table2      = mbsfn_cfg.use_mcs_table2;
+  _pmch_cfg.time_interleaving_n = mbsfn_cfg.time_interleaving_n;
+  _pmch_cfg.time_interleaving_m = mbsfn_cfg.time_interleaving_m;
+  _pmch_cfg.subframe_idx        = mbsfn_cfg.mch_subframe_idx;
+  if (mbsfn_cfg.time_interleaving_m > 0 && mbsfn_cfg.mch_subframe_idx >= mbsfn_cfg.time_interleaving_m) {
+    spdlog::warn("TTI {}: mch_subframe_idx {} >= time_interleaving_m {} — scheduling mismatch", tti, mbsfn_cfg.mch_subframe_idx, mbsfn_cfg.time_interleaving_m);
+  }
 
   srsran_softbuffer_rx_reset_cb(&_softbuffer, 1);
 
@@ -139,9 +168,12 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       _rest._mch[mch_idx].errors++;
     }
     spdlog::warn("Error decoding PMCH");
+    if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
   }
+
+  if (scs_switched) { restore_scs(); }
 
   spdlog::trace("PMCH: tti: {}, l_crb={}, tbs={}, mcs={}, crc={}, snr={} dB, n_iter={}\n",
       tti,
@@ -172,8 +204,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         uint8_t lcid = 0;
         while (mch_mac_msg.get()->get_next_mch_sched_info(&lcid, &stop)) {
           const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
-          spdlog::debug("Scheduling stop for LCID {} in sf {}", lcid, stop);
-          _sched_stops[ lcid ] = stop;
+          spdlog::debug("Scheduling stop for PMCH {} LCID {} in sf {}", mch_idx, lcid, stop);
+          _sched_stops[ {(uint8_t)mch_idx, lcid} ] = stop;
         }
       } else if (mch_mac_msg.get()->is_sdu()) {
         uint32_t lcid = mch_mac_msg.get()->get_sdu_lcid();
@@ -198,6 +230,12 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
   } else {
+    /* Rel-19 §6.5.3: partial accumulation — not a real failure, waiting for remaining N-1 subframes */
+    if (_pmch_cfg.time_interleaving_n > 1 &&
+        (_pmch_cfg.subframe_idx % _pmch_cfg.time_interleaving_n) < (uint32_t)(_pmch_cfg.time_interleaving_n - 1u)) {
+      _mutex.unlock();
+      return 0;
+    }
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
@@ -210,31 +248,36 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   }
 
   if (!mbsfn_cfg.is_mcch) {
-    for (uint32_t i = 0; i < _phy.mcch().nof_pmch_info; i++) {
-      unsigned fn_in_scheduling_period =  sfn % srsran::enum_to_number(_phy.mcch().pmch_info_list[i].mch_sched_period);
-      unsigned sf_idx;
-      if (_cell.mbms_dedicated) {
-        sf_idx = fn_in_scheduling_period * 10 + sf - (fn_in_scheduling_period / 4) - 1;
-      } else {
-        sf_idx = fn_in_scheduling_period * 6 + (sf < 6 ? sf - 1 : sf - 3);
-      }
-          spdlog::debug("tti{}, sfn {}, sf {}, fn_in_scheduling_period {}, sf_idf {}", tti, sfn, sf, fn_in_scheduling_period, sf_idx);
+    /* Use _pmch_cfg.subframe_idx (= mch_subframe_idx from Phy::mbsfn_config_for_tti) as the
+     * allocation index for sched_stop comparison.  This is the 0-based per-PMCH index
+     * used by the TX when it sets the MCH stop values in the MCCH scheduling info.
+     * Only check stops keyed to the current PMCH (mch_idx). */
+    unsigned sf_idx = _pmch_cfg.subframe_idx;
+    spdlog::debug("tti{}, sfn {}, sf {}, mch_idx {}, sf_idx (mch_subframe_idx) {}", tti, sfn, sf, mch_idx, sf_idx);
 
-      const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
-      for (auto itr = _sched_stops.cbegin() ; itr != _sched_stops.cend() ;) {
-        if ( sf_idx >= itr->second ) {
-          spdlog::debug("Stopping LCID {} in tti {} (idx in rf {})", itr->first, tti, sf_idx);
-          const std::lock_guard<std::mutex> lock(_rlc_mutex);
-          if (!_allow_rrc_sn_across_periods) {
-            _rlc.stop_mch(i, itr->first);
-          }
-          itr = _sched_stops.erase(itr);
-        } else {
-          itr = std::next(itr);
+    const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
+    for (auto itr = _sched_stops.cbegin(); itr != _sched_stops.cend();) {
+      if (itr->first.first != (uint8_t)mch_idx) {
+        itr = std::next(itr);
+        continue;
+      }
+      if (sf_idx >= itr->second) {
+        uint8_t lcid = itr->first.second;
+        spdlog::debug("Stopping PMCH {} LCID {} in tti {} (idx in rf {})", mch_idx, lcid, tti, sf_idx);
+        const std::lock_guard<std::mutex> lock(_rlc_mutex);
+        if (!_allow_rrc_sn_across_periods) {
+          _rlc.stop_mch(mch_idx, lcid);
         }
+        itr = _sched_stops.erase(itr);
+      } else {
+        itr = std::next(itr);
       }
     }
   } else {
+    {
+      const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
+      _sched_stops.clear();
+    }
     const std::lock_guard<std::mutex> lock(_rlc_mutex);
     _rlc.stop_mch(0, 0);
     _rest._mcch.present = true;
