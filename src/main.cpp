@@ -507,6 +507,26 @@ auto main(int argc, char **argv) -> int {
           // All other frames in FeMBMS dedicated mode are MBSFN frames.
           spdlog::debug("sending tti {} to mbsfn proc {}", tti, mb_idx);
 
+          /* TS 36.211 §6.5.3 / 36.212 §5.1.4.1.2 (Rel-19 time interleaving):
+           * peek at whether time interleaving is active for this tti and, if
+           * so, whether this is the LAST subframe of its N-subframe block -
+           * see the comment at the mb_idx advance below for why. Calls the
+           * same public Phy method MbsfnFrameProcessor::process() calls
+           * internally; its one side effect (scheduling an MCCH re-read at a
+           * modification-period boundary) is idempotent, gated on a flag
+           * that's already true after the first of the two calls, so
+           * calling it here too is safe. Only trust time_interleaving_n/
+           * mch_subframe_idx when enable && !is_mcch, matching how
+           * MbsfnFrameProcessor.cpp itself gates on these fields - other
+           * struct fields are not guaranteed initialized otherwise. */
+          unsigned           peek_area = 0;
+          srsran_mbsfn_cfg_t peek_cfg  = phy.mbsfn_config_for_tti(tti, peek_area);
+          bool ti_last_of_block        = true; /* default: advance every TTI, matching the old behavior */
+          if (peek_cfg.enable && !peek_cfg.is_mcch && peek_cfg.time_interleaving_n > 1) {
+            ti_last_of_block =
+                (peek_cfg.mch_subframe_idx % peek_cfg.time_interleaving_n) == (peek_cfg.time_interleaving_n - 1);
+          }
+
           // Get the samples from the SDR interface, hand them to an MNSFN processor, and start it
           // on a thread from the pool. Getting the buffer pointer from the pool also locks this processor.
           if (!restart && phy.get_next_frame(mbsfn_processors[mb_idx]->get_rx_buffer_and_lock(), mbsfn_processors[mb_idx]->rx_buffer_size())) {
@@ -542,7 +562,21 @@ auto main(int argc, char **argv) -> int {
             sync_losses++; 
             state = syncing;
           }
-          mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
+          /* Only advance the round-robin worker index when this tti was the
+           * last subframe of its time-interleaving block (or time
+           * interleaving isn't active, in which case every subframe is
+           * independent and this is unconditional exactly as before).
+           * Keeping mb_idx unchanged for the continuation subframes of a
+           * block is what makes all N of them land on the SAME
+           * MbsfnFrameProcessor instance - required for that instance's
+           * softbuffer/srsran_pmch_t state to accumulate across the block at
+           * all (see the roadmap's finding #3a for the bug this fixes: the
+           * previous unconditional per-TTI advance meant, for any
+           * NTimePMCH that divides evenly into thread_cnt threads, no
+           * worker ever saw more than one subframe of a given block). */
+          if (ti_last_of_block) {
+            mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
+          }
         }
       }
       break;
