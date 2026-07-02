@@ -154,12 +154,28 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     spdlog::warn("TTI {}: mch_subframe_idx {} >= time_interleaving_m {} — scheduling mismatch", tti, mbsfn_cfg.mch_subframe_idx, mbsfn_cfg.time_interleaving_m);
   }
 
-  srsran_softbuffer_rx_reset_cb(&_softbuffer, 1);
+  /* TS 36.212 §5.1.4.1.2 / 36.211 §6.5.3 (Rel-19 time interleaving, M==N case
+   * only so far): srsran_pmch_decode's per-subframe rate-matching now relies
+   * on the softbuffer's LLR/CRC state persisting ACROSS the N subframes of
+   * one transport block's span (that's how the soft-combining actually
+   * happens - each subframe's rv_idx-specific rate-matching pass adds its
+   * LLRs to the same buffer). Resetting every subframe (the previous,
+   * unconditional behavior) would wipe that progress before it can
+   * accumulate, so only reset at the start of each new N-subframe block
+   * (j==0), or every subframe when time interleaving isn't configured
+   * (N<=1), matching the previous behavior exactly for that case. */
+  bool     ti_active = mbsfn_cfg.time_interleaving_n > 1;
+  uint32_t ti_j       = ti_active ? (mbsfn_cfg.mch_subframe_idx % mbsfn_cfg.time_interleaving_n) : 0;
+  if (!ti_active || ti_j == 0) {
+    srsran_softbuffer_rx_reset_cb(&_softbuffer, 1);
+  }
 
   srsran_pdsch_res_t pmch_dec = {};
   _pmch_cfg.pdsch_cfg.softbuffers.rx[0] = &_softbuffer;
   pmch_dec.payload = _payload_buffer;
-  srsran_softbuffer_rx_reset_tbs(_pmch_cfg.pdsch_cfg.softbuffers.rx[0], _pmch_cfg.pdsch_cfg.grant.tb[0].tbs);
+  if (!ti_active || ti_j == 0) {
+    srsran_softbuffer_rx_reset_tbs(_pmch_cfg.pdsch_cfg.softbuffers.rx[0], _pmch_cfg.pdsch_cfg.grant.tb[0].tbs);
+  }
 
   if (srsran_ue_dl_decode_pmch(&_ue_dl, &_sf_cfg, &_pmch_cfg, &pmch_dec) != 0) {
     if (mbsfn_cfg.is_mcch) {
