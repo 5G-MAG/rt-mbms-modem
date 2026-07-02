@@ -41,7 +41,12 @@ auto MbsfnFrameProcessor::init() -> bool {
     return false;;
   }
 
-  srsran_softbuffer_rx_init(&_softbuffer, 100);
+  /* Slot 0 is the only slot used when time interleaving isn't configured
+   * (by far the common case) - init it eagerly so behavior/cost for that
+   * case is unchanged. Slots 1..M-1 (time-interleaving pipelining) are
+   * lazily init'd in process() the first time they're actually used. */
+  srsran_softbuffer_rx_init(&_softbuffer[0], 100);
+  _softbuffer_init[0] = true;
 
   _ue_dl_cfg.snr_to_cqi_offset = 0;
 
@@ -59,7 +64,7 @@ auto MbsfnFrameProcessor::init() -> bool {
   _ue_dl_cfg.cfg.pdsch.max_nof_iterations = 8;
   _ue_dl_cfg.cfg.pdsch.meas_evm_en        = false;
   _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
-  _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer;
+  _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer[0];
 
   _pmch_cfg.pdsch_cfg.csi_enable         = true;
   _pmch_cfg.pdsch_cfg.max_nof_iterations = 8;
@@ -71,7 +76,11 @@ auto MbsfnFrameProcessor::init() -> bool {
 }
 
 MbsfnFrameProcessor::~MbsfnFrameProcessor() {
-  srsran_softbuffer_rx_free(&_softbuffer);
+  for (uint32_t i = 0; i < SRSRAN_PMCH_MAX_TI_M; i++) {
+    if (_softbuffer_init[i]) {
+      srsran_softbuffer_rx_free(&_softbuffer[i]);
+    }
+  }
   srsran_ue_dl_free(&_ue_dl);
 }
 
@@ -150,30 +159,49 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   _pmch_cfg.time_interleaving_n = mbsfn_cfg.time_interleaving_n;
   _pmch_cfg.time_interleaving_m = mbsfn_cfg.time_interleaving_m;
   _pmch_cfg.subframe_idx        = mbsfn_cfg.mch_subframe_idx;
-  if (mbsfn_cfg.time_interleaving_m > 0 && mbsfn_cfg.mch_subframe_idx >= mbsfn_cfg.time_interleaving_m) {
-    spdlog::warn("TTI {}: mch_subframe_idx {} >= time_interleaving_m {} — scheduling mismatch", tti, mbsfn_cfg.mch_subframe_idx, mbsfn_cfg.time_interleaving_m);
-  }
 
-  /* TS 36.212 §5.1.4.1.2 / 36.211 §6.5.3 (Rel-19 time interleaving, M==N case
-   * only so far): srsran_pmch_decode's per-subframe rate-matching now relies
-   * on the softbuffer's LLR/CRC state persisting ACROSS the N subframes of
-   * one transport block's span (that's how the soft-combining actually
+  /* TS 36.213 §11.1 (see srsran_pmch_decode's comment in pmch.c for the full
+   * derivation): subframe s=mch_subframe_idx belongs to slot m=s%M with
+   * redundancy version n=(s%(N*M))/M. srsran_pmch_decode's per-subframe
+   * rate-matching relies on slot m's OWN softbuffer LLR/CRC state persisting
+   * across the N subframes of ITS span (that's how the soft-combining
    * happens - each subframe's rv_idx-specific rate-matching pass adds its
-   * LLRs to the same buffer). Resetting every subframe (the previous,
+   * LLRs to that slot's buffer). Resetting every subframe (the previous,
    * unconditional behavior) would wipe that progress before it can
-   * accumulate, so only reset at the start of each new N-subframe block
-   * (j==0), or every subframe when time interleaving isn't configured
-   * (N<=1), matching the previous behavior exactly for that case. */
+   * accumulate; resetting one shared buffer regardless of slot would
+   * corrupt one slot's progress with another's. So: reset slot m's buffer
+   * only when slot m starts a new TB (n==0 for that slot), or every
+   * subframe when time interleaving isn't configured (N<=1, slot m is
+   * always 0), matching the previous behavior exactly for that case. */
   bool     ti_active = mbsfn_cfg.time_interleaving_n > 1;
-  uint32_t ti_j       = ti_active ? (mbsfn_cfg.mch_subframe_idx % mbsfn_cfg.time_interleaving_n) : 0;
-  if (!ti_active || ti_j == 0) {
-    srsran_softbuffer_rx_reset_cb(&_softbuffer, 1);
+  /* Clamp defensively: time_interleaving_m is decoded from broadcast MCCH
+   * data (not locally-trusted state), and ti_slot_m below indexes fixed-size
+   * SRSRAN_PMCH_MAX_TI_M arrays - a value in this uint8_t field above that
+   * bound (only reachable via a malformed/unexpected broadcast, valid RRC
+   * values are 4/8/16/32) must not turn into an out-of-bounds access. */
+  uint8_t ti_m_cfg = mbsfn_cfg.time_interleaving_m;
+  if (ti_m_cfg == 0) {
+    ti_m_cfg = 1;
+  } else if (ti_m_cfg > SRSRAN_PMCH_MAX_TI_M) {
+    ti_m_cfg = SRSRAN_PMCH_MAX_TI_M;
+  }
+  uint32_t ti_block_len = ti_active ? ((uint32_t)mbsfn_cfg.time_interleaving_n * (uint32_t)ti_m_cfg) : 1;
+  uint32_t ti_s_mod   = ti_active ? (mbsfn_cfg.mch_subframe_idx % ti_block_len) : 0;
+  uint32_t ti_slot_m  = ti_active ? (ti_s_mod % ti_m_cfg) : 0;
+  uint32_t ti_slot_n  = ti_active ? (ti_s_mod / ti_m_cfg) : 0;
+
+  if (!_softbuffer_init[ti_slot_m]) {
+    srsran_softbuffer_rx_init(&_softbuffer[ti_slot_m], 100);
+    _softbuffer_init[ti_slot_m] = true;
+  }
+  if (!ti_active || ti_slot_n == 0) {
+    srsran_softbuffer_rx_reset_cb(&_softbuffer[ti_slot_m], 1);
   }
 
   srsran_pdsch_res_t pmch_dec = {};
-  _pmch_cfg.pdsch_cfg.softbuffers.rx[0] = &_softbuffer;
+  _pmch_cfg.pdsch_cfg.softbuffers.rx[0] = &_softbuffer[ti_slot_m];
   pmch_dec.payload = _payload_buffer;
-  if (!ti_active || ti_j == 0) {
+  if (!ti_active || ti_slot_n == 0) {
     srsran_softbuffer_rx_reset_tbs(_pmch_cfg.pdsch_cfg.softbuffers.rx[0], _pmch_cfg.pdsch_cfg.grant.tb[0].tbs);
   }
 
@@ -246,9 +274,10 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
   } else {
-    /* Rel-19 §6.5.3: partial accumulation — not a real failure, waiting for remaining N-1 subframes */
-    if (_pmch_cfg.time_interleaving_n > 1 &&
-        (_pmch_cfg.subframe_idx % _pmch_cfg.time_interleaving_n) < (uint32_t)(_pmch_cfg.time_interleaving_n - 1u)) {
+    /* Rel-19 §6.5.3: partial accumulation — not a real failure, waiting for
+     * remaining subframes of this slot's own N-span (ti_slot_n/ti_active
+     * computed earlier from the same (m,n) split used for the softbuffer). */
+    if (ti_active && ti_slot_n < (uint32_t)(mbsfn_cfg.time_interleaving_n - 1u)) {
       _mutex.unlock();
       return 0;
     }

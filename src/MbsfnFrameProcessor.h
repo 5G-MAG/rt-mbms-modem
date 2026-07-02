@@ -147,7 +147,15 @@ class MbsfnFrameProcessor {
 
     static const uint32_t  _payload_buffer_sz = SRSRAN_MAX_BUFFER_SIZE_BYTES;
     uint8_t                _payload_buffer[_payload_buffer_sz];
-    srsran_softbuffer_rx_t _softbuffer;
+    /* Non-time-interleaved PMCH/MCCH decode uses slot 0 only (see process()).
+     * Time-interleaved PMCH needs one softbuffer PER SLOT m (m=0..M-1) so
+     * each of the M pipelined transport blocks accumulates its own LLR/CRC
+     * state independently - see srsran_pmch_decode's comment in pmch.c for
+     * the (m,n) derivation. Lazily initialized (_softbuffer_init[m] tracks
+     * which slots have actually been srsran_softbuffer_rx_init'd) since a
+     * configured M is typically far below the spec max of 32. */
+    srsran_softbuffer_rx_t _softbuffer[SRSRAN_PMCH_MAX_TI_M];
+    bool                   _softbuffer_init[SRSRAN_PMCH_MAX_TI_M] = {};
 
     srsran_ue_dl_t     _ue_dl     = {};
     srsran_ue_dl_cfg_t _ue_dl_cfg = {};
