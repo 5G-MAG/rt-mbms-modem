@@ -606,6 +606,13 @@ auto main(int argc, char **argv) -> int {
            * slot's own N subframes (see the roadmap's finding #3a for the
            * original bug this fixes, and its later generalization from N to
            * N*M once the M-slot pipelining model was corrected). */
+          if (getenv("PMCH_TI_DIAG")) {
+            fprintf(stderr,
+                    "TI_DIAG_MAIN tti=%u mb_idx_before=%u enable=%d is_mcch=%d ti_n=%u ti_m=%u "
+                    "mch_subframe_idx=%u ti_last_of_block=%d\n",
+                    tti, mb_idx, (int)peek_cfg.enable, (int)peek_cfg.is_mcch, peek_cfg.time_interleaving_n,
+                    peek_cfg.time_interleaving_m, peek_cfg.mch_subframe_idx, (int)ti_last_of_block);
+          }
           if (ti_last_of_block) {
             mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
           }

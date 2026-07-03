@@ -160,6 +160,13 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   _pmch_cfg.time_interleaving_m = mbsfn_cfg.time_interleaving_m;
   _pmch_cfg.subframe_idx        = mbsfn_cfg.mch_subframe_idx;
 
+  if (!mbsfn_cfg.is_mcch && getenv("PMCH_TI_DIAG")) {
+    fprintf(stderr,
+            "TI_DIAG_MFP this=%p tti=%u is_mcch=%d ti_n=%u ti_m=%u mch_subframe_idx=%u\n",
+            (void*)this, tti, (int)mbsfn_cfg.is_mcch, mbsfn_cfg.time_interleaving_n,
+            mbsfn_cfg.time_interleaving_m, mbsfn_cfg.mch_subframe_idx);
+  }
+
   /* TS 36.213 §11.1 (see srsran_pmch_decode's comment in pmch.c for the full
    * derivation): subframe s=mch_subframe_idx belongs to slot m=s%M with
    * redundancy version n=(s%(N*M))/M. srsran_pmch_decode's per-subframe
