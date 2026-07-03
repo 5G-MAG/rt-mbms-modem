@@ -349,9 +349,23 @@ auto Phy::is_mbsfn_subframe(unsigned tti) -> bool
 {
   if (_cell.mbms_dedicated) {
     if (is_cas_subframe(tti)) return false;
-    /* additionalNonMBSFNSubframes-r14: SF1..SF(N) of an active CAS frame are not MBSFN. */
-    if (_cell.additional_non_mbms_frames > 0) {
-      unsigned sf = tti % 10;
+    /* additionalNonMBSFNSubframes-r14: SF1..SF(N) of an active CAS frame are not MBSFN -
+     * except MCCH's own subframe, which must always be checked regardless (mirrors TX's
+     * phy_common::is_mch_subframe, fixed for the same reason: MCCH's position is
+     * SIB13-configured independently of additionalNonMBSFNSubframes, an unrelated
+     * MIB-MBMS field, and nothing stops an operator picking values that collide - which
+     * would otherwise make this function exclude MCCH's own subframe outright, so it's
+     * never even attempted here, on every occasion, not just occasionally). */
+    unsigned sf = tti % 10;
+    bool is_mcch_sf = false;
+    if (_mcch_configured) {
+      unsigned sfn = tti / 10;
+      const auto& mcch_cfg = _sib13.mbsfn_area_info_list[0].mcch_cfg;
+      if (sfn % enum_to_number(mcch_cfg.mcch_repeat_period) == mcch_cfg.mcch_offset && _mcch_table[sf]) {
+        is_mcch_sf = true;
+      }
+    }
+    if (!is_mcch_sf && _cell.additional_non_mbms_frames > 0) {
       if (sf >= 1 && sf <= _cell.additional_non_mbms_frames && is_cas_subframe((tti / 10) * 10)) {
         return false;
       }
