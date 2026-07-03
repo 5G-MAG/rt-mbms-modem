@@ -160,7 +160,7 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
           }
           _phy.set_decode_mcch(true);
           _state = ACQUIRE_AREA_CONFIG;
-          if (sib13.mbms_rom_info_list_r16_present && !sib13.mbms_rom_info_list_r16.empty()) {
+          if (sib13.mbms_rom_info_list_r16_present && sib13.mbms_rom_info_list_r16.size() > 0) {
             for (const auto& ri : sib13.mbms_rom_info_list_r16) {
               spdlog::info("MBMS-ROM-Info-r16: EARFCN={} BW={}PRB{}", ri.rom_freq_r16, ri.bw_r16.to_number(),
                            ri.subcarrier_spacing_r16_present
@@ -262,7 +262,7 @@ void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1) {
   if (!_rlc.has_bearer_mrb(0, 0)) {
     _rlc.add_bearer_mrb(0, 0);
   }
-  if (sib13.mbms_rom_info_list_r16_present && !sib13.mbms_rom_info_list_r16.empty()) {
+  if (sib13.mbms_rom_info_list_r16_present && sib13.mbms_rom_info_list_r16.size() > 0) {
     for (const auto& ri : sib13.mbms_rom_info_list_r16) {
       spdlog::info("MBMS-ROM-Info-r16: EARFCN={} BW={}PRB{}", ri.rom_freq_r16, ri.bw_r16.to_number(),
                    ri.subcarrier_spacing_r16_present
