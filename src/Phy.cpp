@@ -135,7 +135,19 @@ auto Phy::cell_search() -> bool {
   ret = srsran_ue_mib_sync_decode_prb(&_mib_sync, kMaxFramesTimeout, bch_payload.data(), &new_cell.nof_ports, &sfn_offset, _cs_nof_prb);
 
   if (!ret) { // MIB-MBMS failed, try to decode regular MIB
-    init();
+    // NOTE: this used to call init(), which re-runs srsran_ue_cellsearch_init_multi_prb_cp(),
+    // srsran_ue_sync_init_multi(), srsran_ue_mib_sync_init_multi_prb() and srsran_ue_mib_init()
+    // on _cell_search/_ue_sync/_mib_sync/_mib a second time without ever freeing what the first
+    // init() (called once from main() before the search loop starts) had already allocated -
+    // every failed MIB-MBMS attempt leaked and re-initialized the same srsran objects on top of
+    // their still-live state. That corrupts the heap over repeated cell_search() calls (each
+    // failed-MBMS candidate hits this path) and eventually crashes in an unrelated later
+    // allocation or FFTW plan run, especially at higher nof_prb where MBMS-first decode attempts
+    // fail more often before the fallback + more frames/PRB means more memory touched per leak.
+    // The srsran_ue_sync_reset() below (mirroring the MBMS attempt above) already re-arms sync;
+    // what was actually still needed for the regular-MIB retry is resetting the MIB decoder's own
+    // frame counter/PBCH state, which srsran_ue_mib_reset() does with no allocation involved.
+    srsran_ue_mib_reset(&_mib_sync.ue_mib);
     new_cell.mbms_dedicated = false;
     if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
       spdlog::error("Phy: Error setting UE MIB sync cell");
@@ -355,6 +367,29 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
   srsran_mbsfn_cfg_t cfg;
   cfg.enable                  = false;
   cfg.is_mcch                 = false;
+  /* srsran_mbsfn_cfg_t is a plain C struct - the declaration above does not
+   * zero-initialize it, so every field must get an explicit default here or
+   * it reads as garbage stack memory. The MCCH branch below (is_mcch=true)
+   * only ever sets subcarrier_spacing/mbsfn_mcs/enable/is_mcch - it never
+   * touches use_mcs_table2, cyclic_shift(_alpha), freq_interleaving,
+   * time_interleaving_n/m, mch_subframe_idx or pmch_idx (mirroring TX's
+   * phy_common::is_mcch_subframe, which likewise doesn't set them, relying
+   * on the shared defaults its caller is_mch_subframe sets first). Without
+   * these defaults here, MCCH decode read uninitialized use_mcs_table2 -
+   * srsran_pmch_fill_ra_mcs() would then pick the wrong MCS/TBS table for
+   * MCCH on whatever runs happened to leave a truthy value on the stack,
+   * producing a TBS that never matched what the eNB actually encoded (and
+   * varied run-to-run) - the immediate cause of MCCH's CRC always failing
+   * even after the eNB was fixed to actually transmit real MCCH content
+   * (see rt-mbms-tx's configure_mbsfn() mcch_table fix). */
+  cfg.use_mcs_table2          = false;
+  cfg.cyclic_shift            = 0;
+  cfg.cyclic_shift_alpha      = 0;
+  cfg.freq_interleaving       = false;
+  cfg.time_interleaving_n     = 1;
+  cfg.time_interleaving_m     = 1;
+  cfg.mch_subframe_idx        = 0;
+  cfg.pmch_idx                = 0;
   /* Default data SCS — overridden per-branch below for MCCH subframes. */
   srsran_scs_t data_scs;
   switch (mbsfn_subcarrier_spacing()) {

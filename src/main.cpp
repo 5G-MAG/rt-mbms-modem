@@ -272,6 +272,19 @@ auto main(int argc, char **argv) -> int {
   cfg.lookupValue("modem.sdr.search_sample_rate_hz", sample_rate);
   search_sample_rate = sample_rate;
 
+  if (arguments.sample_file != nullptr && arguments.file_bw) {
+    // Sample files are captured at a fixed rate determined by the channel bandwidth given via
+    // --file-bandwidth (there's no "reduced-bandwidth blind search" possible on a file, unlike
+    // with a live SDR where modem.sdr.search_sample_rate_hz picks a deliberately narrow search
+    // rate). Phy::cell_search() below sizes its FFT/frame lengths from cs_nof_prb = file_bw * 5,
+    // so SdrReader must be tuned to that same native rate from the start; otherwise its ring
+    // buffer pacing/watermark math (based on _sampleRate) runs against a smaller rate than the
+    // sample counts srsran's cell-search actually requests for that PRB count, starving
+    // MultichannelRingbuffer reads once the mismatch is large enough (e.g. at 100 PRB with a
+    // 25 PRB search_sample_rate_hz).
+    sample_rate = search_sample_rate = (unsigned)srsran_sampling_freq_hz(arguments.file_bw * 5);
+  }
+
   unsigned long long center_frequency = frequency;
   if (!cfg.lookupValue("modem.sdr.center_frequency_hz", center_frequency)) {
     spdlog::error("Unable to parse center_frequency_hz - values must have a ‘L’ character appended");
