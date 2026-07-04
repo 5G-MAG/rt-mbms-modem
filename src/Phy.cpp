@@ -544,6 +544,24 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
           cfg.mch_subframe_idx = (uint32_t)sf_idx - pmch_start;
           cfg.pmch_idx         = (uint8_t)i;
           cfg.enable = true;
+          /* pmch-TimeInterleavingN/M-LastMTCH-r19 (TS 36.331 CR5168r3): mirrors TX's
+           * identical is_mch_subframe() logic exactly -- MbsfnFrameProcessor pushes
+           * the last session's window start via set_last_mtch_start() once per
+           * period, right after decoding that period's MSI. 0 (no override
+           * configured, or single-session) means this comparison is always false,
+           * so the common case is unaffected. */
+          uint32_t last_mtch_start_sf = get_last_mtch_start((uint8_t)i);
+          if (last_mtch_start_sf > 0 && cfg.mch_subframe_idx >= last_mtch_start_sf) {
+            cfg.mch_subframe_idx -= last_mtch_start_sf;
+            uint8_t n_last = _mcch.pmch_info_list[i].time_interleaving_n_last_mtch;
+            uint8_t m_last = _mcch.pmch_info_list[i].time_interleaving_m_last_mtch;
+            if (n_last > 0) {
+              cfg.time_interleaving_n = n_last;
+              cfg.time_interleaving_m = (m_last > 0) ? m_last : cfg.time_interleaving_m;
+            } else if (m_last > 0) {
+              cfg.time_interleaving_m = m_last;
+            }
+          }
           spdlog::debug("PMCH {}: mch_subframe_idx {}, mcs {}", i, cfg.mch_subframe_idx, cfg.mbsfn_mcs);
           break;
         }

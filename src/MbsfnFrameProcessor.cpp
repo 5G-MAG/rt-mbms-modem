@@ -253,11 +253,31 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       if (srsran::mch_lcid::MCH_SCHED_INFO == mch_mac_msg.get()->mch_ce_type()) {
         uint16_t stop = 0;
         uint8_t lcid = 0;
+        /* pmch-TimeInterleavingN/M-LastMTCH-r19 (TS 36.331 CR5168r3): track the two
+         * highest stop values decoded from THIS period's own fresh MSI content (not
+         * the persistent _sched_stops map below, which can carry stale entries from
+         * earlier periods with a different session composition). TX encodes these
+         * CEs in schedule order (mac.cc's mtch_sched[] order, cumulative stop values),
+         * so the highest stop is the overall period boundary (mtch_stop) and the
+         * second-highest is where the last session's own window starts -- exactly
+         * mirroring TX's mtch_sched[num_mtch_sched-2].stop. */
+        uint16_t highest_stop = 0, second_highest_stop = 0;
         while (mch_mac_msg.get()->get_next_mch_sched_info(&lcid, &stop)) {
           const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
           spdlog::debug("Scheduling stop for PMCH {} LCID {} in sf {}", mch_idx, lcid, stop);
           _sched_stops[ {(uint8_t)mch_idx, lcid} ] = stop;
+          if (stop > highest_stop) {
+            second_highest_stop = highest_stop;
+            highest_stop         = stop;
+          } else if (stop > second_highest_stop) {
+            second_highest_stop = stop;
+          }
         }
+        /* second_highest_stop stays 0 for a single-session period (only one CE
+         * decoded), which set_last_mtch_start()/mbsfn_config_for_tti() already
+         * treat as "no distinct last-session window" -- the common case is
+         * unaffected. */
+        _phy.set_last_mtch_start((uint8_t)mch_idx, second_highest_stop);
       } else if (mch_mac_msg.get()->is_sdu()) {
         uint32_t lcid = mch_mac_msg.get()->get_sdu_lcid();
         spdlog::trace("Processing MAC MCH PDU entered, lcid {}", lcid);

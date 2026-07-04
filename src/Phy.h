@@ -25,6 +25,8 @@
 #include <map>
 #include <vector>
 #include <atomic>
+#include <array>
+#include <mutex>
 #include <utility>
 #include <thread>
 #include <libconfig.h++>
@@ -148,6 +150,25 @@ class Phy {
      * Enable MCCH decoding
      */
     void set_decode_mcch(bool d) { _decode_mcch.store(d, std::memory_order_release); }
+
+    /**
+     * pmch-TimeInterleavingN/M-LastMTCH-r19 (TS 36.331 CR5168r3) cross-layer channel:
+     * MbsfnFrameProcessor pushes this once per scheduling period, right after decoding
+     * that period's MSI, to tell mbsfn_config_for_tti() where (relative to this PMCH's
+     * own data region) the last of several MTCH sessions' window starts. 0 = no
+     * distinct last-session window this period. Mirrors TX's
+     * phy_common::set_last_mtch_start() exactly -- same convention, same "plain
+     * non-blocking write" design (not a blocking wait: the boundary genuinely isn't
+     * knowable before the first MSI of a newly-active window decodes, and blocking
+     * PHY on that would risk stalling it if the boundary never arrives for a cell
+     * that never uses this feature).
+     */
+    void set_last_mtch_start(uint8_t pmch_idx, uint32_t start_sf) {
+      if (pmch_idx < _last_mtch_start.size()) {
+        std::lock_guard<std::mutex> lock(_last_mtch_start_mutex);
+        _last_mtch_start[pmch_idx] = start_sf;
+      }
+    }
 
     /**
      * Return the most recently decoded MCCH message (for change detection)
@@ -343,6 +364,18 @@ class Phy {
     srsran_cell_t _cell = {};
 
     std::atomic<bool> _decode_mcch{false};
+
+    /* pmch-TimeInterleavingN/M-LastMTCH-r19 state, indexed by pmch_idx (sized to
+     * match mcch_msg_t::pmch_info_list's own capacity -- see set_last_mtch_start()). */
+    std::array<uint32_t, 15> _last_mtch_start = {};
+    mutable std::mutex       _last_mtch_start_mutex;
+    uint32_t get_last_mtch_start(uint8_t pmch_idx) const {
+      if (pmch_idx >= _last_mtch_start.size()) {
+        return 0;
+      }
+      std::lock_guard<std::mutex> lock(_last_mtch_start_mutex);
+      return _last_mtch_start[pmch_idx];
+    }
 
     cf_t* _mib_buffer[SRSRAN_MAX_CHANNELS] = {};
     uint32_t _buffer_max_samples = 0;
