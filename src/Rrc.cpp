@@ -83,9 +83,20 @@ void Rrc::write_pdu_mch(uint32_t /*lcid*/, srsran::unique_byte_buffer_t pdu) {
   }
 
   // Add bearers for all LCIDs in the new MCCH.
+  if (getenv("PMCH_TI_DIAG")) {
+    fprintf(stderr, "TI_DIAG_ADDBEARER nof_pmch_info=%u\n", mcch.nof_pmch_info);
+    for (uint32_t i = 0; i < mcch.nof_pmch_info; i++) {
+      fprintf(stderr, "TI_DIAG_ADDBEARER  pmch[%u].nof_mbms_session_info=%u\n", i,
+              mcch.pmch_info_list[i].nof_mbms_session_info);
+    }
+  }
   for (uint32_t i = 0; i < mcch.nof_pmch_info; i++) {
     for (uint32_t j = 0; j < mcch.pmch_info_list[i].nof_mbms_session_info; j++) {
       uint32_t lcid = mcch.pmch_info_list[i].mbms_session_info_list[j].lc_ch_id;
+      if (getenv("PMCH_TI_DIAG")) {
+        fprintf(stderr, "TI_DIAG_ADDBEARER  session[%u] lcid=%u has_bearer=%d\n", j, lcid,
+                (int)_rlc.has_bearer_mrb(i, lcid));
+      }
       if (!_rlc.has_bearer_mrb(i, lcid)) {
         _rlc.add_bearer_mrb(i, lcid);
       }

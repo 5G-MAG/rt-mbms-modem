@@ -289,6 +289,15 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         }
 
         {
+          if (!mbsfn_cfg.is_mcch && getenv("PMCH_TI_DIAG")) {
+            uint8_t* p = mch_mac_msg.get()->get_sdu_ptr();
+            uint32_t sz = mch_mac_msg.get()->get_payload_size();
+            char hex[97] = {0};
+            for (uint32_t k = 0; k < sz && k < 48; k++) {
+              snprintf(hex + k * 2, 3, "%02x", p[k]);
+            }
+            fprintf(stderr, "TI_DIAG_MACSDU lcid=%u sz=%u first48=%s\n", lcid, sz, hex);
+          }
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
           const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _rlc.write_pdu_mch(mch_idx, lcid, mch_mac_msg.get()->get_sdu_ptr(), mch_mac_msg.get()->get_payload_size());
