@@ -457,11 +457,17 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
 
   if (sfn % enum_to_number(area_info.mcch_cfg.mcch_repeat_period) == area_info.mcch_cfg.mcch_offset &&
       _mcch_table[sf] == 1) {
-    /* MCCH SCS mirrors TX phy_common::is_mcch_subframe: 7.5kHz for 7.5kHz areas,
-     * 1.25kHz for all others (including 0.37kHz, where MCCH uses the control SCS). */
-    cfg.subcarrier_spacing = (area_info.subcarrier_spacing ==
-        srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5)
-        ? SRSRAN_SCS_7KHZ5 : SRSRAN_SCS_1KHZ25;
+    /* MCCH SCS mirrors TX phy_common::is_mcch_subframe: 7.5kHz for 7.5kHz areas, 15kHz for
+     * plain-15kHz MBMS-dedicated areas, 1.25kHz for all others (including 0.37kHz, where
+     * MCCH uses the control SCS). */
+    using SCS_t = srsran::mbsfn_area_info_t::subcarrier_spacing_t;
+    if (area_info.subcarrier_spacing == SCS_t::khz_7dot5) {
+      cfg.subcarrier_spacing = SRSRAN_SCS_7KHZ5;
+    } else if (area_info.subcarrier_spacing == SCS_t::khz_15) {
+      cfg.subcarrier_spacing = SRSRAN_SCS_15KHZ;
+    } else {
+      cfg.subcarrier_spacing = SRSRAN_SCS_1KHZ25;
+    }
     if (_decode_mcch.load(std::memory_order_acquire)) {
       cfg.mbsfn_mcs               = enum_to_number(area_info.mcch_cfg.sig_mcs);
       cfg.enable                  = true;
