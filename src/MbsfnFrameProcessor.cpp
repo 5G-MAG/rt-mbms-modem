@@ -262,6 +262,21 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         uint32_t lcid = mch_mac_msg.get()->get_sdu_lcid();
         spdlog::trace("Processing MAC MCH PDU entered, lcid {}", lcid);
 
+        /* TS 36.321 Table 6.2.1-4: LCID 0 within an MCH MAC PDU is reserved
+         * for MCCH specifically - a regular MTCH data subframe must never
+         * legitimately carry it. Without this check, a data subframe with no
+         * real MAC content queued (TX has nothing to send, e.g. no MBMS
+         * traffic source configured) still transmits a well-formed all-zero
+         * PMCH TB (see rt-mbms-tx's encode_pmch), which decodes successfully
+         * as a degenerate case; its first MAC subheader byte (0x00: E-bit=0,
+         * LCID=0) then gets misread as an MCCH SDU and misdelivered to the
+         * RRC/MCCH handler, corrupting Phy::_mcch (nof_pmch_info reset to 0)
+         * until the next real MCCH occasion overwrites it. */
+        if (lcid == (uint32_t)srsran::mch_lcid::MCCH && !mbsfn_cfg.is_mcch) {
+          spdlog::warn("Dropping spurious MCCH-LCID SDU decoded from a non-MCCH subframe (mch_idx {})", mch_idx);
+          continue;
+        }
+
         if (lcid >= SRSRAN_N_MCH_LCIDS) {
           spdlog::warn("Radio bearer id must be in [0:%d] - %d", SRSRAN_N_MCH_LCIDS, lcid);
           if (mbsfn_cfg.is_mcch) {

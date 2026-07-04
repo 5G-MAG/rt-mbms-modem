@@ -17,6 +17,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
+#include <cstdio>
+
 #include "Rrc.h"
 #include "spdlog/fmt/fmt.h"
 #include "spdlog/spdlog.h"
@@ -34,6 +36,13 @@ using asn1::rrc::sib_info_item_c;
 
 void Rrc::write_pdu_mch(uint32_t /*lcid*/, srsran::unique_byte_buffer_t pdu) {
   spdlog::trace("rrc: write_pdu_mch");
+  if (getenv("PMCH_TI_DIAG")) {
+    char hex[64] = {0};
+    for (uint32_t i = 0; i < pdu->N_bytes && i < 16; i++) {
+      snprintf(hex + i * 2, 3, "%02x", pdu->msg[i]);
+    }
+    fprintf(stderr, "TI_DIAG_RRC_WPM N_bytes=%u first16=%s\n", pdu->N_bytes, hex);
+  }
   if (pdu->N_bytes <= 0 || pdu->N_bytes >= SRSRAN_MAX_BUFFER_SIZE_BITS) {
     return;
   }
