@@ -542,7 +542,27 @@ auto main(int argc, char **argv) -> int {
           unsigned           peek_area = 0;
           srsran_mbsfn_cfg_t peek_cfg  = phy.mbsfn_config_for_tti(tti, peek_area);
           bool ti_last_of_block        = true; /* default: advance every TTI, matching the old behavior */
-          if (peek_cfg.enable && !peek_cfg.is_mcch && peek_cfg.time_interleaving_n > 1) {
+          /* mbsfn_config_for_tti() only populates time_interleaving_n/m/mch_subframe_idx
+           * when sf_idx falls inside a PMCH's own data allocation - gap subframes within
+           * an otherwise TI-active MCH's schedule (CAS, additionalNonMBSFNSubframes) leave
+           * peek_cfg.time_interleaving_n at its unconditional default (1), so the block-
+           * boundary check below can't see them. Left unhandled, such a gap subframe fell
+           * through to the "advance every TTI" default - a spurious rotation that
+           * permanently offset which absolute mch_subframe_idx block boundary this
+           * worker's pinning aligns to for the rest of that scheduling period (confirmed
+           * empirically via PMCH_TI_DIAG: the very first 1-2 real TI subframes after each
+           * MCCH occasion landed on an already-abandoned instance). Query the MCCH content
+           * directly (stable across the whole scheduling period, unlike the per-tti peek)
+           * to tell "TI genuinely isn't configured" (old behavior: advance every TTI) apart
+           * from "TI is configured but this specific subframe isn't a real block position"
+           * (must not advance - see the fuller rationale in "Round 19"/finding #3 of the
+           * project roadmap). */
+          const srsran::mcch_msg_t& mcch_for_ti = phy.current_mcch();
+          bool ti_configured_for_active_mch =
+              !peek_cfg.is_mcch && mcch_for_ti.nof_pmch_info > 0 && mcch_for_ti.pmch_info_list[0].time_interleaving_n > 1;
+          if (ti_configured_for_active_mch && !(peek_cfg.enable && peek_cfg.time_interleaving_n > 1)) {
+            ti_last_of_block = false;
+          } else if (peek_cfg.enable && !peek_cfg.is_mcch && peek_cfg.time_interleaving_n > 1) {
             /* Clamp defensively, consistent with MbsfnFrameProcessor.cpp's
              * own clamp on the same broadcast-derived field: an out-of-range
              * M here would only mis-time the worker advance, not corrupt
@@ -609,9 +629,11 @@ auto main(int argc, char **argv) -> int {
           if (getenv("PMCH_TI_DIAG")) {
             fprintf(stderr,
                     "TI_DIAG_MAIN tti=%u mb_idx_before=%u enable=%d is_mcch=%d ti_n=%u ti_m=%u "
-                    "mch_subframe_idx=%u ti_last_of_block=%d\n",
+                    "mch_subframe_idx=%u ti_last_of_block=%d ti_configured=%d mcch_nof_pmch=%u mcch_ti_n=%u\n",
                     tti, mb_idx, (int)peek_cfg.enable, (int)peek_cfg.is_mcch, peek_cfg.time_interleaving_n,
-                    peek_cfg.time_interleaving_m, peek_cfg.mch_subframe_idx, (int)ti_last_of_block);
+                    peek_cfg.time_interleaving_m, peek_cfg.mch_subframe_idx, (int)ti_last_of_block,
+                    (int)ti_configured_for_active_mch, mcch_for_ti.nof_pmch_info,
+                    mcch_for_ti.nof_pmch_info > 0 ? mcch_for_ti.pmch_info_list[0].time_interleaving_n : 0);
           }
           if (ti_last_of_block) {
             mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
