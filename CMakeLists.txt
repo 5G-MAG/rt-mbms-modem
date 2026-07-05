@@ -25,8 +25,6 @@ include_directories(
     )
 
 set(ENABLE_SRSUE OFF CACHE BOOL "Build srsUE application")
-set(ENABLE_SRSENB OFF CACHE BOOL "Build srsENB application")
-set(ENABLE_SRSEPC OFF CACHE BOOL "Build srsEPC application")
 add_subdirectory(lib/srsran)
 
 find_package(cpprestsdk REQUIRED)
