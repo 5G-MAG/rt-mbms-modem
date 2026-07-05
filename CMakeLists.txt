@@ -24,7 +24,6 @@ include_directories(
     ${LIB_LIMESUITE_INCLUDE_DIRS}
     )
 
-set(ENABLE_SRSUE OFF CACHE BOOL "Build srsUE application")
 add_subdirectory(lib/srsran)
 
 find_package(cpprestsdk REQUIRED)

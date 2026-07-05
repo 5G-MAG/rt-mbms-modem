@@ -62,7 +62,6 @@ configure_file(
 ########################################################################
 # Options
 ########################################################################
-option(ENABLE_SRSUE          "Build srsUE application"                  ON)
 option(DISABLE_SIMD          "Disable SIMD instructions"                OFF)
 option(AUTO_DETECT_ISA       "Autodetect supported ISA extensions"      ON)
 
@@ -698,20 +697,10 @@ add_custom_target(add_srsran_headers SOURCES ${HEADERS_ALL})
 ########################################################################
 add_subdirectory(lib)
 
-if(RF_FOUND)
-  if(ENABLE_SRSUE)
-    message(STATUS "Building with srsUE")
-    add_subdirectory(srsue)
-  else(ENABLE_SRSUE)
-    message(STATUS "srsUE build disabled")
-  endif(ENABLE_SRSUE)
-else(RF_FOUND)
-  message(STATUS "srsUE build disabled due to missing RF driver")
-endif(RF_FOUND)
-
-# srsENB and srsEPC source trees were removed from this vendored copy: this
-# repo is a receive-only UE application and never built either (both were
-# force-disabled via ENABLE_SRSENB/ENABLE_SRSEPC in the parent CMakeLists.txt
-# even when the trees existed).
+# srsUE, srsENB and srsEPC source trees were all removed from this vendored
+# copy: this repo is its own receive-only UE application (see ../../src),
+# not srsRAN's own srsue, and never built any of the three even when the
+# trees existed (ENABLE_SRSUE/ENABLE_SRSENB/ENABLE_SRSEPC were all forced
+# OFF in the parent CMakeLists.txt).
 
 add_subdirectory(test)
