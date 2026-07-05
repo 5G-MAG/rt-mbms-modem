@@ -747,9 +747,17 @@ void ofdm_tx_slot_mbsfn(srsran_ofdm_t* q, cf_t* input, cf_t* output)
        * non_mbsfn_region check) - this makes TX match that. TS 36.211 Table
        * 6.12-1: CP/Nu = 1/4 for 7.5/1.25/2.5 kHz; 1/9 for 0.37 kHz (CR 0548). */
       cp_len = SRSRAN_SCS_IS_370HZ(q->cfg.subcarrier_spacing) ? (int)(symbol_sz / 9U) : SRSRAN_CP_LEN_EXT(symbol_sz);
-    } else {
+    } else if (SRSRAN_CP_ISNORM(q->cfg.cp)) {
+      /* Normal-CP 15 kHz MBSFN: extended CP within the MBSFN region, normal CP outside
+       * it. Reconciled from rt-mbms-tx's ofdm.c: an earlier version of this file always
+       * used this branch's formula regardless of q->cfg.cp, silently applying the
+       * NORMAL-CP length even for extended-CP cells whenever i < non_mbsfn_region. */
       bool is_mbsfn_sym = (q->non_mbsfn_region < 0 || (int)i >= q->non_mbsfn_region);
       cp_len = is_mbsfn_sym ? SRSRAN_CP_LEN_EXT(symbol_sz) : SRSRAN_CP_LEN_NORM(i, symbol_sz);
+    } else {
+      /* Extended-CP cell: every symbol uses the extended length, independent of
+       * non_mbsfn_region (there's no "normal CP outside MBSFN" case to fall back to). */
+      cp_len = SRSRAN_CP_LEN_EXT(q->cfg.symbol_sz);
     }
     memcpy(&q->tmp[q->nof_guards], input, q->nof_re * sizeof(cf_t));
     srsran_dft_run_c(&q->fft_plan, q->tmp, &output[cp_len]);
