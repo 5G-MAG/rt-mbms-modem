@@ -112,10 +112,15 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     return -1;
   }
 
+  /* MCCH is never time-interleaved (a time-interleaved MCH must not carry
+   * MCCH, per TS 36.300 §15.3.3) -- count it immediately, once per subframe,
+   * same as always. MCH's total++ is deferred below: when time-interleaving
+   * is active, a logical TB spans N subframes, and counting "total" once per
+   * subframe here while "errors" (further below) only fires once per TB
+   * would silently skew any BLER computed from these two counters -- see the
+   * matching comment where MCH's total/errors are actually counted. */
   if (mbsfn_cfg.is_mcch) {
     _rest._mcch.total++;
-  } else {
-    _rest._mch[mch_idx].total++;
   }
 
   /* Switch FFT SCS and chest refs for MCCH subframes when MCCH SCS differs from data SCS.
@@ -137,9 +142,14 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   };
 
   if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
+    /* A hard failure independent of time-interleaving's soft-combining state
+     * (this subframe never even reached the decode attempt) -- count it as
+     * its own standalone total+error immediately, same for MCH whether or
+     * not time-interleaving is active. */
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
+      _rest._mch[mch_idx].total++;
       _rest._mch[mch_idx].errors++;
     }
     spdlog::error("Getting PDCCH FFT estimate");
@@ -203,6 +213,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   }
   if (!ti_active || ti_slot_n == 0) {
     srsran_softbuffer_rx_reset_cb(&_softbuffer[ti_slot_m], 1);
+    _ti_reported[ti_slot_m] = false;
   }
 
   srsran_pdsch_res_t pmch_dec = {};
@@ -213,10 +224,17 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   }
 
   if (srsran_ue_dl_decode_pmch(&_ue_dl, &_sf_cfg, &_pmch_cfg, &pmch_dec) != 0) {
+    /* Genuine execution error (srsran_ue_dl_decode_pmch's return value is
+     * reserved for that, never for a plain CRC miss -- see srsran_pmch_decode's
+     * own convention). Count immediately and mark this slot's TB as reported
+     * so a later subframe in the same span (if ti_active) doesn't also count
+     * a second, redundant outcome for what is really the same logical TB. */
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
+      _rest._mch[mch_idx].total++;
       _rest._mch[mch_idx].errors++;
+      _ti_reported[ti_slot_m] = true;
     }
     spdlog::warn("Error decoding PMCH");
     if (scs_switched) { restore_scs(); }
@@ -245,6 +263,19 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   }
 
   if (pmch_dec.crc) {
+    /* srsran_pmch_decode() reports crc=true at most once per slot's N-span
+     * (it forces crc=false on every subsequent subframe once that slot's
+     * ti_decoded flag is set, to avoid re-delivering the same TB) -- so this
+     * is always a fresh outcome for MCH, never a repeat. Count total++ here,
+     * matched 1:1 with the errors++ below (deferred to the same per-TB
+     * granularity, not per-subframe) so a BLER computed from these two
+     * counters is meaningful whether or not time-interleaving is active. */
+    if (!mbsfn_cfg.is_mcch) {
+      _rest._mch[mch_idx].total++;
+      if (ti_active) {
+        _ti_reported[ti_slot_m] = true;
+      }
+    }
     mch_mac_msg.init_rx(
         static_cast<uint32_t>(_pmch_cfg.pdsch_cfg.grant.tb[0].tbs) / 8);
     mch_mac_msg.parse_packet(_payload_buffer);
@@ -325,6 +356,17 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
   } else {
+    /* This slot's current TB already succeeded earlier in its own N-span
+     * (crc=true branch above already ran and counted it) -- this call is
+     * just one of the redundant trailing "already decoded" subframes
+     * srsran_pmch_decode() reports as crc=false by design. Not a new
+     * outcome; nothing to count. Without this check, MCH's total/errors
+     * would double-count the same logical TB and this trailing subframe
+     * would be misreported as a fresh failure. */
+    if (!mbsfn_cfg.is_mcch && ti_active && _ti_reported[ti_slot_m]) {
+      _mutex.unlock();
+      return 0;
+    }
     /* Rel-19 §6.5.3: partial accumulation — not a real failure, waiting for
      * remaining subframes of this slot's own N-span (ti_slot_n/ti_active
      * computed earlier from the same (m,n) split used for the softbuffer). */
@@ -335,7 +377,17 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
+      /* Reached the last subframe of this TB's span and it never decoded --
+       * a genuine failure. Count total++ here (matching errors++'s
+       * granularity, once per TB, not once per subframe -- see the crc=true
+       * branch's matching comment) and mark reported so this same outcome
+       * can't be double-counted if somehow called again before the next
+       * slot-m reset. */
+      _rest._mch[mch_idx].total++;
       _rest._mch[mch_idx].errors++;
+      if (ti_active) {
+        _ti_reported[ti_slot_m] = true;
+      }
     }
 
     spdlog::trace("PMCH in TTI {} failed with CRC error", tti);

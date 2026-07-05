@@ -156,6 +156,15 @@ class MbsfnFrameProcessor {
      * configured M is typically far below the spec max of 32. */
     srsran_softbuffer_rx_t _softbuffer[SRSRAN_PMCH_MAX_TI_M];
     bool                   _softbuffer_init[SRSRAN_PMCH_MAX_TI_M] = {};
+    /* Tracks whether slot m's CURRENT time-interleaved TB has already been
+     * counted (as a success or a final failure) in _rest._mch stats. Needed
+     * because srsran_pmch_decode() reports crc=false on every subframe of a
+     * span after the one where it first actually succeeds (by design, to
+     * avoid re-delivering the same TB's content) - without this, those
+     * trailing "already decoded" subframes would be miscounted as fresh
+     * failures. Reset at slot m's own n==0 (new TB starting), same moment
+     * the softbuffer itself resets. */
+    bool                   _ti_reported[SRSRAN_PMCH_MAX_TI_M] = {};
 
     srsran_ue_dl_t     _ue_dl     = {};
     srsran_ue_dl_cfg_t _ue_dl_cfg = {};
