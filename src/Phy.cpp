@@ -402,6 +402,9 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
   cfg.freq_interleaving       = false;
   cfg.time_interleaving_n     = 1;
   cfg.time_interleaving_m     = 1;
+  cfg.n_soft_ref_category     = 0;
+  cfg.scaling_factor_beta_num = 0;
+  cfg.scaling_factor_beta_den = 0;
   cfg.mch_subframe_idx        = 0;
   cfg.pmch_idx                = 0;
   /* Default data SCS — overridden per-branch below for MCCH subframes. */
@@ -538,6 +541,9 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
           cfg.use_mcs_table2      = _mcch.pmch_info_list[i].use_mcs_table2;
           cfg.time_interleaving_n = _mcch.pmch_info_list[i].time_interleaving_n;
           cfg.time_interleaving_m = _mcch.pmch_info_list[i].time_interleaving_m;
+          cfg.n_soft_ref_category     = _mcch.pmch_info_list[i].n_soft_ref_category;
+          cfg.scaling_factor_beta_num = _mcch.pmch_info_list[i].scaling_factor_beta_num;
+          cfg.scaling_factor_beta_den = _mcch.pmch_info_list[i].scaling_factor_beta_den;
           cfg.cyclic_shift        = _mcch.pmch_info_list[i].cyclic_shift;
           cfg.cyclic_shift_alpha  = _mcch.pmch_info_list[i].cyclic_shift_alpha;
           cfg.freq_interleaving   = _mcch.pmch_info_list[i].freq_interleaving;
