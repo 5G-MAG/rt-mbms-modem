@@ -456,6 +456,17 @@ struct mcch_msg_t {
   uint32_t    nof_pmch_info;
   pmch_info_t pmch_info_list[15];
   // mbsfn_area_cfg_v930_ies non crit ext OPTIONAL
+
+  /* commonSF-Alloc-v1610 (TS 36.331): present only on MBMS-dedicated cells,
+   * declares which of subframe #0 / subframe #5 carry MBSFN-common content.
+   * Bit-order assumption (leftmost/first bit = sf#0, second = sf#5, matching
+   * this codebase's existing convention for every other subframe-indicator
+   * BIT STRING) is NOT independently verified against primary spec text for
+   * this specific IE - flagged rather than silently trusted, same as the
+   * still-open sf-AllocInfo-r16 bit-order question elsewhere in this project. */
+  bool common_sf_alloc_v1610_present = false;
+  bool common_sf_alloc_v1610_sf0     = false;
+  bool common_sf_alloc_v1610_sf5     = false;
 };
 inline uint16_t enum_to_number(const mcch_msg_t::common_sf_alloc_period_t& alloc_period)
 {

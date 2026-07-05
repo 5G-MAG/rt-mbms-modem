@@ -1411,6 +1411,22 @@ mcch_msg_t make_mcch_msg(const asn1::rrc::mcch_msg_s& asn1_type)
     const auto& v1250 = r9.non_crit_ext.non_crit_ext;
     if (v1250.non_crit_ext_present && v1250.non_crit_ext.non_crit_ext_present) {
       const auto& v1610 = v1250.non_crit_ext.non_crit_ext;
+
+      // commonSF-Alloc-v1610: independent of the v1900/has_phase2 chain below.
+      if (v1610.common_sf_alloc_v1610_present && v1610.common_sf_alloc_v1610.size() > 0) {
+        const auto& sf_alloc_v1610 = v1610.common_sf_alloc_v1610[0].sf_alloc_v1610;
+        if (sf_alloc_v1610.type().value ==
+            asn1::rrc::mbsfn_sf_cfg_v1610_s::sf_alloc_v1610_c_::types_opts::one_frame_v1610) {
+          msg.common_sf_alloc_v1610_present = true;
+          uint8_t bits                      = sf_alloc_v1610.one_frame_v1610().to_number();
+          msg.common_sf_alloc_v1610_sf0     = (bits & 0x2u) != 0;
+          msg.common_sf_alloc_v1610_sf5     = (bits & 0x1u) != 0;
+        }
+        // four_frames_v1610 variant: never sent by this project's own TX, and its
+        // bit semantics for this extension aren't documented/verified here - left
+        // unhandled (common_sf_alloc_v1610_present stays false) rather than guessed.
+      }
+
       if (v1610.non_crit_ext_present) {
         const auto& v1900 = v1610.non_crit_ext;
         if (v1900.pmch_info_list_ext_v1900_present) {

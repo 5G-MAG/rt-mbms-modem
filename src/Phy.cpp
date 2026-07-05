@@ -370,6 +370,18 @@ auto Phy::is_mbsfn_subframe(unsigned tti) -> bool
         return false;
       }
     }
+    /* commonSF-Alloc-v1610: when the network has actually signalled it, only
+     * treat sf#0/sf#5 as MBSFN-common capacity if declared (see mcch_msg_t's
+     * comment for the bit-order caveat). Absent - before MCCH is decoded, or
+     * for a third-party cell that doesn't send this extension - preserves the
+     * prior always-eligible assumption, so this is purely additive: it cannot
+     * regress a deployment (like this project's own TX, which always declares
+     * both) that never exercises the "not declared" case. MCCH's own subframe
+     * is exempted, same as the additionalNonMBSFNSubframes check above. */
+    if (!is_mcch_sf && _mcch_configured && _mcch.common_sf_alloc_v1610_present) {
+      if (sf == 0 && !_mcch.common_sf_alloc_v1610_sf0) return false;
+      if (sf == 5 && !_mcch.common_sf_alloc_v1610_sf5) return false;
+    }
     return true;
   } else {
     return !is_cas_subframe(tti) &&
