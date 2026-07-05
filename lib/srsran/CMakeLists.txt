@@ -63,6 +63,8 @@ configure_file(
 # Options
 ########################################################################
 option(ENABLE_SRSUE          "Build srsUE application"                  ON)
+option(ENABLE_SRSENB         "Build srsENB application"                 ON)
+option(ENABLE_SRSEPC         "Build srsEPC application"                 ON)
 option(DISABLE_SIMD          "Disable SIMD instructions"                OFF)
 option(AUTO_DETECT_ISA       "Autodetect supported ISA extensions"      ON)
 
@@ -705,13 +707,22 @@ if(RF_FOUND)
   else(ENABLE_SRSUE)
     message(STATUS "srsUE build disabled")
   endif(ENABLE_SRSUE)
+
+  if(ENABLE_SRSENB)
+    message(STATUS "Building with srsENB")
+    add_subdirectory(srsenb)
+  else(ENABLE_SRSENB)
+    message(STATUS "srsENB build disabled")
+  endif(ENABLE_SRSENB)
 else(RF_FOUND)
-  message(STATUS "srsUE build disabled due to missing RF driver")
+  message(STATUS "srsUE and srsENB builds disabled due to missing RF driver")
 endif(RF_FOUND)
 
-# srsENB and srsEPC source trees were removed from this vendored copy: this
-# repo is a receive-only UE application and never built either (both were
-# force-disabled via ENABLE_SRSENB/ENABLE_SRSEPC in the parent CMakeLists.txt
-# even when the trees existed).
+if(ENABLE_SRSEPC)
+  message(STATUS "Building with srsEPC")
+  add_subdirectory(srsepc)
+else(ENABLE_SRSEPC)
+  message(STATUS "srsEPC build disabled")
+endif(ENABLE_SRSEPC)
 
 add_subdirectory(test)
