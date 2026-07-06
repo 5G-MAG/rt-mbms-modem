@@ -411,7 +411,7 @@ int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, 
      * where the signal is still in the time domain, so the two can be compared
      * sample-for-sample across the wire without any FFT/RE-mapping assumptions on
      * either side. */
-    if (getenv("PMCH_RE_DUMP") && sf->sf_type == SRSRAN_SF_MBSFN) {
+    if (getenv("PMCH_RE_DUMP") && (!getenv("PMCH_RE_DUMP_TTI") || (uint32_t)atoi(getenv("PMCH_RE_DUMP_TTI")) == sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
       uint32_t sf_len = (uint32_t)SRSRAN_SF_LEN_PRB(q->cell.nof_prb);
       char     fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_prefft_tti%u.bin", sf->tti);
@@ -439,7 +439,7 @@ int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, 
      * a decode failure is upstream of channel estimation entirely (FFT window/CP
      * timing, RE-to-subcarrier mapping) rather than in the reference-signal/channel-
      * estimation code already fixed. */
-    if (getenv("PMCH_RE_DUMP") && sf->sf_type == SRSRAN_SF_MBSFN) {
+    if (getenv("PMCH_RE_DUMP") && (!getenv("PMCH_RE_DUMP_TTI") || (uint32_t)atoi(getenv("PMCH_RE_DUMP_TTI")) == sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
       uint32_t dump_n = SRSRAN_NRE_SCS(sf->subcarrier_spacing) * q->cell.nof_prb;
       char     fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_postfft_tti%u.bin", sf->tti);
