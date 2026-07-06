@@ -23,6 +23,8 @@
 #include "srsran/asn1/rrc.h"
 #include "srsran/config.h"
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <srsran/common/interfaces_common.h>
 
 namespace srsran {

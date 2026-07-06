@@ -472,17 +472,15 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
 
   if (sfn % enum_to_number(area_info.mcch_cfg.mcch_repeat_period) == area_info.mcch_cfg.mcch_offset &&
       _mcch_table[sf] == 1) {
-    /* MCCH SCS mirrors TX phy_common::is_mcch_subframe: 7.5kHz for 7.5kHz areas, 15kHz for
-     * plain-15kHz MBMS-dedicated areas, 1.25kHz for all others (including 0.37kHz, where
-     * MCCH uses the control SCS). */
-    using SCS_t = srsran::mbsfn_area_info_t::subcarrier_spacing_t;
-    if (area_info.subcarrier_spacing == SCS_t::khz_7dot5) {
-      cfg.subcarrier_spacing = SRSRAN_SCS_7KHZ5;
-    } else if (area_info.subcarrier_spacing == SCS_t::khz_15) {
-      cfg.subcarrier_spacing = SRSRAN_SCS_15KHZ;
-    } else {
-      cfg.subcarrier_spacing = SRSRAN_SCS_1KHZ25;
-    }
+    /* MCCH and MTCH are both carried over the same PMCH, so they share the same
+     * subcarrier spacing - SCS is a property of the PMCH transmission itself, not
+     * of the logical channel mapped onto it. cfg.subcarrier_spacing is already set
+     * to data_scs above from the same area_info.subcarrier_spacing; no separate,
+     * narrower mapping for MCCH is correct here. (Previously this branch redundantly
+     * re-derived a SCS using only 3 of the 5 real cases, silently defaulting 2.5kHz
+     * and 0.37kHz areas' MCCH to 1.25kHz - wrong per spec, though only externally
+     * visible as a decode failure for 7.5kHz, where the corresponding TX-side branch
+     * has an explicit correct case that this incomplete one didn't mirror.) */
     if (_decode_mcch.load(std::memory_order_acquire)) {
       cfg.mbsfn_mcs               = enum_to_number(area_info.mcch_cfg.sig_mcs);
       cfg.enable                  = true;
