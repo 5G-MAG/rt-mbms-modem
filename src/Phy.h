@@ -189,6 +189,15 @@ class Phy {
       _cell.cas_muting = enabled;
       _cell.k_cas      = k;
       _cell.n_cas      = n;
+      /* _ue_sync was already handed a copy of _cell via srsran_ue_sync_set_cell()
+       * during initial cell acquisition, before SIB1 (and this CAS-muting config)
+       * was ever decoded - poke the live sync object's copy directly, same pattern
+       * as the other runtime _ue_sync.* setters above/below, so its PSS-tracking
+       * loop (ue_sync.c) knows which CAS occasions are genuinely muted instead of
+       * treating every missed one as a sync loss. */
+      _ue_sync.cell.cas_muting = enabled;
+      _ue_sync.cell.k_cas      = k;
+      _ue_sync.cell.n_cas      = n;
     }
 
     /**
