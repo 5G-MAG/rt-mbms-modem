@@ -225,6 +225,113 @@ class Phy {
     bool is_cas_subframe(unsigned tti);
     bool is_mbsfn_subframe(unsigned tti);
 
+    /**
+     * SIB12 (SystemInformationBlockType12-r9, TS 36.331 §6.3.1) CMAS/PWS
+     * warning notification, decoded to displayable text. msg_id/serial_number
+     * together identify one distinct alert - the network re-broadcasts the
+     * same alert repeatedly while it's active, so a client (like this one's
+     * REST consumer) must dedup on that pair rather than treat every
+     * reception as a new alert, mirroring how Android's CellBroadcastReceiver
+     * dedups CMAS/ETWS pages. Single-segment only for now (matches the
+     * eNB side's current limitation - see rt-mbms-tx rrc.cc's
+     * SINGLE_SEGMENT_WARN_THRESHOLD TODO); a genuinely multi-segment message
+     * would need reassembly by warning_msg_segment_num before this point.
+     */
+    struct PwsAlert {
+      uint32_t msg_id             = 0;
+      uint32_t serial_number      = 0;
+      uint8_t  data_coding_scheme = 0;
+      std::string text;      /* decoded per data_coding_scheme (GSM 7-bit or UCS-2) */
+      std::string label;     /* human-readable alert type from msg_id, e.g. "CMAS: Severe" -
+                               * mirrors mbms-control-portal's lib/cap.js ALERT_TYPES table,
+                               * the CBE that actually originates these message identifiers
+                               * in this project; empty if msg_id isn't one of its known values. */
+      uint64_t first_received_at = 0; /* ms since epoch, set by the caller */
+      uint64_t last_received_at  = 0;
+      uint32_t repeat_count      = 1; /* how many times this exact msg_id/serial has been seen */
+    };
+
+    /**
+     * Record a decoded SIB12 alert. Dedups against the most recently stored
+     * alert with the same msg_id/serial_number (just bumps repeat_count and
+     * last_received_at); anything else is a genuinely new alert, prepended to
+     * the history. History is capped at kMaxPwsAlertHistory entries, oldest
+     * dropped first - this is receive-only telemetry, not something a client
+     * ever needs unbounded.
+     */
+    void add_pws_alert(PwsAlert alert, uint64_t now_ms) {
+      std::lock_guard<std::mutex> lock(_pws_alerts_mutex);
+      if (!_pws_alerts.empty() && _pws_alerts.front().msg_id == alert.msg_id &&
+          _pws_alerts.front().serial_number == alert.serial_number) {
+        _pws_alerts.front().repeat_count++;
+        _pws_alerts.front().last_received_at = now_ms;
+        return;
+      }
+      alert.first_received_at = now_ms;
+      alert.last_received_at  = now_ms;
+      _pws_alerts.insert(_pws_alerts.begin(), std::move(alert));
+      if (_pws_alerts.size() > kMaxPwsAlertHistory) {
+        _pws_alerts.resize(kMaxPwsAlertHistory);
+      }
+    }
+    std::vector<PwsAlert> pws_alerts() const {
+      std::lock_guard<std::mutex> lock(_pws_alerts_mutex);
+      return _pws_alerts;
+    }
+
+    /**
+     * ETSI TS 103 720 clause 5.10 / ETSI TS 124 117 (OMA-DM MO
+     * urn:oma:mo:ext-3gpp-tv-config:1.0): the standardized "TV Service
+     * Configuration MO" an application is expected to push to the MBMS Client
+     * (this process) via the MBMS-API, rather than the receiver sourcing its
+     * frequency/service info from ad hoc local config. Distilled to the two
+     * leaf groups this PHY/RRC-layer receiver actually needs -
+     * <X>/PLMNList/<X>/RANInfo/<X>/EARFCN and .../TMGIConfiguration's TMGI
+     * lists (USD kept as an opaque TS 26.346 string - parsing it is a
+     * middleware-layer concern, out of scope here).
+     */
+    struct TvConfigTmgi {
+      std::string tmgi;
+      std::string usd; /* TS 26.346 User Service Description, opaque here */
+    };
+    struct TvConfigPlmn {
+      std::string plmn_id;
+      std::vector<uint32_t> earfcns;             /* RANInfo/<X>/EARFCN */
+      std::vector<TvConfigTmgi> tmgis_for_sa;      /* TMGIConfiguration/TMGIListForSA */
+      std::vector<TvConfigTmgi> tmgis_for_service; /* TMGIConfiguration/TMGIListForService */
+    };
+
+    /**
+     * Replace the whole TV Service Configuration MO (all PLMNs at once,
+     * matching the MO's own Replace access type on PLMNList) - called by
+     * RestHandler's PUT /tv_config, and once at startup from modem.conf's
+     * [tv_config] section if present.
+     */
+    void set_tv_config(std::vector<TvConfigPlmn> plmns) {
+      std::lock_guard<std::mutex> lock(_tv_config_mutex);
+      _tv_config = std::move(plmns);
+    }
+    std::vector<TvConfigPlmn> tv_config() const {
+      std::lock_guard<std::mutex> lock(_tv_config_mutex);
+      return _tv_config;
+    }
+    /**
+     * All EARFCNs provisioned for a given PLMN (empty if that PLMN isn't
+     * configured, or plmn_id is empty and there's more than one PLMN entry -
+     * a specific PLMN must be named in that case). Used to cross-check a
+     * live ROM redirect (TS 36.331 mbms_rom_info_list_r16) against what was
+     * actually provisioned, and to pick the initial search frequency.
+     */
+    std::vector<uint32_t> tv_config_earfcns(const std::string& plmn_id = "") const {
+      std::lock_guard<std::mutex> lock(_tv_config_mutex);
+      for (const auto& plmn : _tv_config) {
+        if (plmn_id.empty() || plmn.plmn_id == plmn_id) {
+          return plmn.earfcns;
+        }
+      }
+      return {};
+    }
+
 
 
     /**************** Getters and setters for phy params of _ue_sync **************/
@@ -408,4 +515,11 @@ class Phy {
     bool _search_extended_cp = true;
 
     std::atomic<uint64_t> _rom_redirect{0}; // upper 32 bits = EARFCN, lower 32 bits = nof_prb
+
+    std::vector<TvConfigPlmn> _tv_config;
+    mutable std::mutex        _tv_config_mutex;
+
+    static constexpr size_t kMaxPwsAlertHistory = 50;
+    std::vector<PwsAlert> _pws_alerts;
+    mutable std::mutex    _pws_alerts_mutex;
 };

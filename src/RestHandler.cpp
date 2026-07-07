@@ -217,6 +217,52 @@ void RestHandler::get(http_request message) {
       int idx = std::stoi(paths[1]);
       auto cestream = Concurrency::streams::bytestream::open_istream(_mch[idx].GetData());
       message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "tv_config") {
+      /* ETSI TS 103 720 clause 5.10 / ETSI TS 124 117 TV Service Configuration
+       * MO (urn:oma:mo:ext-3gpp-tv-config:1.0), distilled to what this receiver
+       * consumes - see Phy::TvConfigPlmn's doc comment. */
+      std::vector<value> plmns;
+      for (const auto& plmn : _phy.tv_config()) {
+        value p = value::object();
+        p["plmn_id"] = value::string(plmn.plmn_id);
+        std::vector<value> ran_info;
+        for (uint32_t earfcn : plmn.earfcns) {
+          ran_info.push_back(value(earfcn));
+        }
+        p["ran_info"] = value::array(ran_info);
+        auto tmgi_list = [](const std::vector<Phy::TvConfigTmgi>& tmgis) {
+          std::vector<value> out;
+          for (const auto& t : tmgis) {
+            value tv = value::object();
+            tv["tmgi"] = value::string(t.tmgi);
+            tv["usd"]  = value::string(t.usd);
+            out.push_back(tv);
+          }
+          return value::array(out);
+        };
+        p["tmgi_list_for_sa"]      = tmgi_list(plmn.tmgis_for_sa);
+        p["tmgi_list_for_service"] = tmgi_list(plmn.tmgis_for_service);
+        plmns.push_back(p);
+      }
+      message.reply(status_codes::OK, value::array(plmns));
+    } else if (paths[0] == "pws_alerts") {
+      /* SIB12 (CMAS/PWS) alert history - see Phy::PwsAlert's doc comment.
+       * Receive-only: no PUT counterpart, this receiver never originates
+       * alerts (that's the CBE, mbms-control-portal). */
+      std::vector<value> alerts;
+      for (const auto& a : _phy.pws_alerts()) {
+        value v = value::object();
+        v["msg_id"]             = value(a.msg_id);
+        v["serial_number"]      = value(a.serial_number);
+        v["data_coding_scheme"] = value(a.data_coding_scheme);
+        v["text"]               = value::string(a.text);
+        v["label"]              = value::string(a.label);
+        v["first_received_at"]  = value(a.first_received_at);
+        v["last_received_at"]   = value(a.last_received_at);
+        v["repeat_count"]       = value(a.repeat_count);
+        alerts.push_back(v);
+      }
+      message.reply(status_codes::OK, value::array(alerts));
     } else if (paths[0] == "log") {
       std::string logfile = "/var/log/syslog";
 
@@ -364,6 +410,57 @@ void RestHandler::put(http_request message) {
       }
       
       message.reply(status_codes::OK, answer);
+    } else if (paths[0] == "tv_config") {
+      /* ETSI TS 103 720 clause 5.10 / ETSI TS 124 117: an application pushes the
+       * TV Service Configuration MO here via the MBMS-API, replacing the whole
+       * PLMNList at once (matching the MO's own Replace access type) - see the
+       * GET handler above for the mirrored JSON shape and Phy::TvConfigPlmn's
+       * doc comment for what's kept vs. treated as opaque (USD). */
+      const auto& jval = message.extract_json().get();
+      spdlog::debug("Received JSON: {}", jval.serialize());
+
+      auto parse_tmgi_list = [](const value& arr) {
+        std::vector<Phy::TvConfigTmgi> out;
+        if (arr.is_array()) {
+          for (const auto& t : arr.as_array()) {
+            Phy::TvConfigTmgi tmgi;
+            if (t.has_field("tmgi")) {
+              tmgi.tmgi = t.at("tmgi").as_string();
+            }
+            if (t.has_field("usd")) {
+              tmgi.usd = t.at("usd").as_string();
+            }
+            out.push_back(tmgi);
+          }
+        }
+        return out;
+      };
+
+      std::vector<Phy::TvConfigPlmn> plmns;
+      if (jval.is_array()) {
+        for (const auto& p : jval.as_array()) {
+          Phy::TvConfigPlmn plmn;
+          if (p.has_field("plmn_id")) {
+            plmn.plmn_id = p.at("plmn_id").as_string();
+          }
+          if (p.has_field("ran_info") && p.at("ran_info").is_array()) {
+            for (const auto& earfcn : p.at("ran_info").as_array()) {
+              plmn.earfcns.push_back((uint32_t)earfcn.as_integer());
+            }
+          }
+          if (p.has_field("tmgi_list_for_sa")) {
+            plmn.tmgis_for_sa = parse_tmgi_list(p.at("tmgi_list_for_sa"));
+          }
+          if (p.has_field("tmgi_list_for_service")) {
+            plmn.tmgis_for_service = parse_tmgi_list(p.at("tmgi_list_for_service"));
+          }
+          plmns.push_back(plmn);
+        }
+      }
+      spdlog::info("TV Service Configuration MO updated: {} PLMN(s)", plmns.size());
+      _phy.set_tv_config(std::move(plmns));
+
+      message.reply(status_codes::OK, value::object());
     }
   }
 }

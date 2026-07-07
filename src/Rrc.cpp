@@ -17,6 +17,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
+#include <chrono>
 #include <cstdio>
 
 #include "Rrc.h"
@@ -33,6 +34,125 @@ using asn1::rrc::sib_type_mbms_r14_e;
 using asn1::rrc::sched_info_mbms_r14_s;
 using asn1::rrc::sys_info_r8_ies_s;
 using asn1::rrc::sib_info_item_c;
+using asn1::rrc::sib_type12_r9_s;
+
+namespace {
+
+/* Reverse of rt-mbms-tx's tools/encode_sib12_alert.py: TS 23.038 GSM 7-bit
+ * default alphabet, packed 8 septets per 7 octets. Only the same subset the
+ * encoder tool supports is mapped back; anything outside that table decodes
+ * to '?', matching the encoder's own fallback so round-tripping is exact for
+ * every character the encoder can actually produce.
+ *
+ * One entry per septet code (0..127), NOT a single flat byte string: several
+ * entries (£, è, Δ, etc.) are multi-byte in UTF-8, so indexing a flat
+ * "const char*" table by septet code silently reads the wrong byte the
+ * moment any earlier entry is multi-byte - caught via a round-trip test
+ * against the encoder tool's own output before this array form was used.
+ * Bytes given as \x escapes (not literal UTF-8 source text or \u) so this is
+ * unambiguous regardless of source-file/compiler charset handling. */
+const char* kGsm7Basic[128] = {
+    "@", "\xc2\xa3", "$", "\xc2\xa5", "\xc3\xa8", "\xc3\xa9", "\xc3\xb9", "\xc3\xac",
+    "\xc3\xb2", "\xc3\x87", "\n", "\xc3\x98", "\xc3\xb8", "\r", "\xc3\x85", "\xc3\xa5",
+    "\xce\x94", "_", "\xce\xa6", "\xce\x93", "\xce\x9b", "\xce\xa9", "\xce\xa0", "\xce\xa8",
+    "\xce\xa3", "\xce\x98", "\xce\x9e", "\x1b", "?", "?", "?", "?",
+    " ", "!", "\"", "#", "\xc2\xa4", "%", "&", "'",
+    "(", ")", "*", "+", ",", "-", ".", "/",
+    "0", "1", "2", "3", "4", "5", "6", "7",
+    "8", "9", ":", ";", "<", "=", ">", "?",
+    "\xc2\xa1", "A", "B", "C", "D", "E", "F", "G",
+    "H", "I", "J", "K", "L", "M", "N", "O",
+    "P", "Q", "R", "S", "T", "U", "V", "W",
+    "X", "Y", "Z", "\xc3\x84", "\xc3\x96", "\xc3\x91", "\xc3\x9c", "\xc2\xa7",
+    "\xc2\xbf", "a", "b", "c", "d", "e", "f", "g",
+    "h", "i", "j", "k", "l", "m", "n", "o",
+    "p", "q", "r", "s", "t", "u", "v", "w",
+    "x", "y", "z", "\xc3\xa4", "\xc3\xb6", "\xc3\xb1", "\xc3\xbc", "\xc3\xa0",
+};
+
+std::string decode_gsm7(const uint8_t* data, uint32_t len) {
+  std::string out;
+  uint32_t bitpos = 0;
+  uint32_t nbits   = len * 8;
+  while (bitpos + 7 <= nbits) {
+    uint32_t byte_idx = bitpos / 8;
+    uint32_t offset    = bitpos % 8;
+    uint32_t code;
+    if (offset <= 1) {
+      code = (data[byte_idx] >> offset) & 0x7F;
+    } else {
+      code = ((data[byte_idx] >> offset) | (data[byte_idx + 1] << (8 - offset))) & 0x7F;
+    }
+    out += kGsm7Basic[code];
+    bitpos += 7;
+  }
+  return out;
+}
+
+std::string decode_ucs2(const uint8_t* data, uint32_t len) {
+  /* UTF-16-BE -> UTF-8, restricted to the BMP (no surrogate pairs) - matches
+   * the encoder tool, which only ever emits plain text.encode('utf-16-be'). */
+  std::string out;
+  for (uint32_t i = 0; i + 1 < len; i += 2) {
+    uint32_t cp = ((uint32_t)data[i] << 8) | data[i + 1];
+    if (cp < 0x80) {
+      out += (char)cp;
+    } else if (cp < 0x800) {
+      out += (char)(0xC0 | (cp >> 6));
+      out += (char)(0x80 | (cp & 0x3F));
+    } else {
+      out += (char)(0xE0 | (cp >> 12));
+      out += (char)(0x80 | ((cp >> 6) & 0x3F));
+      out += (char)(0x80 | (cp & 0x3F));
+    }
+  }
+  return out;
+}
+
+/* rt-mbms-tx's tools/encode_sib12_alert.py (the only thing that produces
+ * SIB12 content anywhere in this project) emits exactly two DCS byte values:
+ * 0x48 for GSM 7-bit default alphabet, 0x18 for UCS-2 - verified directly
+ * against that tool's own output rather than re-deriving TS 23.038's general
+ * DCS bit-group table, which has several groups and is easy to mis-parse.
+ * Match those two literal values; anything else falls back to GSM7 (the
+ * encoder's own default) rather than guessing at an unhandled DCS group. */
+constexpr uint8_t kDcsUcs2 = 0x18;
+
+/* Mirrors mbms-control-portal's lib/cap.js ALERT_TYPES table (message
+ * identifier -> CAP category) - that Node app is the actual CBE originating
+ * these alerts in this project, so its table is the ground truth for what
+ * msg_id values mean here, not a generic 3GPP-wide registry. */
+std::string pws_alert_label(uint32_t msg_id) {
+  switch (msg_id) {
+    case 0x1100: return "ETWS: Earthquake";
+    case 0x1102: return "ETWS: Tsunami";
+    case 0x1104: return "ETWS: Test";
+    case 0x1112: return "CMAS: Presidential Alert";
+    case 0x1113: return "CMAS: Extreme";
+    case 0x1115: return "CMAS: Severe";
+    case 0x111b: return "CMAS: AMBER Alert";
+    default:     return "";
+  }
+}
+
+Phy::PwsAlert decode_pws_alert(const sib_type12_r9_s& sib12) {
+  Phy::PwsAlert alert;
+  alert.msg_id             = (uint32_t)sib12.msg_id_r9.to_number();
+  alert.serial_number      = (uint32_t)sib12.serial_num_r9.to_number();
+  alert.data_coding_scheme = sib12.data_coding_scheme_r9_present ? sib12.data_coding_scheme_r9.data()[0] : 0;
+  alert.label               = pws_alert_label(alert.msg_id);
+
+  const uint8_t* data = sib12.warning_msg_segment_r9.data();
+  uint32_t       len   = sib12.warning_msg_segment_r9.size();
+  if (alert.data_coding_scheme == kDcsUcs2) {
+    alert.text = decode_ucs2(data, len);
+  } else {
+    alert.text = decode_gsm7(data, len);
+  }
+  return alert;
+}
+
+} // namespace
 
 void Rrc::write_pdu_mch(uint32_t /*lcid*/, srsran::unique_byte_buffer_t pdu) {
   spdlog::trace("rrc: write_pdu_mch");
@@ -227,6 +347,16 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
               }
             }
           }
+          break;
+        }
+        case sib_info_item_c::types::sib12_v920: {
+          Phy::PwsAlert alert = decode_pws_alert(sib.sib12_v920());
+          spdlog::info("SIB12 (CMAS/PWS): msg_id=0x{:04x} serial=0x{:04x} {} \"{}\"", alert.msg_id,
+                       alert.serial_number, alert.label.empty() ? "(unknown type)" : alert.label, alert.text);
+          uint64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count();
+          _phy.add_pws_alert(std::move(alert), now_ms);
           break;
         }
         default:
