@@ -131,6 +131,23 @@ class Phy {
     uint32_t mib_nof_ports() { return _cell.nof_ports; }
 
     /**
+     *  When the MIB was last successfully decoded (ms since epoch), from
+     *  either the initial cell_search() acquisition or a synchronize_subframe()
+     *  resync. Unprotected, matching _cell's own existing no-mutex precedent
+     *  (same writer thread; REST reads a torn-read-tolerant snapshot).
+     */
+    uint64_t last_mib_decoded_at() { return _last_mib_decoded_at; }
+    void set_mib_decoded_at(uint64_t now_ms) { _last_mib_decoded_at = now_ms; }
+
+    /**
+     *  Current absolute SFN (System Frame Number), derived from the tti()
+     *  counter (which is only ever set to sfn * kSubframesPerFrame - see
+     *  synchronize_subframe()). Same 10-subframes-per-frame constant already
+     *  hardcoded in RestHandler::record_subframe_event().
+     */
+    uint32_t sfn() { return _tti / 10; }
+
+    /**
      * PSS correlation peak value from the tracking-stage synchronizer (higher
      * is a stronger/cleaner PSS detection).
      */
@@ -362,7 +379,160 @@ class Phy {
       return {};
     }
 
+    /**
+     * SIB1-MBMS (SystemInformationBlockType1-MBMS-r14, TS 36.331 §6.3.11a) fields
+     * not already captured elsewhere - decoded in Rrc::handle_sib1 but previously
+     * only spdlog'd. PLMN/TAC/cell identity, SI scheduling table, and the Rel-19
+     * CAS muting config, kept as the latest-received snapshot for a REST consumer.
+     */
+    struct Sib1Plmn {
+      std::string mcc; /* formatted 3-digit string, empty if mcc_present was false */
+      std::string mnc; /* formatted 2- or 3-digit string */
+    };
+    struct Sib1SchedInfoEntry {
+      uint16_t si_periodicity_rf = 0;   /* enum_to_number() of si_periodicity_r14 */
+      std::vector<uint8_t> sib_types;   /* sib_map_info_r14 entries' to_number() */
+    };
+    struct Sib1Info {
+      std::vector<Sib1Plmn> plmns;
+      uint32_t tac                = 0;
+      uint32_t cell_id            = 0;
+      uint16_t si_win_len_ms      = 0;
+      uint8_t  sys_info_value_tag = 0;
+      std::vector<Sib1SchedInfoEntry> sched_info;
+      bool     cas_muting_enabled = false;
+      uint8_t  k_cas              = 0;
+      uint8_t  n_cas              = 0;
+      uint64_t last_received_at   = 0; /* ms since epoch */
+    };
 
+    void set_sib1_info(Sib1Info info) {
+      std::lock_guard<std::mutex> lock(_sib1_mutex);
+      _sib1         = std::move(info);
+      _sib1_present = true;
+    }
+    bool sib1_present() const {
+      std::lock_guard<std::mutex> lock(_sib1_mutex);
+      return _sib1_present;
+    }
+    Sib1Info sib1_info() const {
+      std::lock_guard<std::mutex> lock(_sib1_mutex);
+      return _sib1;
+    }
+
+    /**
+     * SIB13's Rel-16 ROM redirect list (mbms_rom_info_list_r16) in full - the
+     * operational redirect (set_rom_redirect(), below) only ever acts on the
+     * first entry; this keeps every entry for display/audit purposes.
+     */
+    struct Sib13RomInfo {
+      uint32_t earfcn  = 0;
+      uint8_t  bw_prb  = 0;   /* bw_r16.to_number() */
+      bool     has_scs = false;
+      float    scs_khz = 0;   /* subcarrier_spacing_r16.to_number(), if has_scs */
+    };
+    void set_sib13_rom_info(std::vector<Sib13RomInfo> rom_info) {
+      std::lock_guard<std::mutex> lock(_sib13_mutex);
+      _sib13_rom_info = std::move(rom_info);
+    }
+    std::vector<Sib13RomInfo> sib13_rom_info() const {
+      std::lock_guard<std::mutex> lock(_sib13_mutex);
+      return _sib13_rom_info;
+    }
+    void set_sib13_received_at(uint64_t now_ms) {
+      std::lock_guard<std::mutex> lock(_sib13_mutex);
+      _sib13_last_received_at = now_ms;
+    }
+    uint64_t sib13_last_received_at() const {
+      std::lock_guard<std::mutex> lock(_sib13_mutex);
+      return _sib13_last_received_at;
+    }
+    /* Copy-out getter for the raw SIB13 struct, for the sib_info REST endpoint.
+     * The three pre-existing internal readers (mbsfn_area_id(),
+     * mbsfn_subcarrier_spacing(), mbsfn_subcarrier_spacing_khz()) stay unlocked
+     * as before - only the new write path (set_mch_scheduling_info) and this
+     * getter take _sib13_mutex, since the REST thread is a new, third reader. */
+    srsran::sib13_t sib13() const {
+      std::lock_guard<std::mutex> lock(_sib13_mutex);
+      return _sib13;
+    }
+
+    /**
+     * SIB15 (SystemInformationBlockType15-r11, TS 36.331 §6.3.13) MBMS Service
+     * Area Identities, intra- and inter-frequency.
+     */
+    struct Sib15InterFreqSai {
+      uint32_t earfcn = 0;
+      std::vector<uint32_t> sai_list;
+    };
+    struct Sib15Info {
+      std::vector<uint32_t> intra_freq_sai;
+      std::vector<Sib15InterFreqSai> inter_freq_sai;
+      uint64_t last_received_at = 0;
+    };
+    void set_sib15_info(Sib15Info info) {
+      std::lock_guard<std::mutex> lock(_sib15_mutex);
+      _sib15         = std::move(info);
+      _sib15_present = true;
+    }
+    bool sib15_present() const {
+      std::lock_guard<std::mutex> lock(_sib15_mutex);
+      return _sib15_present;
+    }
+    Sib15Info sib15_info() const {
+      std::lock_guard<std::mutex> lock(_sib15_mutex);
+      return _sib15;
+    }
+
+    /**
+     * SIB16 (SystemInformationBlockType16-r11, TS 36.331 §6.3.14) GPS time.
+     */
+    struct Sib16Info {
+      bool     has_time_info           = false;
+      uint64_t gps_time_10ms           = 0;  /* raw 48-bit counter, TS 36.331 units */
+      bool     has_leap_seconds        = false;
+      uint16_t leap_seconds            = 0;
+      bool     has_local_time_offset   = false;
+      int8_t   local_time_offset_15min = 0;
+      uint64_t last_received_at        = 0;
+    };
+    void set_sib16_info(Sib16Info info) {
+      std::lock_guard<std::mutex> lock(_sib16_mutex);
+      _sib16         = std::move(info);
+      _sib16_present = true;
+    }
+    bool sib16_present() const {
+      std::lock_guard<std::mutex> lock(_sib16_mutex);
+      return _sib16_present;
+    }
+    Sib16Info sib16_info() const {
+      std::lock_guard<std::mutex> lock(_sib16_mutex);
+      return _sib16;
+    }
+
+    /**
+     * Any SIB type this receiver saw in a SystemInformation-MBMS message but
+     * doesn't decode (everything besides SIB1-MBMS/12/13/15/16 - see
+     * Rrc::write_pdu_bcch_dlsch's default: case). This receiver is an
+     * MBMS-dedicated-cell client, not a full LTE UE, so most of TS 36.331's
+     * SIB catalogue (reselection, inter-RAT, ETWS, EAB, SC-PTM, sidelink,
+     * V2X, ...) is expected to never appear here - this is an audit trail
+     * confirming that expectation rather than scaffolding for future decoders.
+     */
+    struct UnhandledSibInfo {
+      uint32_t count            = 0;
+      uint64_t last_received_at = 0; // ms since epoch
+    };
+    void note_unhandled_sib(uint8_t sib_type, uint64_t now_ms) {
+      std::lock_guard<std::mutex> lock(_unhandled_sibs_mutex);
+      auto& entry = _unhandled_sibs[sib_type];
+      entry.count++;
+      entry.last_received_at = now_ms;
+    }
+    std::map<uint8_t, UnhandledSibInfo> unhandled_sibs() const {
+      std::lock_guard<std::mutex> lock(_unhandled_sibs_mutex);
+      return _unhandled_sibs;
+    }
 
     /**************** Getters and setters for phy params of _ue_sync **************/
 
@@ -498,6 +668,12 @@ class Phy {
 
     srsran::mcch_msg_t& mcch() { return _mcch; }
 
+    /* Companion timestamp for _mcch, unprotected to match _mcch/_cell's own
+     * existing no-mutex precedent (single writer thread; REST reads a
+     * torn-read-tolerant snapshot). */
+    void set_mcch_received_at(uint64_t now_ms) { _mcch_last_received_at = now_ms; }
+    uint64_t mcch_last_received_at() { return _mcch_last_received_at; }
+
     int _mcs = 0;
     get_samples_t _sample_cb;
 
@@ -527,11 +703,13 @@ class Phy {
     uint32_t _buffer_max_samples = 0;
     uint32_t _tti = 0;
     uint32_t _mib_decode_count = 0;
+    uint64_t _last_mib_decoded_at = 0;
 
     uint8_t  _mcch_table[10] = {};
     bool _mcch_configured = false;
     srsran::sib13_t _sib13 = {};
     srsran::mcch_msg_t _mcch = {};
+    uint64_t _mcch_last_received_at = 0;
 
     bool _mch_configured = false;
 
@@ -553,4 +731,23 @@ class Phy {
     static constexpr size_t kMaxPwsAlertHistory = 50;
     std::vector<PwsAlert> _pws_alerts;
     mutable std::mutex    _pws_alerts_mutex;
+
+    mutable std::mutex _sib13_mutex; /* guards _sib13, _sib13_rom_info, _sib13_last_received_at */
+    std::vector<Sib13RomInfo> _sib13_rom_info;
+    uint64_t _sib13_last_received_at = 0;
+
+    Sib1Info  _sib1;
+    bool      _sib1_present = false;
+    mutable std::mutex _sib1_mutex;
+
+    Sib15Info _sib15;
+    bool      _sib15_present = false;
+    mutable std::mutex _sib15_mutex;
+
+    Sib16Info _sib16;
+    bool      _sib16_present = false;
+    mutable std::mutex _sib16_mutex;
+
+    std::map<uint8_t, UnhandledSibInfo> _unhandled_sibs;
+    mutable std::mutex                  _unhandled_sibs_mutex;
 };

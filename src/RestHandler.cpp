@@ -298,6 +298,12 @@ void RestHandler::get(http_request message) {
         alerts.push_back(v);
       }
       message.reply(status_codes::OK, value::array(alerts));
+    } else if (paths[0] == "sib_info") {
+      /* Full decoded SIB1-MBMS/SIB13/SIB15/SIB16 content plus the current
+       * MCCH-derived PMCH schedule, for the SIB Inspection/Audit page. One
+       * aggregate object rather than per-SIB endpoints, since the page wants
+       * all of them together on every poll (see sib_info_json() below). */
+      message.reply(status_codes::OK, sib_info_json());
     } else if (paths[0] == "log") {
       std::string logfile = "/var/log/syslog";
 
@@ -518,4 +524,252 @@ void RestHandler::record_subframe_event(uint32_t tti, uint8_t type, uint8_t stat
 std::vector<RestHandler::SubframeEvent> RestHandler::subframe_log_snapshot() {
   std::lock_guard<std::mutex> lock(_subframe_log_mutex);
   return std::vector<SubframeEvent>(_subframe_log.begin(), _subframe_log.end());
+}
+
+namespace {
+
+/* PLMN+service-id string for a TMGI-r9 (TS 36.331). No formatter for tmgi_t
+ * exists elsewhere in this codebase - kept minimal/self-contained rather than
+ * pulling in a formatting dependency for one string. */
+std::string format_tmgi(const srsran::tmgi_t& tmgi) {
+  std::string plmn;
+  if (tmgi.plmn_id_type == srsran::tmgi_t::plmn_id_type_t::explicit_value) {
+    const auto& p = tmgi.plmn_id.explicit_value;
+    plmn = std::to_string(p.mcc[0]) + std::to_string(p.mcc[1]) + std::to_string(p.mcc[2]) + "-" +
+           std::to_string(p.mnc[0]) + std::to_string(p.mnc[1]) +
+           (p.nof_mnc_digits > 2 ? std::to_string(p.mnc[2]) : "");
+  } else {
+    plmn = "plmn_idx=" + std::to_string(static_cast<int>(tmgi.plmn_id.plmn_idx));
+  }
+  char service_id[7];
+  snprintf(service_id, sizeof(service_id), "%02x%02x%02x", tmgi.serviced_id[0], tmgi.serviced_id[1],
+           tmgi.serviced_id[2]);
+  return plmn + "-" + service_id;
+}
+
+} // namespace
+
+web::json::value RestHandler::sib_info_json() {
+  value root = value::object();
+
+  // MIB (PBCH) - cell-constant params plus the currently-decoded SFN. Some of
+  // these (nof_prb, PCI, mib_decode_count) are already on /modem-api/status;
+  // repeated here too so this page is self-contained and doesn't require
+  // cross-referencing the Modem page for basic cell identity.
+  {
+    srsran_cell_t cell = _phy.cell();
+    value mv = value::object();
+    mv["pci"]                        = value(cell.id);
+    mv["nof_prb"]                    = value(cell.nof_prb);
+    mv["nof_ports"]                  = value(cell.nof_ports);
+    mv["frame_type"]                 = value::string(cell.frame_type == SRSRAN_TDD ? "TDD" : "FDD");
+    mv["mbms_dedicated"]             = value(cell.mbms_dedicated);
+    mv["additional_non_mbms_frames"] = value(cell.additional_non_mbms_frames);
+    mv["phich_length"]               = value::string(cell.phich_length == SRSRAN_PHICH_EXT ? "extended" : "normal");
+    std::string phich_r;
+    switch (cell.phich_resources) {
+      case SRSRAN_PHICH_R_1_6: phich_r = "1/6"; break;
+      case SRSRAN_PHICH_R_1_2: phich_r = "1/2"; break;
+      case SRSRAN_PHICH_R_1:   phich_r = "1"; break;
+      case SRSRAN_PHICH_R_2:   phich_r = "2"; break;
+      default:                 phich_r = "-"; break;
+    }
+    mv["phich_resources"]    = value::string(phich_r);
+    mv["semi_static_cfi"]    = value(cell.semi_static_cfi);
+    /* Phy::sfn() only updates during the initial acquisition/syncing state
+     * (see main.cpp's state machine - synchronize_subframe() is never called
+     * again once "processing" state takes over), so it goes stale seconds
+     * after startup. The subframe log's tail is fed continuously from the
+     * live CAS/MBSFN processing loop instead - use that as the current SFN,
+     * falling back to Phy::sfn() only before any subframe has been logged. */
+    auto sf_log = subframe_log_snapshot();
+    mv["sfn"] = value(sf_log.empty() ? _phy.sfn() : sf_log.back().sfn);
+    mv["mib_decode_count"]   = value(_phy.mib_decode_count());
+    mv["last_received_at"]   = value(_phy.last_mib_decoded_at());
+    root["mib"] = mv;
+  }
+
+  // SIB1-MBMS
+  if (_phy.sib1_present()) {
+    Phy::Sib1Info sib1 = _phy.sib1_info();
+    value s1 = value::object();
+    std::vector<value> plmns;
+    for (const auto& p : sib1.plmns) {
+      value pv = value::object();
+      pv["mcc"] = value::string(p.mcc);
+      pv["mnc"] = value::string(p.mnc);
+      plmns.push_back(pv);
+    }
+    s1["plmns"]              = value::array(plmns);
+    s1["tac"]                = value(sib1.tac);
+    s1["cell_id"]            = value(sib1.cell_id);
+    s1["si_win_len_ms"]      = value(sib1.si_win_len_ms);
+    s1["sys_info_value_tag"] = value(sib1.sys_info_value_tag);
+    std::vector<value> sched;
+    for (const auto& e : sib1.sched_info) {
+      value ev = value::object();
+      ev["si_periodicity_rf"] = value(e.si_periodicity_rf);
+      std::vector<value> types;
+      for (auto t : e.sib_types) {
+        types.push_back(value(t));
+      }
+      ev["sib_types"] = value::array(types);
+      sched.push_back(ev);
+    }
+    s1["sched_info"]         = value::array(sched);
+    s1["cas_muting_enabled"] = value(sib1.cas_muting_enabled);
+    s1["k_cas"]               = value(sib1.k_cas);
+    s1["n_cas"]               = value(sib1.n_cas);
+    s1["last_received_at"]    = value(sib1.last_received_at);
+    root["sib1"] = s1;
+  } else {
+    root["sib1"] = value::null();
+  }
+
+  // SIB13 (MBSFN area config + notification config) + ROM redirect list
+  {
+    srsran::sib13_t sib13 = _phy.sib13();
+    value s13 = value::object();
+    std::vector<value> areas;
+    for (uint32_t i = 0; i < sib13.nof_mbsfn_area_info; ++i) {
+      const auto& a = sib13.mbsfn_area_info_list[i];
+      value av = value::object();
+      av["mbsfn_area_id"]         = value(a.mbsfn_area_id);
+      av["non_mbsfn_region_len"]  = value(srsran::enum_to_number(a.non_mbsfn_region_len));
+      /* Only area[0] actually drives the SDR today (see Phy::set_mch_scheduling_info's
+       * "only 1 supported" warning) - reuse the same already-trusted accessor the
+       * Modem status page uses, rather than re-deriving the enum->kHz mapping here. */
+      av["subcarrier_spacing_khz"] = value(_phy.mbsfn_subcarrier_spacing_khz());
+      av["pmch_bandwidth"]        = value(a.pmch_bandwidth);
+      av["notif_ind"]             = value(a.notif_ind);
+      av["mcch_repeat_period_rf"] = value(srsran::enum_to_number(a.mcch_cfg.mcch_repeat_period));
+      av["mcch_offset"]           = value(a.mcch_cfg.mcch_offset);
+      av["mcch_mod_period_rf"]    = value(srsran::enum_to_number(a.mcch_cfg.mcch_mod_period));
+      av["sig_mcs"]               = value(srsran::enum_to_number(a.mcch_cfg.sig_mcs));
+      av["sf_alloc_info"]         = value(a.mcch_cfg.sf_alloc_info);
+      areas.push_back(av);
+    }
+    s13["areas"] = value::array(areas);
+
+    value nc = value::object();
+    nc["notif_repeat_coeff"] =
+        value::string(sib13.notif_cfg.notif_repeat_coeff == srsran::mbms_notif_cfg_t::coeff_t::n2 ? "n2" : "n4");
+    nc["notif_offset"] = value(sib13.notif_cfg.notif_offset);
+    nc["notif_sf_idx"] = value(sib13.notif_cfg.notif_sf_idx);
+    s13["notif_cfg"] = nc;
+
+    std::vector<value> rom;
+    for (const auto& r : _phy.sib13_rom_info()) {
+      value rv = value::object();
+      rv["earfcn"] = value(r.earfcn);
+      rv["bw_prb"] = value(r.bw_prb);
+      if (r.has_scs) {
+        rv["scs_khz"] = value(r.scs_khz);
+      }
+      rom.push_back(rv);
+    }
+    s13["rom_redirect"] = value::array(rom);
+    s13["last_received_at"] = value(_phy.sib13_last_received_at());
+
+    root["sib13"] = s13;
+  }
+
+  // SIB15
+  if (_phy.sib15_present()) {
+    Phy::Sib15Info sib15 = _phy.sib15_info();
+    value s15 = value::object();
+    std::vector<value> intra;
+    for (auto sai : sib15.intra_freq_sai) {
+      intra.push_back(value(sai));
+    }
+    s15["intra_freq_sai"] = value::array(intra);
+    std::vector<value> inter;
+    for (const auto& e : sib15.inter_freq_sai) {
+      value ev = value::object();
+      ev["earfcn"] = value(e.earfcn);
+      std::vector<value> sai_list;
+      for (auto sai : e.sai_list) {
+        sai_list.push_back(value(sai));
+      }
+      ev["sai_list"] = value::array(sai_list);
+      inter.push_back(ev);
+    }
+    s15["inter_freq_sai"]   = value::array(inter);
+    s15["last_received_at"] = value(sib15.last_received_at);
+    root["sib15"] = s15;
+  } else {
+    root["sib15"] = value::null();
+  }
+
+  // SIB16
+  if (_phy.sib16_present()) {
+    Phy::Sib16Info sib16 = _phy.sib16_info();
+    value s16 = value::object();
+    s16["has_time_info"] = value(sib16.has_time_info);
+    s16["gps_time_10ms"] = value(sib16.gps_time_10ms);
+    if (sib16.has_leap_seconds) {
+      s16["leap_seconds"] = value(sib16.leap_seconds);
+    }
+    if (sib16.has_local_time_offset) {
+      s16["local_time_offset_15min"] = value(sib16.local_time_offset_15min);
+    }
+    s16["last_received_at"] = value(sib16.last_received_at);
+    root["sib16"] = s16;
+  } else {
+    root["sib16"] = value::null();
+  }
+
+  // MCCH-derived PMCH schedule
+  {
+    const srsran::mcch_msg_t& mcch = _phy.mcch();
+    value mv = value::object();
+    mv["common_sf_alloc_period_rf"] = value(srsran::enum_to_number(mcch.common_sf_alloc_period));
+    std::vector<value> pmchs;
+    for (uint32_t i = 0; i < mcch.nof_pmch_info; ++i) {
+      const auto& p = mcch.pmch_info_list[i];
+      value pv = value::object();
+      pv["sf_alloc_end"]        = value(p.sf_alloc_end);
+      pv["data_mcs"]            = value(p.data_mcs);
+      pv["mch_sched_period_rf"] = value(srsran::enum_to_number(p.mch_sched_period));
+      std::vector<value> sessions;
+      for (uint32_t j = 0; j < p.nof_mbms_session_info; ++j) {
+        const auto& si = p.mbms_session_info_list[j];
+        value sv = value::object();
+        sv["tmgi"]              = value::string(format_tmgi(si.tmgi));
+        sv["session_id_present"] = value(si.session_id_present);
+        if (si.session_id_present) {
+          sv["session_id"] = value(si.session_id);
+        }
+        sv["lc_ch_id"] = value(si.lc_ch_id);
+        sessions.push_back(sv);
+      }
+      pv["sessions"]           = value::array(sessions);
+      pv["use_mcs_table2"]     = value(p.use_mcs_table2);
+      pv["time_interleaving_n"] = value(p.time_interleaving_n);
+      pv["time_interleaving_m"] = value(p.time_interleaving_m);
+      pv["cyclic_shift_alpha"] = value(p.cyclic_shift ? p.cyclic_shift_alpha : 0);
+      pv["freq_interleaving"]  = value(p.freq_interleaving);
+      pmchs.push_back(pv);
+    }
+    mv["pmch_list"] = value::array(pmchs);
+    mv["last_received_at"] = value(_phy.mcch_last_received_at());
+    root["mcch"] = mv;
+  }
+
+  // Any SIB type seen but not decoded (see Phy::UnhandledSibInfo's doc
+  // comment) - an audit trail confirming this MBMS-dedicated-cell receiver
+  // isn't silently missing something it should care about.
+  {
+    std::vector<value> unhandled;
+    for (const auto& kv : _phy.unhandled_sibs()) {
+      value uv = value::object();
+      uv["sib_type"]         = value(kv.first);
+      uv["count"]            = value(kv.second.count);
+      uv["last_received_at"] = value(kv.second.last_received_at);
+      unhandled.push_back(uv);
+    }
+    root["unhandled_sibs"] = value::array(unhandled);
+  }
+
+  return root;
 }

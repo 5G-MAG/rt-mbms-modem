@@ -227,6 +227,12 @@ class RestHandler {
     void get(web::http::http_request message);
     void put(web::http::http_request message);
 
+    /**
+     *  Aggregate JSON of everything decoded from SIB1-MBMS/SIB13/SIB15/SIB16
+     *  and the current MCCH-derived PMCH schedule, for the SIB Inspection page.
+     */
+    web::json::value sib_info_json();
+
     const libconfig::Config& _cfg;
 
     std::unique_ptr<web::http::experimental::listener::http_listener> _listener;

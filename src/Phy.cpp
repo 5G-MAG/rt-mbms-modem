@@ -19,12 +19,21 @@
 
 #include "Phy.h"
 
+#include <chrono>
 #include <utility>
 #include <iomanip>
 
 #include "srsran/interfaces/rrc_interface_types.h"
 #include "srsran/asn1/rrc_utils.h"
 #include "spdlog/spdlog.h"
+
+namespace {
+uint64_t now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+} // namespace
 
 static auto receive_callback(void* obj, cf_t* data[SRSRAN_MAX_CHANNELS],         // NOLINT
                              uint32_t nsamples, srsran_timestamp_t* rx_time)
@@ -88,6 +97,7 @@ auto Phy::synchronize_subframe() -> bool {
           sfn = (sfn + sfn_offset) % kMaxSfn;
         }
         _tti =  sfn * kSubframesPerFrame;
+        _last_mib_decoded_at = now_ms();
         return true;
       }
     }
@@ -187,6 +197,7 @@ auto Phy::cell_search() -> bool {
     _cell = new_cell;
     _cell.mbsfn_prb = _cell.nof_prb;
     _mib_decode_count++;
+    _last_mib_decoded_at = now_ms();
 
     if (srsran_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
       spdlog::error("Phy: failed to set cell.\n");
@@ -255,7 +266,10 @@ void Phy::set_mch_scheduling_info(const srsran::sib13_t& sib13) {
   }
 
   if (sib13.nof_mbsfn_area_info > 0) {
-    _sib13 = sib13;
+    {
+      std::lock_guard<std::mutex> lock(_sib13_mutex);
+      _sib13 = sib13;
+    }
 
     bzero(&_mcch_table[0], sizeof(uint8_t) * 10);
     if (sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info_is_r16) {

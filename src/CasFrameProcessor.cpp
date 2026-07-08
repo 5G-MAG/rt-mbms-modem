@@ -20,6 +20,8 @@
 #include "CasFrameProcessor.h"
 #include "spdlog/spdlog.h"
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 
 
 auto CasFrameProcessor::init() -> bool {
@@ -114,12 +116,13 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell) {
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
   _sf_cfg.tti = tti;
 
-  _rest._pdsch.total++;
+  // _pdsch.total/errors are advanced per actual SI decode below (in the CRC
+  // handling) so BLER = CRC failures / decode attempts is a genuine block-error
+  // rate. _pdcch keeps its per-occasion "not found" semantics.
   _rest._pdcch.total++;
 
   // Run the FFT and do channel estimation
   if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
-    _rest._pdsch.errors++;
     _rest._pdcch.errors++;
     spdlog::error("Getting PDCCH FFT estimate\n");
     _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_FAIL);
@@ -183,19 +186,43 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
      * different SI messages (different MCS/TBS index) rotate through here. */
     _rest._pdsch.SetData(pdsch_data());
     if (ret) {
+      // Processing error (bad grant/buffer) before a CRC could even be computed.
       spdlog::error("Error decoding PDSCH\n");
+      _rest._pdsch.total++;
       _rest._pdsch.errors++;
       _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_FAIL);
     } else {
-      spdlog::debug("Decoded PDSCH");
       _rest._pdsch.evm_rms = pdsch_res[0].evm; // evm of the first codeword
-      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_OK);
+      // srsran_ue_dl_decode_pdsch() returns SUCCESS even when the CRC fails; the
+      // real per-TB result is in pdsch_res[i].crc. Count each decoded TB as an
+      // attempt and a failed CRC as a real error, so BLER is a true block-error
+      // rate rather than only catching hard processing errors.
+      bool any_crc_fail = false;
       for (int i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
-        // .. and pass received PDUs to RLC for further processing
-        if (pdsch_cfg->grant.tb[i].enabled && pdsch_res[i].crc) {
-          _rlc.write_pdu_bcch_dlsch(_data[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+        if (pdsch_cfg->grant.tb[i].enabled) {
+          _rest._pdsch.total++;
+          if (pdsch_res[i].crc) {
+            // .. and pass received PDUs to RLC for further processing
+            _rlc.write_pdu_bcch_dlsch(_data[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+          } else {
+            _rest._pdsch.errors++;
+            any_crc_fail = true;
+          }
         }
       }
+      spdlog::debug("Decoded PDSCH (crc_fail={})", any_crc_fail);
+      // Env-gated per-CAS decode diagnostic (CAS_PDSCH_DIAG=1, off by default):
+      // logs MCS/EVM/CINR/CRC per SI decode so a CRC failure can be correlated
+      // with the periodic EVM/CINR peaks.
+      if (getenv("CAS_PDSCH_DIAG")) {
+        fprintf(stderr,
+                "CASDIAG tti=%u mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d\n",
+                tti, dci[k].tb[0].mcs_idx, (double)pdsch_res[0].evm,
+                (double)_ue_dl.chest_res.snr_db, pdsch_res[0].crc ? 1 : 0,
+                (int)pdsch_cfg->grant.tb[0].tbs);
+      }
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS,
+                                  any_crc_fail ? RestHandler::SF_STATUS_FAIL : RestHandler::SF_STATUS_OK);
     }
   }
   if (nof_grants == 0) {

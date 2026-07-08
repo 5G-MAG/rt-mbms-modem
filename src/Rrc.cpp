@@ -152,6 +152,25 @@ Phy::PwsAlert decode_pws_alert(const sib_type12_r9_s& sib12) {
   return alert;
 }
 
+/* mbms_rom_info_list_r16 has the same field layout wherever SIB13 is reached
+ * from (sib1.sib_type13_r14 vs sib.sib13_v920()), but the two paths' asn1
+ * container types differ, hence the template rather than a fixed type name. */
+template <typename RomInfoList>
+std::vector<Phy::Sib13RomInfo> decode_rom_info(const RomInfoList& list) {
+  std::vector<Phy::Sib13RomInfo> out;
+  for (const auto& ri : list) {
+    Phy::Sib13RomInfo r;
+    r.earfcn  = ri.rom_freq_r16;
+    r.bw_prb  = ri.bw_r16.to_number();
+    r.has_scs = ri.subcarrier_spacing_r16_present;
+    if (r.has_scs) {
+      r.scs_khz = ri.subcarrier_spacing_r16.to_number();
+    }
+    out.push_back(r);
+  }
+  return out;
+}
+
 } // namespace
 
 void Rrc::write_pdu_mch(uint32_t /*lcid*/, srsran::unique_byte_buffer_t pdu) {
@@ -251,6 +270,9 @@ void Rrc::write_pdu_mch(uint32_t /*lcid*/, srsran::unique_byte_buffer_t pdu) {
 
   _phy.set_mbsfn_config(mcch);
   _phy.set_decode_mcch(false);
+  _phy.set_mcch_received_at(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch())
+                                 .count());
   _state = STREAMING;
 }
 
@@ -279,9 +301,13 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
   dlsch_msg.to_json(json_writer);
   spdlog::debug("BCCH-DLSCH MBMS message content:\n{}", json_writer.to_string());
 
+  uint64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+
   if (dlsch_msg.msg.c1().type() == bcch_dl_sch_msg_type_mbms_r14_c::c1_c_::types::sib_type1_mbms_r14) {
     spdlog::debug("Processing SIB1-MBMS (1/1)");
-    handle_sib1(dlsch_msg.msg.c1().sib_type1_mbms_r14());
+    handle_sib1(dlsch_msg.msg.c1().sib_type1_mbms_r14(), now_ms);
   } else {
     sys_info_r8_ies_s::sib_type_and_info_l_& sib_list =
         dlsch_msg.msg.c1().sys_info_mbms_r14().crit_exts.sys_info_r8().sib_type_and_info;
@@ -295,6 +321,7 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
           spdlog::debug("Handling SIB13\n");
           const auto& sib13 = sib.sib13_v920();
           _phy.set_mch_scheduling_info(srsran::make_sib13(sib13));
+          _phy.set_sib13_received_at(now_ms);
           if (!_rlc.has_bearer_mrb(0, 0)) {
             _rlc.add_bearer_mrb(0, 0);
           }
@@ -307,6 +334,7 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
                                ? fmt::format(" SCS={}kHz", ri.subcarrier_spacing_r16.to_number())
                                : std::string(""));
             }
+            _phy.set_sib13_rom_info(decode_rom_info(sib13.mbms_rom_info_list_r16));
             const auto& ri0 = sib13.mbms_rom_info_list_r16[0];
             _phy.set_rom_redirect(ri0.rom_freq_r16, ri0.bw_r16.to_number());
           }
@@ -314,18 +342,26 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
         }
         case sib_info_item_c::types::sib15_v1130: {
           const auto& sib15 = sib.sib15_v1130();
+          Phy::Sib15Info sib15_info;
           if (sib15.mbms_sai_intra_freq_r11_present) {
             for (const auto& sai : sib15.mbms_sai_intra_freq_r11) {
               spdlog::info("SIB15: intra-freq MBMS-SAI={}", sai);
+              sib15_info.intra_freq_sai.push_back(sai);
             }
           }
           if (sib15.mbms_sai_inter_freq_list_r11_present) {
             for (const auto& entry : sib15.mbms_sai_inter_freq_list_r11) {
+              Phy::Sib15InterFreqSai inter;
+              inter.earfcn = entry.dl_carrier_freq_r11;
               for (const auto& sai : entry.mbms_sai_list_r11) {
                 spdlog::info("SIB15: inter-freq EARFCN={} MBMS-SAI={}", entry.dl_carrier_freq_r11, sai);
+                inter.sai_list.push_back(sai);
               }
+              sib15_info.inter_freq_sai.push_back(std::move(inter));
             }
           }
+          sib15_info.last_received_at = now_ms;
+          _phy.set_sib15_info(std::move(sib15_info));
           break;
         }
         case sib_info_item_c::types::sib16_v1130: {
@@ -339,12 +375,21 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
             } else {
               uint64_t gps_10ms = ti.time_info_utc_r11;
               spdlog::info("SIB16: GPS time {} * 10ms ({}s since GPS epoch)", gps_10ms, gps_10ms / 100);
+              Phy::Sib16Info sib16_info;
+              sib16_info.has_time_info = true;
+              sib16_info.gps_time_10ms = gps_10ms;
               if (ti.leap_seconds_r11_present) {
                 spdlog::info("SIB16: UTC-GPS leap seconds = {}", ti.leap_seconds_r11);
+                sib16_info.has_leap_seconds = true;
+                sib16_info.leap_seconds     = ti.leap_seconds_r11;
               }
               if (ti.local_time_offset_r11_present) {
                 spdlog::info("SIB16: local time offset = {} * 15min", ti.local_time_offset_r11);
+                sib16_info.has_local_time_offset   = true;
+                sib16_info.local_time_offset_15min = ti.local_time_offset_r11;
               }
+              sib16_info.last_received_at = now_ms;
+              _phy.set_sib16_info(std::move(sib16_info));
             }
           }
           break;
@@ -353,22 +398,22 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
           Phy::PwsAlert alert = decode_pws_alert(sib.sib12_v920());
           spdlog::info("SIB12 (CMAS/PWS): msg_id=0x{:04x} serial=0x{:04x} {} \"{}\"", alert.msg_id,
                        alert.serial_number, alert.label.empty() ? "(unknown type)" : alert.label, alert.text);
-          uint64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::system_clock::now().time_since_epoch())
-                                .count();
           _phy.add_pws_alert(std::move(alert), now_ms);
           break;
         }
         default:
           spdlog::debug("SIB{} is not supported\n", sib.type().to_number());
+          _phy.note_unhandled_sib(static_cast<uint8_t>(sib.type().to_number()), now_ms);
       }
     }
   }
 }
 
-void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1) {
+void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1, uint64_t now_ms) {
   spdlog::debug("SIB1-MBMS received, si_window={}",
                 sib1.si_win_len_r14.to_number());
+
+  Phy::Sib1Info sib1_info;
 
   // Detect SI schedule changes via sys_info_value_tag_r14 (TS 36.331 §5.2.1.2)
   uint8_t current_tag = sib1.sys_info_value_tag_r14;
@@ -381,34 +426,53 @@ void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1) {
   // Log cell identity (PLMN, TAC, cell ID)
   const auto& cai = sib1.cell_access_related_info_r14;
   for (const auto& plmn : cai.plmn_id_list_r14) {
+    Phy::Sib1Plmn p;
     if (plmn.mcc_present) {
       spdlog::info("SIB1-MBMS: PLMN MCC={}{}{} MNC={}{}{}", plmn.mcc[0], plmn.mcc[1], plmn.mcc[2],
                    plmn.mnc[0], plmn.mnc[1], plmn.mnc.size() > 2 ? std::to_string(plmn.mnc[2]) : "");
+      p.mcc = fmt::format("{}{}{}", plmn.mcc[0], plmn.mcc[1], plmn.mcc[2]);
     } else {
       spdlog::info("SIB1-MBMS: PLMN MNC={}{}{}", plmn.mnc[0], plmn.mnc[1],
                    plmn.mnc.size() > 2 ? std::to_string(plmn.mnc[2]) : "");
     }
+    p.mnc = fmt::format("{}{}{}", plmn.mnc[0], plmn.mnc[1], plmn.mnc.size() > 2 ? std::to_string(plmn.mnc[2]) : "");
+    sib1_info.plmns.push_back(std::move(p));
   }
   spdlog::info("SIB1-MBMS: TAC=0x{:04x} CellID=0x{:07x}", cai.tac_r14.to_number(),
                cai.cell_id_r14.to_number());
+  sib1_info.tac         = cai.tac_r14.to_number();
+  sib1_info.cell_id     = cai.cell_id_r14.to_number();
+  sib1_info.si_win_len_ms      = sib1.si_win_len_r14.to_number();
+  sib1_info.sys_info_value_tag = current_tag;
 
   // Print SIB scheduling info
   for (auto& i : sib1.sched_info_list_mbms_r14) {
     sched_info_mbms_r14_s::si_periodicity_r14_e_ p = i.si_periodicity_r14;
+    Phy::Sib1SchedInfoEntry entry;
+    entry.si_periodicity_rf = p.to_number();
     for (auto t : i.sib_map_info_r14) {
       spdlog::info("SIB scheduling info, sib_type={}, si_periodicity={}",
                    t.to_number(), p.to_number());
+      entry.sib_types.push_back(t.to_number());
     }
+    sib1_info.sched_info.push_back(std::move(entry));
   }
 
   if (sib1.non_crit_ext_present && sib1.non_crit_ext.cas_muting_cfg_r19_present) {
     const auto& cas = sib1.non_crit_ext.cas_muting_cfg_r19;
     _phy.set_cas_muting(true, cas.k_cas_r19, cas.n_cas_r19.to_number());
     spdlog::info("CAS muting configured: KCAS={} NCAS={}", cas.k_cas_r19, cas.n_cas_r19.to_number());
+    sib1_info.cas_muting_enabled = true;
+    sib1_info.k_cas              = cas.k_cas_r19;
+    sib1_info.n_cas              = cas.n_cas_r19.to_number();
   }
+
+  sib1_info.last_received_at = now_ms;
+  _phy.set_sib1_info(std::move(sib1_info));
 
   const auto& sib13 = sib1.sib_type13_r14;
   _phy.set_mch_scheduling_info(srsran::make_sib13(sib13));
+  _phy.set_sib13_received_at(now_ms);
   if (!_rlc.has_bearer_mrb(0, 0)) {
     _rlc.add_bearer_mrb(0, 0);
   }
@@ -419,6 +483,7 @@ void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1) {
                        ? fmt::format(" SCS={}kHz", ri.subcarrier_spacing_r16.to_number())
                        : std::string(""));
     }
+    _phy.set_sib13_rom_info(decode_rom_info(sib13.mbms_rom_info_list_r16));
     const auto& ri0 = sib13.mbms_rom_info_list_r16[0];
     _phy.set_rom_redirect(ri0.rom_freq_r16, ri0.bw_r16.to_number());
   }
