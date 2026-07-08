@@ -327,6 +327,86 @@ class Phy {
     }
 
     /**
+     * SIB10 (SystemInformationBlockType10, TS 36.331 §6.3.1) ETWS Primary
+     * Notification - a compact, text-free alert (unlike SIB11/SIB12) that
+     * just signals a hazard classification and UE alerting instructions. Same
+     * msg_id/serial_number dedup and repeating-broadcast semantics as
+     * PwsAlert above (TS 23.041 §5.4.4: the network keeps rebroadcasting the
+     * same primary notification while active).
+     */
+    struct EtwsPrimaryAlert {
+      uint32_t msg_id             = 0;
+      uint32_t serial_number      = 0;
+      uint8_t  warning_type_value = 0;     /* TS 23.041 §9.3.24: 0=EQ,1=tsunami,2=EQ+tsunami,3=test,4=other */
+      bool     emergency_user_alert = false;
+      bool     popup                = false;
+      std::string label;     /* human-readable, e.g. "ETWS: Earthquake" - see pws_alert_label()/
+                               * etws_warning_type_label() in Rrc.cpp */
+      uint64_t first_received_at = 0;
+      uint64_t last_received_at  = 0;
+      uint32_t repeat_count      = 1;
+    };
+    void add_etws_primary_alert(EtwsPrimaryAlert alert, uint64_t now_ms) {
+      std::lock_guard<std::mutex> lock(_etws_primary_alerts_mutex);
+      if (!_etws_primary_alerts.empty() && _etws_primary_alerts.front().msg_id == alert.msg_id &&
+          _etws_primary_alerts.front().serial_number == alert.serial_number) {
+        _etws_primary_alerts.front().repeat_count++;
+        _etws_primary_alerts.front().last_received_at = now_ms;
+        return;
+      }
+      alert.first_received_at = now_ms;
+      alert.last_received_at  = now_ms;
+      _etws_primary_alerts.insert(_etws_primary_alerts.begin(), std::move(alert));
+      if (_etws_primary_alerts.size() > kMaxPwsAlertHistory) {
+        _etws_primary_alerts.resize(kMaxPwsAlertHistory);
+      }
+    }
+    std::vector<EtwsPrimaryAlert> etws_primary_alerts() const {
+      std::lock_guard<std::mutex> lock(_etws_primary_alerts_mutex);
+      return _etws_primary_alerts;
+    }
+
+    /**
+     * SIB11 (SystemInformationBlockType11, TS 36.331 §6.3.1) ETWS Secondary
+     * Notification - carries the actual warning text (same GSM-7/UCS-2
+     * decode as SIB12/CMAS). Per TS 23.041 §5.4.4, if a primary and secondary
+     * notification are both signalled for the same event they share the same
+     * msg_id/serial_number - so this history and SIB10's above use the same
+     * dedup key shape but are tracked independently (a UE may receive either
+     * without the other). Single-segment only for now, same limitation as
+     * PwsAlert above.
+     */
+    struct EtwsSecondaryAlert {
+      uint32_t msg_id             = 0;
+      uint32_t serial_number      = 0;
+      uint8_t  data_coding_scheme = 0;
+      std::string text;
+      std::string label;
+      uint64_t first_received_at = 0;
+      uint64_t last_received_at  = 0;
+      uint32_t repeat_count      = 1;
+    };
+    void add_etws_secondary_alert(EtwsSecondaryAlert alert, uint64_t now_ms) {
+      std::lock_guard<std::mutex> lock(_etws_secondary_alerts_mutex);
+      if (!_etws_secondary_alerts.empty() && _etws_secondary_alerts.front().msg_id == alert.msg_id &&
+          _etws_secondary_alerts.front().serial_number == alert.serial_number) {
+        _etws_secondary_alerts.front().repeat_count++;
+        _etws_secondary_alerts.front().last_received_at = now_ms;
+        return;
+      }
+      alert.first_received_at = now_ms;
+      alert.last_received_at  = now_ms;
+      _etws_secondary_alerts.insert(_etws_secondary_alerts.begin(), std::move(alert));
+      if (_etws_secondary_alerts.size() > kMaxPwsAlertHistory) {
+        _etws_secondary_alerts.resize(kMaxPwsAlertHistory);
+      }
+    }
+    std::vector<EtwsSecondaryAlert> etws_secondary_alerts() const {
+      std::lock_guard<std::mutex> lock(_etws_secondary_alerts_mutex);
+      return _etws_secondary_alerts;
+    }
+
+    /**
      * ETSI TS 103 720 clause 5.10 / ETSI TS 124 117 (OMA-DM MO
      * urn:oma:mo:ext-3gpp-tv-config:1.0): the standardized "TV Service
      * Configuration MO" an application is expected to push to the MBMS Client
@@ -512,12 +592,14 @@ class Phy {
 
     /**
      * Any SIB type this receiver saw in a SystemInformation-MBMS message but
-     * doesn't decode (everything besides SIB1-MBMS/12/13/15/16 - see
+     * doesn't decode (everything besides SIB1-MBMS/10/11/12/13/15/16 - see
      * Rrc::write_pdu_bcch_dlsch's default: case). This receiver is an
      * MBMS-dedicated-cell client, not a full LTE UE, so most of TS 36.331's
-     * SIB catalogue (reselection, inter-RAT, ETWS, EAB, SC-PTM, sidelink,
-     * V2X, ...) is expected to never appear here - this is an audit trail
-     * confirming that expectation rather than scaffolding for future decoders.
+     * SIB catalogue (reselection, inter-RAT, EAB, SC-PTM, sidelink, V2X, ...)
+     * is expected to never appear here - this is an audit trail confirming
+     * that expectation rather than scaffolding for future decoders. ETWS
+     * (SIB10/11) is legitimately in-scope per SIB-Type-MBMS-r14's own enum
+     * and is now decoded above, not just audited.
      */
     struct UnhandledSibInfo {
       uint32_t count            = 0;
@@ -731,6 +813,10 @@ class Phy {
     static constexpr size_t kMaxPwsAlertHistory = 50;
     std::vector<PwsAlert> _pws_alerts;
     mutable std::mutex    _pws_alerts_mutex;
+    std::vector<EtwsPrimaryAlert>   _etws_primary_alerts;
+    mutable std::mutex              _etws_primary_alerts_mutex;
+    std::vector<EtwsSecondaryAlert> _etws_secondary_alerts;
+    mutable std::mutex              _etws_secondary_alerts_mutex;
 
     mutable std::mutex _sib13_mutex; /* guards _sib13, _sib13_rom_info, _sib13_last_received_at */
     std::vector<Sib13RomInfo> _sib13_rom_info;

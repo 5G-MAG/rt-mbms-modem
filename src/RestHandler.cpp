@@ -298,6 +298,43 @@ void RestHandler::get(http_request message) {
         alerts.push_back(v);
       }
       message.reply(status_codes::OK, value::array(alerts));
+    } else if (paths[0] == "etws_primary_alerts") {
+      /* SIB10 (ETWS primary notification) alert history - see
+       * Phy::EtwsPrimaryAlert's doc comment. Receive-only, same rationale as
+       * pws_alerts above. */
+      std::vector<value> alerts;
+      for (const auto& a : _phy.etws_primary_alerts()) {
+        value v = value::object();
+        v["msg_id"]               = value(a.msg_id);
+        v["serial_number"]        = value(a.serial_number);
+        v["warning_type_value"]   = value(a.warning_type_value);
+        v["emergency_user_alert"] = value(a.emergency_user_alert);
+        v["popup"]                = value(a.popup);
+        v["label"]                = value::string(a.label);
+        v["first_received_at"]    = value(a.first_received_at);
+        v["last_received_at"]     = value(a.last_received_at);
+        v["repeat_count"]         = value(a.repeat_count);
+        alerts.push_back(v);
+      }
+      message.reply(status_codes::OK, value::array(alerts));
+    } else if (paths[0] == "etws_secondary_alerts") {
+      /* SIB11 (ETWS secondary notification) alert history - see
+       * Phy::EtwsSecondaryAlert's doc comment. Receive-only, same rationale
+       * as pws_alerts above. */
+      std::vector<value> alerts;
+      for (const auto& a : _phy.etws_secondary_alerts()) {
+        value v = value::object();
+        v["msg_id"]             = value(a.msg_id);
+        v["serial_number"]      = value(a.serial_number);
+        v["data_coding_scheme"] = value(a.data_coding_scheme);
+        v["text"]               = value::string(a.text);
+        v["label"]              = value::string(a.label);
+        v["first_received_at"]  = value(a.first_received_at);
+        v["last_received_at"]   = value(a.last_received_at);
+        v["repeat_count"]       = value(a.repeat_count);
+        alerts.push_back(v);
+      }
+      message.reply(status_codes::OK, value::array(alerts));
     } else if (paths[0] == "sib_info") {
       /* Full decoded SIB1-MBMS/SIB13/SIB15/SIB16 content plus the current
        * MCCH-derived PMCH schedule, for the SIB Inspection/Audit page. One

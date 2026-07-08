@@ -34,6 +34,8 @@ using asn1::rrc::sib_type_mbms_r14_e;
 using asn1::rrc::sched_info_mbms_r14_s;
 using asn1::rrc::sys_info_r8_ies_s;
 using asn1::rrc::sib_info_item_c;
+using asn1::rrc::sib_type10_s;
+using asn1::rrc::sib_type11_s;
 using asn1::rrc::sib_type12_r9_s;
 
 namespace {
@@ -118,21 +120,89 @@ std::string decode_ucs2(const uint8_t* data, uint32_t len) {
  * encoder's own default) rather than guessing at an unhandled DCS group. */
 constexpr uint8_t kDcsUcs2 = 0x18;
 
-/* Mirrors mbms-control-portal's lib/cap.js ALERT_TYPES table (message
- * identifier -> CAP category) - that Node app is the actual CBE originating
- * these alerts in this project, so its table is the ground truth for what
- * msg_id values mean here, not a generic 3GPP-wide registry. */
+/* Message Identifier values are common infrastructure shared by SIB10/11/12
+ * alike (TS 23.041 §9.4.1.2.2 Table 9.4.1.2.2-1), so this table is reused for
+ * ETWS primary/secondary as well as CMAS/PWS labeling below - not solely a
+ * mirror of mbms-control-portal's lib/cap.js ALERT_TYPES table (that Node app
+ * is one CBE that happens to originate CMAS-range alerts in this project, but
+ * the value->meaning mapping itself is the 3GPP-wide registry, verified
+ * directly against 23041-j40.txt's Table 9.4.1.2.2-1). Corrected 2026-07-09:
+ * the ETWS entries below were previously wrong (0x1102 mislabeled Tsunami --
+ * that's actually 0x1101; 0x1104 mislabeled Test -- that's actually 0x1103;
+ * the real 0x1102/0x1104 meanings, combined EQ+Tsunami and Other, were
+ * missing entirely). Never exercised until SIB10/11 decode was added, since
+ * only SIB12 (CMAS-range msg_ids) previously reached this function. */
 std::string pws_alert_label(uint32_t msg_id) {
   switch (msg_id) {
     case 0x1100: return "ETWS: Earthquake";
-    case 0x1102: return "ETWS: Tsunami";
-    case 0x1104: return "ETWS: Test";
+    case 0x1101: return "ETWS: Tsunami";
+    case 0x1102: return "ETWS: Earthquake and Tsunami";
+    case 0x1103: return "ETWS: Test";
+    case 0x1104: return "ETWS: Other";
     case 0x1112: return "CMAS: Presidential Alert";
     case 0x1113: return "CMAS: Extreme";
     case 0x1115: return "CMAS: Severe";
     case 0x111b: return "CMAS: AMBER Alert";
     default:     return "";
   }
+}
+
+/* TS 23.041 §9.3.24 Table 9.3.24-1 (independent of the Message Identifier
+ * table above -- this is the ETWS-specific hazard classification carried
+ * directly in SIB10's own warning_type field, not looked up from msg_id).
+ * Kept as a fallback label alongside pws_alert_label(msg_id) in case a real
+ * network ever sends a msg_id outside the labeled/reserved range while still
+ * setting a valid warning_type_value 0-4. */
+std::string etws_warning_type_label(uint8_t value) {
+  switch (value) {
+    case 0: return "Earthquake";
+    case 1: return "Tsunami";
+    case 2: return "Earthquake and Tsunami";
+    case 3: return "Test";
+    case 4: return "Other";
+    default: return "";
+  }
+}
+
+Phy::EtwsPrimaryAlert decode_etws_primary(const sib_type10_s& sib10) {
+  Phy::EtwsPrimaryAlert alert;
+  alert.msg_id        = (uint32_t)sib10.msg_id.to_number();
+  alert.serial_number = (uint32_t)sib10.serial_num.to_number();
+
+  /* TS 23.041 §9.3.24, figure 9.3.24-2 (see the matching bcch_msg.h comment on
+   * sib_type10_s::warning_type, verified directly against spec text): octet1
+   * bits7..1 = Warning Type Value (7-bit), octet1 bit0 = Emergency User Alert;
+   * octet2 bit7 = Popup, octet2 bits6..0 = padding. */
+  const uint8_t* wt           = sib10.warning_type.data();
+  alert.warning_type_value    = (wt[0] >> 1) & 0x7Fu;
+  alert.emergency_user_alert  = (wt[0] & 0x01u) != 0;
+  alert.popup                 = ((wt[1] >> 7) & 0x01u) != 0;
+
+  alert.label = pws_alert_label(alert.msg_id);
+  if (alert.label.empty()) {
+    std::string wt_label = etws_warning_type_label(alert.warning_type_value);
+    if (!wt_label.empty()) {
+      alert.label = "ETWS: " + wt_label;
+    }
+  }
+  return alert;
+}
+
+Phy::EtwsSecondaryAlert decode_etws_secondary(const sib_type11_s& sib11) {
+  Phy::EtwsSecondaryAlert alert;
+  alert.msg_id             = (uint32_t)sib11.msg_id.to_number();
+  alert.serial_number      = (uint32_t)sib11.serial_num.to_number();
+  alert.data_coding_scheme = sib11.data_coding_scheme_present ? sib11.data_coding_scheme.data()[0] : 0;
+  alert.label              = pws_alert_label(alert.msg_id);
+
+  const uint8_t* data = sib11.warning_msg_segment.data();
+  uint32_t       len  = sib11.warning_msg_segment.size();
+  if (alert.data_coding_scheme == kDcsUcs2) {
+    alert.text = decode_ucs2(data, len);
+  } else {
+    alert.text = decode_gsm7(data, len);
+  }
+  return alert;
 }
 
 Phy::PwsAlert decode_pws_alert(const sib_type12_r9_s& sib12) {
@@ -397,6 +467,21 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
           spdlog::info("SIB12 (CMAS/PWS): msg_id=0x{:04x} serial=0x{:04x} {} \"{}\"", alert.msg_id,
                        alert.serial_number, alert.label.empty() ? "(unknown type)" : alert.label, alert.text);
           _phy.add_pws_alert(std::move(alert), now_ms);
+          break;
+        }
+        case sib_info_item_c::types::sib10: {
+          Phy::EtwsPrimaryAlert alert = decode_etws_primary(sib.sib10());
+          spdlog::info("SIB10 (ETWS primary): msg_id=0x{:04x} serial=0x{:04x} {} emergency_user_alert={} popup={}",
+                       alert.msg_id, alert.serial_number, alert.label.empty() ? "(unknown type)" : alert.label,
+                       alert.emergency_user_alert, alert.popup);
+          _phy.add_etws_primary_alert(std::move(alert), now_ms);
+          break;
+        }
+        case sib_info_item_c::types::sib11: {
+          Phy::EtwsSecondaryAlert alert = decode_etws_secondary(sib.sib11());
+          spdlog::info("SIB11 (ETWS secondary): msg_id=0x{:04x} serial=0x{:04x} {} \"{}\"", alert.msg_id,
+                       alert.serial_number, alert.label.empty() ? "(unknown type)" : alert.label, alert.text);
+          _phy.add_etws_secondary_alert(std::move(alert), now_ms);
           break;
         }
         default:

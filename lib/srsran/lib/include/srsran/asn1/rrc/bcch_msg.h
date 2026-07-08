@@ -2010,6 +2010,12 @@ struct sib_type10_s {
   bool                dummy_present = false;
   fixed_bitstring<16> msg_id;
   fixed_bitstring<16> serial_num;
+  /* TS 23.041 §9.3.24, figure 9.3.24-2 (verified directly against spec text, not
+   * assumed): octet1 bits 7..1 = Warning Type Value (7-bit, 0=earthquake,
+   * 1=tsunami, 2=earthquake+tsunami, 3=test, 4=other, 5-127=reserved), octet1
+   * bit 0 = Emergency User Alert; octet2 bit 7 = Popup, octet2 bits 6..0 =
+   * padding. i.e. warning_type[0] = (value << 1) | emergency_user_alert,
+   * warning_type[1] = (popup << 7). */
   fixed_octstring<2>  warning_type;
   fixed_octstring<50> dummy;
   // ...
