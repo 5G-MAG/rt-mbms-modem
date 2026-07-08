@@ -324,7 +324,7 @@ void SdrReader::read() {
           }
           _buffer->commit( read * sizeof(cf_t) );
     
-          if (_writing_to_file && _write_samples && _buffer_write->used_size() >= 0.95* _buffer_write->capacity()) {
+          if (_writing_to_file && _write_samples && static_cast<double>(_buffer_write->used_size()) >= 0.95* static_cast<double>(_buffer_write->capacity())) {
             unsigned int toWrite_samples = _buffer_write->used_size() / sizeof(cf_t); // We are going to storage all the info
             auto buff_to_write = _buffer_write->read_head(); // Gives the beggining of the buffer, it also puts _used and _head to 0, to start adding at the beggining again.
             srsran_filesink_write_multi(&file_sink, buff_to_write.data(), static_cast<int>(toWrite_samples), static_cast<int>(_rx_channels)); // From the begginin of the buffer we write used_size data
@@ -355,16 +355,16 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
   std::chrono::steady_clock::time_point entered = {};
   entered = std::chrono::steady_clock::now();
 
-  int64_t required_time_us = (1000000.0/_sampleRate) * nsamples;
+  int64_t required_time_us = static_cast<int64_t>((1000000.0/_sampleRate)) * nsamples;
   double half_buffer_size = (_sampleRate / 1000.0f) * (static_cast<double>(_buffer_ms) * 0.50f) * sizeof(cf_t);
   size_t cnt = nsamples * sizeof(cf_t);
 
-  if (_high_watermark_reached &&  _buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms * 0.2) * sizeof(cf_t)) {
+  if (_high_watermark_reached &&  static_cast<double>(_buffer->used_size()) < (_sampleRate / 1000.0) * (_buffer_ms * 0.2) * sizeof(cf_t)) {
     _high_watermark_reached = false;
   }
 
   if (!_high_watermark_reached) {
-    while (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms * 0.2) * sizeof(cf_t)) {
+    while (static_cast<double>(_buffer->used_size()) < (_sampleRate / 1000.0) * (_buffer_ms * 0.2) * sizeof(cf_t)) {
       std::this_thread::sleep_for(std::chrono::microseconds(5));
     }
     spdlog::debug("Filled ringbuffer to half capacity");
@@ -402,7 +402,7 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
   }
   */
 
-  required_time_us += static_cast<int>(((half_buffer_size - _buffer->used_size()) / half_buffer_size) * 500.0); // We adjust the required time respect to the middle of the buffer, the objetive is to have the buffer always at the half.
+  required_time_us += static_cast<int>(((half_buffer_size - static_cast<double>(_buffer->used_size())) / half_buffer_size) * 500.0); // We adjust the required time respect to the middle of the buffer, the objetive is to have the buffer always at the half.
 
   spdlog::debug("took {}, read {} samples, samplerate is {}, adjusted required {} us, delta {} us, sleep adj {},  sleeping for {} us",
       std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - entered).count(),
@@ -419,7 +419,7 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
     std::this_thread::sleep_for(sleep);
     _sleep_adjustment = 0;
   } else if (sleep.count() > -100000) {
-    _sleep_adjustment = sleep.count();
+    _sleep_adjustment = static_cast<int>(sleep.count());
   }
 
   _last_read = std::chrono::steady_clock::now();
