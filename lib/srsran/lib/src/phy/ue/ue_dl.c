@@ -585,6 +585,16 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
         INFO("Skipping location L=%d, ncce=%d. Already allocated", search_space->loc[l].L, search_space->loc[l].ncce);
         continue;
       }
+      // Multiple formats can share the same length/CCE aggregation (e.g. the common-SS
+      // SI/P/RA-RNTI search tries both FORMAT1A and FORMAT1C at every location) and more
+      // than one may independently cross the correlation threshold at the same location --
+      // a real ambiguity, not just noise, since e.g. a compact FORMAT1C payload can also
+      // happen to look like a valid (but wrong) FORMAT1A interpretation. Evaluate every
+      // format at this location and keep only the best-correlating one, instead of
+      // accepting whichever format happens to be checked first in search_space->formats.
+      bool             have_best = false;
+      float            best_corr = 0.0f;
+      srsran_dci_msg_t best_msg  = {};
       for (uint32_t f = 0; f < search_space->nof_formats; f++) {
         INFO("Searching format %s in %d,%d (%d/%d)",
              srsran_dci_format_string(search_space->formats[f]),
@@ -594,26 +604,52 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
              search_space->nof_locations);
 
         // Try to decode a valid DCI msg
-        dci_msg[nof_dci].location = search_space->loc[l];
-        dci_msg[nof_dci].format   = search_space->formats[f];
-        dci_msg[nof_dci].rnti     = 0;
-        if (srsran_pdcch_decode_msg(&q->pdcch, sf, dci_cfg, &dci_msg[nof_dci])) {
+        srsran_dci_msg_t candidate = {};
+        candidate.location = search_space->loc[l];
+        candidate.format   = search_space->formats[f];
+        candidate.rnti     = 0;
+        if (srsran_pdcch_decode_msg(&q->pdcch, sf, dci_cfg, &candidate)) {
           ERROR("Error decoding DCI msg");
           return SRSRAN_ERROR;
         }
 
         // Check if RNTI is matched
-        if ((dci_msg[nof_dci].rnti == rnti) && (dci_msg[nof_dci].nof_bits > 0)) {
+        bool  rnti_match = (candidate.rnti == rnti) && (candidate.nof_bits > 0);
+        float corr       = 0.0f;
+        if (rnti_match) {
           // Compute decoded message correlation to drastically reduce false alarm probability
-          float corr = srsran_pdcch_msg_corr(&q->pdcch, &dci_msg[nof_dci]);
+          corr = srsran_pdcch_msg_corr(&q->pdcch, &candidate);
+        }
+        // Temporary diagnostic (DCI_SWEEP_DIAG=1, off by default): dump every
+        // location/format/rnti-match/correlation combo tried, to find candidates
+        // the normal 0.5-threshold accept path never surfaces.
+        if (getenv("DCI_SWEEP_DIAG")) {
+          fprintf(stderr,
+                  "DCISWEEP tti=%u ncce=%d L=%d format=%d rnti_req=0x%x rnti_match=%d "
+                  "decoded_rnti=0x%x nof_bits=%d corr=%.4f\n",
+                  sf->tti, search_space->loc[l].ncce, search_space->loc[l].L,
+                  (int)search_space->formats[f], rnti, rnti_match ? 1 : 0, candidate.rnti,
+                  candidate.nof_bits, (double)corr);
+        }
 
+        if (rnti_match) {
           // Skip candidate if the threshold is not reached
           // 0.5 is set from pdcch_test
           if (!isnormal(corr) || corr < 0.5f) {
             continue;
           }
 
-          // Look for the messages found and apply the new format if the location is common
+          if (corr > best_corr) {
+            best_corr = corr;
+            best_msg  = candidate;
+            have_best = true;
+          }
+        }
+      }
+
+      if (have_best) {
+        dci_msg[nof_dci] = best_msg;
+        // Look for the messages found and apply the new format if the location is common
           if (search_in_common && (dci_cfg->multiple_csi_request_enabled || dci_cfg->srs_request_enabled)) {
             /*
              * A UE configured to monitor PDCCH candidates whose CRCs are scrambled with C-RNTI or SPS C-RNTI,
@@ -659,11 +695,9 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
               q->nof_allocated_locations++;
             }
             nof_dci++;
-            break;
           } else {
             INFO("Ignoring message with size %d, already decoded", dci_msg[nof_dci].nof_bits);
           }
-        }
       }
     }
   } else {

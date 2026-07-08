@@ -133,9 +133,21 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
   // Feedback the CFO from CE to the Phy
   _phy.set_cfo_from_channel_estimation(_ue_dl.chest_res.cfo);
 
-  // Try to decode DCIs from PDCCH
+  // Try to decode DCIs from PDCCH.
+  // TS 36.321 §7.1 Table 7.1-1 NOTE 2: "SI-RNTI value FFFF may be used for
+  // MBMS-dedicated carrier. SI-RNTI value FFF9 is only used for MBMS-dedicated
+  // carrier." -- i.e. on an MBMS-dedicated cell the network may legally use
+  // EITHER value; there is no SIB/MIB field telling the UE which one is in use.
+  // This project's own rt-mbms-tx always transmits with FFF9 (srsenb/src/stack/
+  // mac/sched_phy_ch/sched_dci.cc), so try that first (cheap, matches the common
+  // case here), then fall back to the standard FFFF if nothing is found -- a
+  // third-party MBMS-dedicated-cell sender may legitimately use the standard
+  // value instead. Non-dedicated cells are unaffected: only ever SRSRAN_SIRNTI.
   srsran_dci_dl_t dci[SRSRAN_MAX_CARRIERS] = {};    // NOLINT
   int nof_grants = srsran_ue_dl_find_dl_dci(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, _cell.mbms_dedicated ? SRSRAN_SIRNTI_MBMS_DEDICATED : SRSRAN_SIRNTI, dci);
+  if (nof_grants == 0 && _cell.mbms_dedicated) {
+    nof_grants = srsran_ue_dl_find_dl_dci(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, SRSRAN_SIRNTI, dci);
+  }
   for (int k = 0; k < nof_grants; k++) {
     char str[512];  // NOLINT
     srsran_dci_dl_info(&dci[k], str, 512);
@@ -207,6 +219,31 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
           } else {
             _rest._pdsch.errors++;
             any_crc_fail = true;
+            // Temporary diagnostic (CAS_RV_BRUTEFORCE=1, off by default): DCI format 1C
+            // carries no RV field, so RV is blindly derived (see the rv<0 branch above);
+            // if that formula doesn't match how the sender actually cycled RV, decode
+            // will fail every time regardless of signal quality. Brute-force the other
+            // 3 RV values (fresh softbuffer each try, since rate-matching combines with
+            // buffer state) to see whether any of them actually yields a CRC pass.
+            if (getenv("CAS_RV_BRUTEFORCE")) {
+              int      original_rv = pdsch_cfg->grant.tb[i].rv;
+              for (int try_rv = 0; try_rv < 4; try_rv++) {
+                if (try_rv == original_rv) {
+                  continue;
+                }
+                pdsch_cfg->grant.tb[i].rv = try_rv;
+                srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+                srsran_pdsch_res_t retry_res = {};
+                retry_res.payload = _data[i];
+                retry_res.crc     = false;
+                int retry_ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, &retry_res);
+                fprintf(stderr, "RVBRUTE tti=%u original_rv=%d try_rv=%d ret=%d crc=%d\n",
+                        tti, original_rv, try_rv, retry_ret, retry_res.crc ? 1 : 0);
+              }
+              // Restore original rv/softbuffer state so downstream logic is unaffected.
+              pdsch_cfg->grant.tb[i].rv = original_rv;
+              srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+            }
           }
         }
       }
@@ -216,10 +253,13 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       // with the periodic EVM/CINR peaks.
       if (getenv("CAS_PDSCH_DIAG")) {
         fprintf(stderr,
-                "CASDIAG tti=%u mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d\n",
+                "CASDIAG tti=%u mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d format=%d rnti=0x%x nof_prb_alloc=%d L=%d ncce=%d "
+                "nof_re=%d nof_bits_E=%d mod=%d\n",
                 tti, dci[k].tb[0].mcs_idx, (double)pdsch_res[0].evm,
                 (double)_ue_dl.chest_res.snr_db, pdsch_res[0].crc ? 1 : 0,
-                (int)pdsch_cfg->grant.tb[0].tbs);
+                (int)pdsch_cfg->grant.tb[0].tbs, (int)dci[k].format, dci[k].rnti,
+                (int)pdsch_cfg->grant.nof_prb, (int)dci[k].location.L, (int)dci[k].location.ncce,
+                (int)pdsch_cfg->grant.nof_re, (int)pdsch_cfg->grant.tb[0].nof_bits, (int)pdsch_cfg->grant.tb[0].mod);
       }
       _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS,
                                   any_crc_fail ? RestHandler::SF_STATUS_FAIL : RestHandler::SF_STATUS_OK);
