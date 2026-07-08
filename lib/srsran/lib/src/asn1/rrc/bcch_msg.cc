@@ -2930,12 +2930,12 @@ uint8_t mbsfn_area_info_r16_s::time_separation_r16_opts::to_number() const
 
 std::string mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts::to_string() const
 {
-  static const char* options[] = {"n30", "n35", "n40", "spare1"};
+  static const char* options[] = {"n40", "n35", "n30", "spare1"};
   return convert_enum_idx(options, 4, value, "mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts");
 }
 uint8_t mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts::to_number() const
 {
-  static const uint8_t options[] = {30, 35, 40};
+  static const uint8_t options[] = {40, 35, 30};
   return map_enum_number(options, 3, value, "mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts");
 }
 
@@ -4737,7 +4737,6 @@ SRSASN_CODE sib_type13_r9_s::pack(bit_ref& bref) const
     ext_groups_packer_guard group_flags;
     group_flags[0] |= notif_cfg_v1430.is_present();
     group_flags[1] |= mbsfn_area_info_list_r16_present;
-    group_flags[1] |= mbms_rom_info_list_r16_present;
     group_flags.pack(bref);
 
     if (group_flags[0]) {
@@ -4753,10 +4752,6 @@ SRSASN_CODE sib_type13_r9_s::pack(bit_ref& bref) const
       HANDLE_CODE(bref.pack(mbsfn_area_info_list_r16_present, 1));
       if (mbsfn_area_info_list_r16_present) {
         HANDLE_CODE(pack_dyn_seq_of(bref, mbsfn_area_info_list_r16, 1, 8));
-      }
-      HANDLE_CODE(bref.pack(mbms_rom_info_list_r16_present, 1));
-      if (mbms_rom_info_list_r16_present) {
-        HANDLE_CODE(pack_dyn_seq_of(bref, mbms_rom_info_list_r16, 1, 64));
       }
     }
   }
@@ -4774,7 +4769,11 @@ SRSASN_CODE sib_type13_r9_s::unpack(cbit_ref& bref)
   }
 
   if (ext) {
-    ext_groups_unpacker_guard group_flags(2);  /* fixed: was 1 — missed group 1 (mbsfn_area_info_list_r16) */
+    ext_groups_unpacker_guard group_flags(2);  /* group 0: notif_cfg_v1430; group 1: mbsfn_area_info_list_r16.
+                                                 * Spec (TS 36.331 SystemInformationBlockType13-r9) also defines a
+                                                 * third, separate extension group for mbsfn-AreaInfoList-r17 - not
+                                                 * yet implemented here (would need its own MBSFN-AreaInfo-r17
+                                                 * wrapper type, not a field bolted onto this group). */
     group_flags.unpack(bref);
 
     if (group_flags[0]) {
@@ -4793,10 +4792,6 @@ SRSASN_CODE sib_type13_r9_s::unpack(cbit_ref& bref)
       HANDLE_CODE(bref.unpack(mbsfn_area_info_list_r16_present, 1));
       if (mbsfn_area_info_list_r16_present) {
         HANDLE_CODE(unpack_dyn_seq_of(mbsfn_area_info_list_r16, bref, 1, 8));
-      }
-      HANDLE_CODE(bref.unpack(mbms_rom_info_list_r16_present, 1));
-      if (mbms_rom_info_list_r16_present) {
-        HANDLE_CODE(unpack_dyn_seq_of(mbms_rom_info_list_r16, bref, 1, 64));
       }
     }
   }
@@ -4823,13 +4818,6 @@ void sib_type13_r9_s::to_json(json_writer& j) const
     if (mbsfn_area_info_list_r16_present) {
       j.start_array("mbsfn-AreaInfoList-r16");
       for (const auto& e1 : mbsfn_area_info_list_r16) {
-        e1.to_json(j);
-      }
-      j.end_array();
-    }
-    if (mbms_rom_info_list_r16_present) {
-      j.start_array("mbms-ROMInfoList-r16");
-      for (const auto& e1 : mbms_rom_info_list_r16) {
         e1.to_json(j);
       }
       j.end_array();
@@ -10402,15 +10390,13 @@ void sched_info_mbms_r14_s::to_json(json_writer& j) const
 
 const char* sched_info_mbms_r14_s::si_periodicity_r14_opts::to_string() const
 {
-  static const char* options[] = {"rf16", "rf32", "rf64", "rf128", "rf256", "rf512",
-                                   "rf7", "rf14", "rf28", "rf53", "rf56", "rf108", "rf112", "rf212", "rf424"};
-  return convert_enum_idx(options, 15, value, "sched_info_mbms_r14_s::si_periodicity_r14_e_");
+  static const char* options[] = {"rf16", "rf32", "rf64", "rf128", "rf256", "rf512"};
+  return convert_enum_idx(options, 6, value, "sched_info_mbms_r14_s::si_periodicity_r14_e_");
 }
 uint16_t sched_info_mbms_r14_s::si_periodicity_r14_opts::to_number() const
 {
-  static const uint16_t options[] = {16, 32, 64, 128, 256, 512,
-                                     7, 14, 28, 53, 56, 108, 112, 212, 424};
-  return map_enum_number(options, 15, value, "sched_info_mbms_r14_s::si_periodicity_r14_e_");
+  static const uint16_t options[] = {16, 32, 64, 128, 256, 512};
+  return map_enum_number(options, 6, value, "sched_info_mbms_r14_s::si_periodicity_r14_e_");
 }
 
 // NonMBSFN-SubframeConfig-r14 ::= SEQUENCE
@@ -10500,12 +10486,6 @@ SRSASN_CODE sib_type1_mbms_r14_s::pack(bit_ref& bref) const
   HANDLE_CODE(pack_dyn_seq_of(bref, cell_access_related_info_r14.plmn_id_list_r14, 1, 6));
   HANDLE_CODE(cell_access_related_info_r14.tac_r14.pack(bref));
   HANDLE_CODE(cell_access_related_info_r14.cell_id_r14.pack(bref));
-  // CellSelectionInfo-MBMS-r14 (mandatory per TS 36.331 §6.2.2)
-  HANDLE_CODE(bref.pack(q_rx_lev_min_offset_r14_present, 1));
-  HANDLE_CODE(pack_integer(bref, q_rx_lev_min_r14, (int8_t)-70, (int8_t)-22));
-  if (q_rx_lev_min_offset_r14_present) {
-    HANDLE_CODE(pack_integer(bref, q_rx_lev_min_offset_r14, (uint8_t)1u, (uint8_t)8u));
-  }
   HANDLE_CODE(pack_integer(bref, freq_band_ind_r14, (uint16_t)1u, (uint16_t)256u));
   if (multi_band_info_list_r14_present) {
     HANDLE_CODE(pack_dyn_seq_of(bref, multi_band_info_list_r14, 1, 8, integer_packer<uint16_t>(1, 256)));
@@ -10540,12 +10520,6 @@ SRSASN_CODE sib_type1_mbms_r14_s::unpack(cbit_ref& bref)
   HANDLE_CODE(unpack_dyn_seq_of(cell_access_related_info_r14.plmn_id_list_r14, bref, 1, 6));
   HANDLE_CODE(cell_access_related_info_r14.tac_r14.unpack(bref));
   HANDLE_CODE(cell_access_related_info_r14.cell_id_r14.unpack(bref));
-  // CellSelectionInfo-MBMS-r14 (mandatory per TS 36.331 §6.2.2)
-  HANDLE_CODE(bref.unpack(q_rx_lev_min_offset_r14_present, 1));
-  HANDLE_CODE(unpack_integer(q_rx_lev_min_r14, bref, (int8_t)-70, (int8_t)-22));
-  if (q_rx_lev_min_offset_r14_present) {
-    HANDLE_CODE(unpack_integer(q_rx_lev_min_offset_r14, bref, (uint8_t)1u, (uint8_t)8u));
-  }
   HANDLE_CODE(unpack_integer(freq_band_ind_r14, bref, (uint16_t)1u, (uint16_t)256u));
   if (multi_band_info_list_r14_present) {
     HANDLE_CODE(unpack_dyn_seq_of(multi_band_info_list_r14, bref, 1, 8, integer_packer<uint16_t>(1, 256)));
@@ -10581,13 +10555,6 @@ void sib_type1_mbms_r14_s::to_json(json_writer& j) const
   j.end_array();
   j.write_str("trackingAreaCode-r14", cell_access_related_info_r14.tac_r14.to_string());
   j.write_str("cellIdentity-r14", cell_access_related_info_r14.cell_id_r14.to_string());
-  j.end_obj();
-  j.write_fieldname("cellSelectionInfo-r14");
-  j.start_obj();
-  j.write_int("q-RxLevMin-r14", q_rx_lev_min_r14);
-  if (q_rx_lev_min_offset_r14_present) {
-    j.write_int("q-RxLevMinOffset-r14", q_rx_lev_min_offset_r14);
-  }
   j.end_obj();
   j.write_int("freqBandIndicator-r14", freq_band_ind_r14);
   if (multi_band_info_list_r14_present) {

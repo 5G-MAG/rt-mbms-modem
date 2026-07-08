@@ -280,6 +280,15 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
   // Stop BCCH search after successful reception of 1 BCCH block
   // mac->bcch_stop_rx();
 
+  if (getenv("BCCH_HEXDUMP")) {
+    char hex[1024] = {0};
+    uint32_t n = pdu->N_bytes < 340 ? pdu->N_bytes : 340;
+    for (uint32_t i = 0; i < n; i++) {
+      snprintf(hex + i * 2, 3, "%02x", pdu->msg[i]);
+    }
+    fprintf(stderr, "BCCH_HEXDUMP N_bytes=%u bytes=%s\n", pdu->N_bytes, hex);
+  }
+
   bcch_dl_sch_msg_mbms_s dlsch_msg;
   asn1::cbit_ref    dlsch_bref(pdu->msg, pdu->N_bytes);
   asn1::SRSASN_CODE err = dlsch_msg.unpack(dlsch_bref);
@@ -327,17 +336,6 @@ void Rrc::write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) {
           }
           _phy.set_decode_mcch(true);
           _state = ACQUIRE_AREA_CONFIG;
-          if (sib13.mbms_rom_info_list_r16_present && sib13.mbms_rom_info_list_r16.size() > 0) {
-            for (const auto& ri : sib13.mbms_rom_info_list_r16) {
-              spdlog::info("MBMS-ROM-Info-r16: EARFCN={} BW={}PRB{}", ri.rom_freq_r16, ri.bw_r16.to_number(),
-                           ri.subcarrier_spacing_r16_present
-                               ? fmt::format(" SCS={}kHz", ri.subcarrier_spacing_r16.to_number())
-                               : std::string(""));
-            }
-            _phy.set_sib13_rom_info(decode_rom_info(sib13.mbms_rom_info_list_r16));
-            const auto& ri0 = sib13.mbms_rom_info_list_r16[0];
-            _phy.set_rom_redirect(ri0.rom_freq_r16, ri0.bw_r16.to_number());
-          }
           break;
         }
         case sib_info_item_c::types::sib15_v1130: {
@@ -475,17 +473,6 @@ void Rrc::handle_sib1(const sib_type1_mbms_r14_s& sib1, uint64_t now_ms) {
   _phy.set_sib13_received_at(now_ms);
   if (!_rlc.has_bearer_mrb(0, 0)) {
     _rlc.add_bearer_mrb(0, 0);
-  }
-  if (sib13.mbms_rom_info_list_r16_present && sib13.mbms_rom_info_list_r16.size() > 0) {
-    for (const auto& ri : sib13.mbms_rom_info_list_r16) {
-      spdlog::info("MBMS-ROM-Info-r16: EARFCN={} BW={}PRB{}", ri.rom_freq_r16, ri.bw_r16.to_number(),
-                   ri.subcarrier_spacing_r16_present
-                       ? fmt::format(" SCS={}kHz", ri.subcarrier_spacing_r16.to_number())
-                       : std::string(""));
-    }
-    _phy.set_sib13_rom_info(decode_rom_info(sib13.mbms_rom_info_list_r16));
-    const auto& ri0 = sib13.mbms_rom_info_list_r16[0];
-    _phy.set_rom_redirect(ri0.rom_freq_r16, ri0.bw_r16.to_number());
   }
 
   _phy.set_decode_mcch(true);

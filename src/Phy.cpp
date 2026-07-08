@@ -86,16 +86,41 @@ auto Phy::synchronize_subframe() -> bool {
           srsran_ue_mib_decode(&_mib, bch_payload.data(), nullptr, &sfn_offset);
       if (n == 1) {
         uint32_t sfn = 0;
-        if (_cell.mbms_dedicated) {
+        /* Unlike cell_search() (which decodes into a scratch new_cell and only
+         * commits after validating it), this resync path used to unpack
+         * straight into the live _cell with no validity check at all - a
+         * corrupted/out-of-range MIB decode (e.g. a reserved dl-Bandwidth
+         * codepoint) would silently overwrite the live cell with garbage
+         * (observed: nof_prb=125 from a reserved bw_idx=6), crashing whatever
+         * downstream PHY component next tried to use it. Decode into a copy
+         * first and validate before committing.
+         *
+         * Deliberately check only nof_prb (via srsran_nofprb_isvalid()), NOT
+         * the broader srsran_cell_isvalid() - the latter also checks
+         * mbsfn_prb<=nof_prb and the CAS-muting n_cas set, neither of which
+         * this MIB unpack touches. mbsfn_prb in particular is legitimately
+         * allowed to exceed the MIB-derived nof_prb in file-source mode
+         * (main.cpp's "decode a narrow CAS from a wider channel" case, where
+         * mbsfn_prb is sized from the file's native capture bandwidth, not
+         * the transmitted cell's own PRB count) - re-validating it here would
+         * wrongly reject that legitimate configuration on every resync. */
+        srsran_cell_t candidate_cell = _cell;
+        if (candidate_cell.mbms_dedicated) {
           uint32_t add_non_mbsfn = 0;
-          srsran_pbch_mib_mbms_unpack(bch_payload.data(), &_cell, &sfn, &add_non_mbsfn,
+          srsran_pbch_mib_mbms_unpack(bch_payload.data(), &candidate_cell, &sfn, &add_non_mbsfn,
               _override_nof_prb);
-          _cell.additional_non_mbms_frames = (uint8_t)add_non_mbsfn;
+          candidate_cell.additional_non_mbms_frames = (uint8_t)add_non_mbsfn;
           sfn = (sfn + sfn_offset * kSfnOffset) % kMaxSfn;
         } else {
-          srsran_pbch_mib_unpack(bch_payload.data(), &_cell, &sfn);
+          srsran_pbch_mib_unpack(bch_payload.data(), &candidate_cell, &sfn);
           sfn = (sfn + sfn_offset) % kMaxSfn;
         }
+        if (!srsran_nofprb_isvalid(candidate_cell.nof_prb)) {
+          spdlog::error("Phy: resync MIB decode produced an invalid nof_prb={} - discarding, keeping previous cell state",
+                        candidate_cell.nof_prb);
+          return false;
+        }
+        _cell = candidate_cell;
         _tti =  sfn * kSubframesPerFrame;
         _last_mib_decoded_at = now_ms();
         return true;

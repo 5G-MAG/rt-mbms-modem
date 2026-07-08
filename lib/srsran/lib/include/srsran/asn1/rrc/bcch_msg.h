@@ -1112,7 +1112,7 @@ struct mbsfn_area_info_r16_s {
   typedef enumerated<time_separation_r16_opts> time_separation_r16_e_;
 
   struct pmch_bandwidth_r17_opts {
-    enum options { n30, n35, n40, spare1, nulltype } value;
+    enum options { n40, n35, n30, spare1, nulltype } value;
     typedef uint8_t number_type;
 
     std::string to_string() const;
@@ -2094,9 +2094,6 @@ struct sib_type13_r9_s {
 
   bool                       mbsfn_area_info_list_r16_present = false;
   mbsfn_area_info_list_r16_l mbsfn_area_info_list_r16;
-  // group 1 (continued)
-  bool                       mbms_rom_info_list_r16_present = false;
-  mbms_rom_info_list_r16_l   mbms_rom_info_list_r16;
 
   // sequence methods
   SRSASN_CODE pack(bit_ref& bref) const;
@@ -3996,7 +3993,6 @@ struct sched_info_mbms_r14_s {
   struct si_periodicity_r14_opts {
     enum options {
       rf16, rf32, rf64, rf128, rf256, rf512,
-      rf7, rf14, rf28, rf53, rf56, rf108, rf112, rf212, rf424,
       nulltype
     } value;
     typedef uint16_t number_type;
@@ -4090,10 +4086,7 @@ struct sib_type1_mbms_r14_s {
   bool                                 sib_type13_r14_present                    = false;
   bool                                 cell_access_related_info_list_r14_present = false;
   bool                                 non_crit_ext_present                      = false;
-  bool                                 q_rx_lev_min_offset_r14_present           = false;
   cell_access_related_info_r14_s_      cell_access_related_info_r14;
-  int8_t                               q_rx_lev_min_r14        = -60; /* Q-RxLevMin: -70..-22 dBm (TS 36.331 §6.2.2) */
-  uint8_t                              q_rx_lev_min_offset_r14 = 1;   /* INTEGER(1..8); only used if present */
   uint16_t                             freq_band_ind_r14 = 1;
   multi_band_info_list_r11_l           multi_band_info_list_r14;
   sched_info_list_mbms_r14_l           sched_info_list_mbms_r14;

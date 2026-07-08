@@ -757,7 +757,12 @@ auto main(int argc, char **argv) -> int {
           if (arguments.sample_file && arguments.file_bw) {
             // Samples files are recorded at a fixed sample rate that can be determined from the bandwidth command line argument.
             // If we're decoding from file, do not readjust the rate to match the CAS PRBs, but stay at this rate and instead configure the
-            // PHY to decode a narrow CAS from a wider channel.
+            // PHY to decode a narrow CAS from a wider channel: CAS/cell-access signalling always stays at a
+            // traditional LTE bandwidth (nof_prb, from 1.4 up to 20 MHz), while PMCH (mbsfn_nof_prb) can
+            // legitimately run wider, non-standard bandwidths (e.g. 6/7/8 MHz-equivalent PRB counts) - this
+            // is the normal 5G Terrestrial Broadcast / FeMBMS case, not a mismatch to reconcile away. See
+            // srsran_cell_isvalid()'s doc comment (lib/srsran/lib/src/phy/common/phy_common.c) for the
+            // buffer-capacity reasoning on why mbsfn_prb no longer has to equal nof_prb.
             mbsfn_nof_prb = arguments.file_bw * 5;
             phy.set_nof_mbsfn_prb(mbsfn_nof_prb);
             phy.set_cell();

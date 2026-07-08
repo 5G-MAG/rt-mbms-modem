@@ -1109,6 +1109,12 @@ mbsfn_area_info_t::mcch_cfg_t::repeat_period_t from_mcch_repeat_period_v1430(
 
 mbsfn_area_info_t::mcch_cfg_t::mod_period_t from_mcch_mod_period_v1430(
     mbsfn_area_info_r9_s::mcch_cfg_r14_s_::mcch_mod_period_v1430_opts::options val) {
+  /* mcch-ModificationPeriod-v1430 ::= ENUMERATED {rf1, rf2, rf4, rf8, rf16, rf32,
+   * rf64, rf128, rf256, spare7} - 9 real values, not just the first 5. A previous
+   * version of this switch only handled rf1..rf16 and silently mapped every
+   * transmission actually using rf32/64/128/256 to nulltype (observed as a
+   * uint32_t -1 sentinel downstream) even though the ASN.1 decode itself was
+   * correct - the bug was in this mapping being incomplete, not the wire format. */
   switch (val) {
     case mbsfn_area_info_r9_s::mcch_cfg_r14_s_::mcch_mod_period_v1430_opts::rf1:
       return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::rf1;
@@ -1120,6 +1126,14 @@ mbsfn_area_info_t::mcch_cfg_t::mod_period_t from_mcch_mod_period_v1430(
       return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::rf8;
     case mbsfn_area_info_r9_s::mcch_cfg_r14_s_::mcch_mod_period_v1430_opts::rf16:
       return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::rf16;
+    case mbsfn_area_info_r9_s::mcch_cfg_r14_s_::mcch_mod_period_v1430_opts::rf32:
+      return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::rf32;
+    case mbsfn_area_info_r9_s::mcch_cfg_r14_s_::mcch_mod_period_v1430_opts::rf64:
+      return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::rf64;
+    case mbsfn_area_info_r9_s::mcch_cfg_r14_s_::mcch_mod_period_v1430_opts::rf128:
+      return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::rf128;
+    case mbsfn_area_info_r9_s::mcch_cfg_r14_s_::mcch_mod_period_v1430_opts::rf256:
+      return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::rf256;
     default:
       return mbsfn_area_info_t::mcch_cfg_t::mod_period_t::nulltype;
   };

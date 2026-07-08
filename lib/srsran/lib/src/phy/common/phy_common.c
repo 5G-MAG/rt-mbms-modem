@@ -57,14 +57,20 @@ bool srsran_nofprb_isvalid(uint32_t nof_prb)
 
 bool srsran_cell_isvalid(srsran_cell_t* cell)
 {
-  /* mbsfn_prb (the PMCH-dedicated bandwidth) is a sub-allocation within the
-   * carrier and can never legitimately exceed nof_prb; 0 means "use the full
-   * carrier" (see the mbsfn_prb ? mbsfn_prb : nof_prb convention used
-   * throughout the MBSFN/PMCH code) and is always valid. Without this check,
-   * a cell with mbsfn_prb > nof_prb passes validation but later causes
-   * srsran_pmch_set_cell() to compute max_re from the oversized mbsfn_prb
-   * while PMCH's time-interleaving buffers stay sized from nof_prb at init
-   * time, overflowing them. */
+  /* mbsfn_prb (the PMCH-dedicated bandwidth) is NOT bounded by nof_prb: 5G
+   * Terrestrial Broadcast / FeMBMS deployments deliberately run PMCH over a
+   * wider carrier than the CAS/cell-access signalling, which always stays at
+   * a traditional LTE bandwidth (nof_prb corresponding to 1.4/3/5/10/15/20
+   * MHz), while PMCH can span a wider, non-standard bandwidth (e.g. 6/7/8
+   * MHz-equivalent PRB counts). 0 means "use the full carrier" (see the
+   * mbsfn_prb ? mbsfn_prb : nof_prb convention used throughout the MBSFN/PMCH
+   * code). The only real constraint is that mbsfn_prb must fit within
+   * whatever buffer capacity srsran_pmch_set_cell()'s eventual max_re
+   * computation was actually allocated for at init time - bounding it by the
+   * library's own general PRB ceiling (srsran_nofprb_isvalid(), same bound
+   * nof_prb itself is checked against) catches genuine garbage/corrupted
+   * decodes without wrongly rejecting legitimate wideband-PMCH configs. */
+  bool mbsfn_prb_ok = cell->mbsfn_prb == 0 || srsran_nofprb_isvalid(cell->mbsfn_prb);
   /* cas_muting's active/muted-frame gate computes sfn % (16*n_cas); an n_cas
    * of 0 (e.g. a bzero'd or default-constructed cell struct with cas_muting
    * left true) is a division by zero (SIGFPE) on the first CAS-candidate
@@ -72,7 +78,7 @@ bool srsran_cell_isvalid(srsran_cell_t* cell)
   bool n_cas_ok = !cell->cas_muting || cell->n_cas == 2 || cell->n_cas == 4 || cell->n_cas == 8 ||
                   cell->n_cas == 16;
   return srsran_cellid_isvalid(cell->id) && srsran_portid_isvalid(cell->nof_ports) &&
-         srsran_nofprb_isvalid(cell->nof_prb) && cell->mbsfn_prb <= cell->nof_prb && n_cas_ok;
+         srsran_nofprb_isvalid(cell->nof_prb) && mbsfn_prb_ok && n_cas_ok;
 }
 
 void srsran_cell_fprint(FILE* stream, srsran_cell_t* cell, uint32_t sfn)
