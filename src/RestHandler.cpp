@@ -111,6 +111,11 @@ void RestHandler::get(http_request message) {
       state["cfo"] = value(_phy.cfo());
       state["cinr_db"] = value(cinr_db());
       state["cinr_db_avg"] = value(cinr_db_avg());
+      state["pss_peak"] = value(_phy.pss_peak_value());
+      state["sss_corr"] = value(_phy.sss_corr());
+      state["sss_detected"] = value(_phy.sss_detected());
+      state["mib_decode_count"] = value(_phy.mib_decode_count());
+      state["mib_nof_ports"] = value(_phy.mib_nof_ports());
       state["subcarrier_spacing"] = value(_phy.mbsfn_subcarrier_spacing_khz());
 
       // CAS Chest params //
@@ -148,9 +153,13 @@ void RestHandler::get(http_request message) {
       sdr["antenna"] = value(_sdr.get_antenna());
       sdr["sample_rate"] = value(_sdr.get_sample_rate());
       sdr["buffer_level"] = value(_sdr.get_buffer_level());
+      sdr["use_agc"] = value(_sdr.get_use_agc());
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "ce_values") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values);
+      message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "ce_values_mbsfn") {
+      auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values_mbsfn);
       message.reply(status_codes::OK, cestream);
     } else if (paths[0] == "cir_values") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_cir_values);
@@ -164,23 +173,47 @@ void RestHandler::get(http_request message) {
     } else if (paths[0] == "corr_values_mbsfn") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_corr_values_mbsfn);
       message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "subframe_log") {
+      // [sfn, sf, type, status] tuples, oldest first - see SubframeEventType/Status.
+      std::vector<value> entries;
+      for (const auto& e : subframe_log_snapshot()) {
+        entries.push_back(value::array({ value(e.sfn), value(e.sf), value(e.type), value(e.status) }));
+      }
+      message.reply(status_codes::OK, value::array(entries));
     } else if (paths[0] == "pdsch_status") {
       value sdr = value::object();
-      sdr["bler"] = value(static_cast<float>(_pdsch.errors) /
-                                static_cast<float>(_pdsch.total));
+      sdr["bler"] = value(_pdsch.total == 0 ? 0.0f
+                               : static_cast<float>(_pdsch.errors) /
+                                     static_cast<float>(_pdsch.total));
       sdr["ber"] = value(_pdsch.ber);
       sdr["mcs"] = value(_pdsch.mcs);
+      sdr["evm"] = value(_pdsch.evm_rms);
       sdr["present"] = 1;
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "pdsch_data") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_pdsch.GetData());
       message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "pdcch_status") {
+      // "not_found_rate" = errors/total: fraction of CAS occasions with no decodable DCI.
+      // Not a true BLER - blind decoding can't distinguish "nothing scheduled" from "missed".
+      value sdr = value::object();
+      sdr["not_found_rate"] = value(_pdcch.total == 0 ? 0.0f
+                               : static_cast<float>(_pdcch.errors) /
+                                     static_cast<float>(_pdcch.total));
+      sdr["total"] = value(_pdcch.total);
+      sdr["found"] = value(_pdcch.total - _pdcch.errors);
+      message.reply(status_codes::OK, sdr);
+    } else if (paths[0] == "pdcch_data") {
+      auto cestream = Concurrency::streams::bytestream::open_istream(_pdcch.GetData());
+      message.reply(status_codes::OK, cestream);
     } else if (paths[0] == "mcch_status") {
       value sdr = value::object();
-      sdr["bler"] = value(static_cast<float>(_mcch.errors) /
-                                static_cast<float>(_mcch.total));
+      sdr["bler"] = value(_mcch.total == 0 ? 0.0f
+                               : static_cast<float>(_mcch.errors) /
+                                     static_cast<float>(_mcch.total));
       sdr["ber"] = value(_mcch.ber);
       sdr["mcs"] = value(_mcch.mcs);
+      sdr["evm"] = value(_mcch.evm_rms);
       sdr["present"] = 1;
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "mcch_data") {
@@ -207,10 +240,12 @@ void RestHandler::get(http_request message) {
     } else if (paths[0] == "mch_status") {
       int idx = std::stoi(paths[1]);
       value sdr = value::object();
-      sdr["bler"] = value(static_cast<float>(_mch[idx].errors) /
-                                static_cast<float>(_mch[idx].total));
+      sdr["bler"] = value(_mch[idx].total == 0 ? 0.0f
+                               : static_cast<float>(_mch[idx].errors) /
+                                     static_cast<float>(_mch[idx].total));
       sdr["ber"] = value(_mch[idx].ber);
       sdr["mcs"] = value(_mch[idx].mcs);
+      sdr["evm"] = value(_mch[idx].evm_rms);
       sdr["present"] = value(_mch[idx].present);
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "mch_data") {
@@ -470,4 +505,17 @@ void RestHandler::add_cinr_value( float cinr) {
     _cinr_db.erase(_cinr_db.begin());
   }
   _cinr_db.push_back(cinr);
+}
+
+void RestHandler::record_subframe_event(uint32_t tti, uint8_t type, uint8_t status) {
+  std::lock_guard<std::mutex> lock(_subframe_log_mutex);
+  _subframe_log.push_back({tti / 10, static_cast<uint8_t>(tti % 10), type, status});
+  if (_subframe_log.size() > SUBFRAME_LOG_CAPACITY) {
+    _subframe_log.pop_front();
+  }
+}
+
+std::vector<RestHandler::SubframeEvent> RestHandler::subframe_log_snapshot() {
+  std::lock_guard<std::mutex> lock(_subframe_log_mutex);
+  return std::vector<SubframeEvent>(_subframe_log.begin(), _subframe_log.end());
 }

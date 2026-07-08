@@ -28,6 +28,31 @@
 #define CURRENT_SFLEN_RE SRSRAN_NOF_RE(q->cell)
 #define MAX_SFLEN_RE SRSRAN_SF_LEN_RE(max_prb, q->cell.cp)
 
+/* Mirror of pmch.c's pmch_re_dump_enabled: env gate + single-tti filter via
+ * env or the dynamic /tmp/pmch_dump_tti file. Without this, the diag dump
+ * sites below fire on EVERY MBSFN subframe when PMCH_RE_DUMP is set with no
+ * tti target - ~100MB/s of /tmp writes that exhaust the tmpfs within minutes
+ * (observed live). Static per-file copy to avoid cross-library exports for
+ * diagnostic-only code. */
+static bool pmch_re_dump_tti_match(uint32_t tti)
+{
+  if (!getenv("PMCH_RE_DUMP")) {
+    return false;
+  }
+  const char* target = getenv("PMCH_RE_DUMP_TTI");
+  if (target) {
+    return (uint32_t)atoi(target) == tti;
+  }
+  FILE* f = fopen("/tmp/pmch_dump_tti", "r");
+  if (!f) {
+    return false;
+  }
+  unsigned t  = 0;
+  bool     ok = (fscanf(f, "%u", &t) == 1);
+  fclose(f);
+  return ok && t == tti;
+}
+
 const static srsran_dci_format_t ue_dci_formats[8][2] = {
     /* Mode 1 */ {SRSRAN_DCI_FORMAT1A, SRSRAN_DCI_FORMAT1},
     /* Mode 2 */ {SRSRAN_DCI_FORMAT1A, SRSRAN_DCI_FORMAT1},
@@ -411,7 +436,7 @@ int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, 
      * where the signal is still in the time domain, so the two can be compared
      * sample-for-sample across the wire without any FFT/RE-mapping assumptions on
      * either side. */
-    if (getenv("PMCH_RE_DUMP") && (!getenv("PMCH_RE_DUMP_TTI") || (uint32_t)atoi(getenv("PMCH_RE_DUMP_TTI")) == sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
+    if (pmch_re_dump_tti_match(sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
       uint32_t sf_len = (uint32_t)SRSRAN_SF_LEN_PRB(q->cell.nof_prb);
       char     fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_prefft_tti%u.bin", sf->tti);
@@ -439,7 +464,7 @@ int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, 
      * a decode failure is upstream of channel estimation entirely (FFT window/CP
      * timing, RE-to-subcarrier mapping) rather than in the reference-signal/channel-
      * estimation code already fixed. */
-    if (getenv("PMCH_RE_DUMP") && (!getenv("PMCH_RE_DUMP_TTI") || (uint32_t)atoi(getenv("PMCH_RE_DUMP_TTI")) == sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
+    if (pmch_re_dump_tti_match(sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
       uint32_t dump_n = SRSRAN_NRE_SCS(sf->subcarrier_spacing) * q->cell.nof_prb;
       char     fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_postfft_tti%u.bin", sf->tti);

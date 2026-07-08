@@ -186,6 +186,7 @@ auto Phy::cell_search() -> bool {
 
     _cell = new_cell;
     _cell.mbsfn_prb = _cell.nof_prb;
+    _mib_decode_count++;
 
     if (srsran_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
       spdlog::error("Phy: failed to set cell.\n");

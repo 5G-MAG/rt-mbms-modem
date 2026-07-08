@@ -104,9 +104,21 @@ class CasFrameProcessor {
    std::vector<uint8_t> ce_values();
 
    /**
+    *  Get the channel impulse response (IFFT of the frequency-domain channel
+    *  estimate), magnitude in dB, fftshifted so lag 0 is centered.
+    */
+   std::vector<uint8_t> cir_values();
+
+   /**
     *  Get the constellation diagram data (I/Q data of the subcarriers after CE)
     */
    std::vector<uint8_t> pdsch_data();
+
+   /**
+    *  Get the constellation diagram data for the PDCCH candidate found in the
+    *  most recent occasion (post-equalization symbols, before blind decode).
+    */
+   std::vector<uint8_t> pdcch_data();
 
    /**
     *  Get the CINR estimate (in dB)
@@ -183,6 +195,10 @@ class CasFrameProcessor {
     srsran_softbuffer_rx_t _softbuffer;
     uint8_t* _data[SRSRAN_MAX_CODEWORDS];
 
+    // Number of REs the most recently found PDCCH candidate occupied (from its
+    // aggregation level), so pdcch_data() knows how much of _ue_dl.pdcch.d is valid.
+    uint32_t _last_pdcch_nof_re = 0;
+
     srsran_ue_dl_t     _ue_dl     = {};
     srsran_ue_dl_cfg_t _ue_dl_cfg = {};
     srsran_dl_sf_cfg_t _sf_cfg = {};
@@ -192,4 +208,16 @@ class CasFrameProcessor {
     unsigned _rx_channels;
 
     bool _started = 0;
+
+    /* IFFT plan and scratch buffers for cir_values(), (re)created in set_cell()
+     * -- called only from the single main thread, never from process()'s
+     * worker-pool thread -- and sized once so cir_values() never allocates on
+     * its hot per-subframe path. */
+    srsran_dft_plan_t  _cir_plan       = {};
+    bool               _cir_plan_ready = false;
+    uint32_t           _cir_plan_size  = 0;
+    std::vector<cf_t>  _cir_scratch_freq;
+    std::vector<cf_t>  _cir_scratch_time;
+    std::vector<cf_t>  _cir_scratch_shifted;
+    std::vector<float> _cir_scratch_db;
 };

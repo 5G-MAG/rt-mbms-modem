@@ -695,6 +695,7 @@ auto main(int argc, char **argv) -> int {
             } else {
               // Nothing to do yet, we lack the data from SIB1/SIB13
               // Discard the samples and unlock the processor.
+              rest_handler.record_subframe_event(tti, RestHandler::SF_EVENT_GAP, RestHandler::SF_STATUS_IDLE);
               mbsfn_processors[mb_idx]->unlock();
             }
           } else {

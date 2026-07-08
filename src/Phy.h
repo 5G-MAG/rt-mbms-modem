@@ -117,6 +117,36 @@ class Phy {
     void set_cfo_from_channel_estimation(float cfo) { srsran_ue_sync_set_cfo_ref(&_ue_sync, cfo); }
 
     /**
+     *  Number of times the MIB has been successfully decoded (once at initial
+     *  acquisition, and again on every resync). MIB isn't re-decoded every
+     *  subframe like PDSCH/PMCH, so this - not a BLER - is the honest signal
+     *  of MIB health: it stops incrementing if the receiver can no longer
+     *  reacquire after a sync loss.
+     */
+    uint32_t mib_decode_count() { return _mib_decode_count; }
+
+    /**
+     *  Number of antenna ports from the most recently decoded MIB.
+     */
+    uint32_t mib_nof_ports() { return _cell.nof_ports; }
+
+    /**
+     * PSS correlation peak value from the tracking-stage synchronizer (higher
+     * is a stronger/cleaner PSS detection).
+     */
+    float pss_peak_value() { return _ue_sync.strack.peak_value; }
+
+    /**
+     * SSS correlation value from the tracking-stage synchronizer.
+     */
+    float sss_corr() { return _ue_sync.strack.sss_corr; }
+
+    /**
+     * Whether SSS was successfully detected on the most recent tracking attempt.
+     */
+    bool sss_detected() { return _ue_sync.strack.sss_detected; }
+
+    /**
      * Set the values received in SIB13
      */
     void set_mch_scheduling_info(const srsran::sib13_t& sib13);
@@ -496,6 +526,7 @@ class Phy {
     cf_t* _mib_buffer[SRSRAN_MAX_CHANNELS] = {};
     uint32_t _buffer_max_samples = 0;
     uint32_t _tti = 0;
+    uint32_t _mib_decode_count = 0;
 
     uint8_t  _mcch_table[10] = {};
     bool _mcch_configured = false;

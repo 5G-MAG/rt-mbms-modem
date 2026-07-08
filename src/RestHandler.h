@@ -20,8 +20,10 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <libconfig.h++>
 
 #include "SdrReader.h"
@@ -50,6 +52,38 @@ class RestHandler {
      *  Definition of the callback for setting new reception parameters
      */
     typedef std::function<void(const std::string& antenna, unsigned fcen, double gain, unsigned sample_rate, unsigned bandwidth)> set_params_t;
+
+    /**
+     *  What a logged subframe was used for. CAS occasions only occur in subframe 0,
+     *  once every 40ms (see TS 36.331's dedicated-cell CAS scheduling) - everything
+     *  else is either MCCH, MCH, or a gap (e.g. additionalNonMBSFNSubframes, or a
+     *  subframe the MBSFN config isn't decoded yet to classify).
+     */
+    enum SubframeEventType : uint8_t { SF_EVENT_CAS = 0, SF_EVENT_MCCH = 1, SF_EVENT_MCH = 2, SF_EVENT_GAP = 3 };
+
+    /**
+     *  Outcome of processing a logged subframe. IDLE means the subframe was processed
+     *  but had nothing to decode (e.g. a CAS occasion with no SI message pending, or a
+     *  time-interleaved MCH block still accumulating) - not a failure.
+     */
+    enum SubframeEventStatus : uint8_t { SF_STATUS_IDLE = 0, SF_STATUS_OK = 1, SF_STATUS_FAIL = 2 };
+
+    struct SubframeEvent {
+      uint32_t sfn;
+      uint8_t  sf;
+      uint8_t  type;
+      uint8_t  status;
+    };
+
+    /**
+     *  Record one subframe's scheduling outcome for the CAS/MCCH/MCH activity matrix.
+     */
+    void record_subframe_event(uint32_t tti, uint8_t type, uint8_t status);
+
+    /**
+     *  Snapshot of the recent subframe event log, oldest first.
+     */
+    std::vector<SubframeEvent> subframe_log_snapshot();
 
     /**
      *  Default constructor.
@@ -97,9 +131,14 @@ class RestHandler {
     };
 
     /**
-     *  Time domain subcarrier CE values
+     *  Frequency domain subcarrier CE values (CAS)
      */
     std::vector<uint8_t> _ce_values = {};
+
+    /**
+     *  Frequency domain subcarrier CE values (MBSFN - MCCH/MCH)
+     */
+    std::vector<uint8_t> _ce_values_mbsfn = {};
 
     /**
      *  Time domain channel impulse response of the CAS.
@@ -127,6 +166,16 @@ class RestHandler {
      *  RX info for PDSCH
      */
     ChannelInfo _pdsch;
+
+    /**
+     *  RX info for PDCCH. MCS/BER/EVM don't apply to a control channel (no
+     *  MCS, no CRC in the usual sense) - only total/errors and the raw
+     *  constellation are meaningful: total = CAS occasions attempted,
+     *  errors = occasions where no DCI candidate was found (this conflates
+     *  "genuinely nothing scheduled" with "a candidate was sent but missed",
+     *  since blind decoding can't distinguish the two - see box tooltip).
+     */
+    ChannelInfo _pdcch;
 
     /**
      *  RX info for MCCH
@@ -167,6 +216,14 @@ class RestHandler {
     std::vector<MbsfnFrameProcessor*> _mbsfn_processors; 
     
     std::vector<float>  _cinr_db;
+
+    /* ~5s of history at 1ms/TTI, matching rt-wui's SUBFRAME_MATRIX_WINDOW_SECONDS -
+     * the matrix's column width is derived from its canvas width divided by this
+     * many frames, so buffering more than the display window ever uses is waste. */
+    static constexpr size_t SUBFRAME_LOG_CAPACITY = 5000;
+    std::deque<SubframeEvent> _subframe_log;
+    std::mutex                _subframe_log_mutex;
+
     void get(web::http::http_request message);
     void put(web::http::http_request message);
 

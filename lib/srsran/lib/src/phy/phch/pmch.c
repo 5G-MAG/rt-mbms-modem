@@ -52,7 +52,24 @@ static bool pmch_re_dump_enabled(uint32_t tti)
     return false;
   }
   const char* target = getenv("PMCH_RE_DUMP_TTI");
-  return !target || (uint32_t)atoi(target) == tti;
+  if (target) {
+    return (uint32_t)atoi(target) == tti;
+  }
+  /* Dynamic filter: /tmp/pmch_dump_tti holds the target tti, re-read per call
+   * so it can be set AFTER launch, once the current run's failing ttis are
+   * known (the failing positions depend on a runtime phase established at
+   * sync, so they cannot be predicted before the process starts). Absent
+   * file = dump nothing; PMCH_RE_DUMP=1 alone is inert until the file is
+   * written. The per-subframe fopen only happens in diagnostic runs (env
+   * gate above), never in normal operation. */
+  FILE* f = fopen("/tmp/pmch_dump_tti", "r");
+  if (!f) {
+    return false;
+  }
+  unsigned t  = 0;
+  bool     ok = (fscanf(f, "%u", &t) == 1);
+  fclose(f);
+  return ok && t == tti;
 }
 
 /* Rel-19 adds 256QAM for PMCH (TS 36.213 Table 11.1-2). */
@@ -975,6 +992,24 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
       }
       out[0].crc                  = (srsran_dlsch_decode(&q->dl_sch, &cfg->pdsch_cfg, q->e, out[0].payload) == 0);
       out[0].avg_iterations_block = srsran_sch_last_noi(&q->dl_sch);
+
+      /* Failure-triggered LLR dump: the sporadic sf5 CRC failures drift in tti
+       * even within a run, so a fixed-tti filter can never catch one. This
+       * fires exactly WHEN a failure happens (env-gated; rare - ~1 per 1-3s -
+       * and 24kB each, so bounded), capturing the descrambled LLRs that failed
+       * to decode, for bit-diff against the TX's continuously-refreshed
+       * per-sf5 scrambled-bit dumps of the same tti. */
+      if (!out[0].crc && getenv("PMCH_RE_DUMP")) {
+        char fn[128];
+        snprintf(fn, sizeof(fn), "/tmp/pmch_rx_llrFAIL_tti%u.bin", sf->tti);
+        FILE* ff = fopen(fn, "wb");
+        if (ff) {
+          fwrite(q->e, sizeof(int16_t), Mbit_sf_rx, ff);
+          fclose(ff);
+        }
+        fprintf(stderr, "[PMCH_RE_DUMP] RX FAIL-DUMP tti=%u Mbit=%u tbs=%d\n",
+                sf->tti, Mbit_sf_rx, (int)cfg->pdsch_cfg.grant.tb[0].tbs);
+      }
     }
 
     return SRSRAN_SUCCESS;
