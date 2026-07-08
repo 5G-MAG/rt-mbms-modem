@@ -332,9 +332,12 @@ void SdrReader::read() {
               spdlog::debug("buffer: commited {}, requested {}, writeable {}, writeable_write {}, flags {}", read, toRead, writeable_samples, writeable_write_samples, flags);
         }
         else {
+          // read <= 0 (e.g. SOAPY_SDR_TIMEOUT) means nothing was written into the
+          // ring buffer's write head this iteration -- committing toRead here (as
+          // if a full read succeeded) desyncs the ring buffer's accounting and,
+          // after enough consecutive timeouts, violates commit()'s own free_size()
+          // invariant and crashes. Nothing to commit on error/timeout.
           spdlog::error("readStream returned {}", read);
-          _buffer->commit( toRead * sizeof(cf_t) );
-          _buffer_write->commit(toRead * sizeof(cf_t)); 
         }
       }
     }
