@@ -44,9 +44,9 @@ class CasFrameProcessor {
     *  @param rlc RLC reference
     *  @param rest RESTful API handler reference
     */
-   CasFrameProcessor(const libconfig::Config& cfg, Phy& phy, srsran::rlc& rlc, RestHandler& rest, unsigned rx_channels)
-     : _cfg(cfg)
-     , _phy(phy)
+   CasFrameProcessor(/*const libconfig::Config& cfg,*/ Phy& phy, srsran::rlc& rlc, RestHandler& rest, unsigned rx_channels)
+     :/* _cfg(cfg)
+     ,*/ _phy(phy)
      , _rest(rest)
      , _rlc(rlc)
      , _rx_channels(rx_channels)
@@ -172,10 +172,10 @@ class CasFrameProcessor {
    bool inline is_started() { return _started; }
 
  private:
-   const libconfig::Config& _cfg;
-    srsran::rlc& _rlc;
+//   const libconfig::Config& _cfg;
     Phy& _phy;
     RestHandler& _rest;
+    srsran::rlc& _rlc;
 
     cf_t*    _signal_buffer_rx[SRSRAN_MAX_PORTS] = {};
     uint32_t _signal_buffer_max_samples          = 0;

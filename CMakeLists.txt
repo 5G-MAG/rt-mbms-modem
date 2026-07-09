@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 
-project (modem VERSION 1.2.2)
+project (modem VERSION 1.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -10,12 +10,13 @@ include(FindPkgConfig)
 
 file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/lib/include)
 
-include_directories(
+include_directories(BEFORE PRIVATE
     "${PROJECT_BINARY_DIR}"
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src
-
+    #    )
     SYSTEM
+    #target_include_directories(modem SYSTEM PRIVATE 
     ${PROJECT_SOURCE_DIR}/lib/srsran
     ${PROJECT_SOURCE_DIR}/lib/srsran/lib/include
     ${PROJECT_BINARY_DIR}/lib/srsran/lib/include
@@ -24,16 +25,17 @@ include_directories(
     ${LIB_LIMESUITE_INCLUDE_DIRS}
     )
 
+
 set(ENABLE_SRSUE OFF CACHE BOOL "Build srsUE application")
 set(ENABLE_SRSENB OFF CACHE BOOL "Build srsENB application")
 set(ENABLE_SRSEPC OFF CACHE BOOL "Build srsEPC application")
 add_subdirectory(lib/srsran)
 
 find_package(cpprestsdk REQUIRED)
-include_directories(
-  SYSTEM
-    ${SPDLOG_INCLUDEDIR}
-    )
+#include_directories(
+# SYSTEM
+#    ${SPDLOG_INCLUDEDIR}
+#    )
 
 configure_file("include/Version.h.in" "Version.h")
 
@@ -42,15 +44,46 @@ link_directories(
     ${PROJECT_BINARY_DIR}/lib/srsran/lib/src/phy/
     )
 
-
-set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,modernize*,performance*)
+set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,-bugprone-easily-swappable-parameters,modernize*,-modernize-use-scoped-lock,-modernize-use-trailing-return-type,performance*)
 
 add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp
   src/Gw.cpp src/RestHandler.cpp src/MeasurementFileWriter.cpp src/MultichannelRingbuffer.cpp)
 
+add_library(project_warnings INTERFACE)
+
+target_compile_options(project_warnings INTERFACE
+  -Wall
+  -Wextra
+  -Wpedantic
+  -Werror
+  )
+
+target_compile_options(modem PRIVATE
+  #-fsanitize=address
+  #-fsanitize=undefined
+  #-fsanitize=leak
+  #-fsanitize=thread
+  #-flto
+  #-fvisibility=default
+  #-fsanitize=cfi
+  -fno-omit-frame-pointer
+  -g
+)
+
+target_link_options(modem PRIVATE
+  #-fsanitize=address
+  #-fsanitize=undefined
+  #-fsanitize=leak
+  #-fsanitize=thread
+  #-flto
+  #-fvisibility=default
+  #-fsanitize=cfi
+)
+
 target_link_libraries( modem
     LINK_PUBLIC
+    #    spdlog
     srsran_phy
     srsran_mac
     srsran_rlc
@@ -65,6 +98,7 @@ target_link_libraries( modem
     SoapySDR
 )
 
+target_link_libraries(modem PRIVATE project_warnings)
 
 install(TARGETS modem)
 install(FILES supporting_files/5gmag-rt-modem.service DESTINATION /usr/lib/systemd/system)

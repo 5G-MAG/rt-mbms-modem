@@ -42,7 +42,7 @@ public:
      *  @param cfg Config singleton reference
      */
     explicit SdrReader(const libconfig::Config &cfg, size_t rx_channels)
-            : _overflows(0), _underflows(0), _cfg(cfg), _rx_channels(rx_channels), _readerThread{} {}
+            : _cfg(cfg), _readerThread{}, _rx_channels(rx_channels)/*, _overflows(0), _underflows(0)*/  {}
 
     /**
      *  Default destructor.
@@ -62,8 +62,7 @@ public:
     /**
      * Tune the SDR to the desired frequency, and set gain, filter and antenna parameters.
      */
-    bool tune(uint32_t frequency, uint32_t sample_rate, uint32_t bandwidth, double gain, const std::string &antenna,
-              bool use_agc);
+    bool tune(uint32_t frequency, uint32_t sample_rate, uint32_t bandwidth, double gain, const std::string &antenna, bool use_agc);
 
     /**
      * Start reading samples from the SDR
@@ -138,6 +137,7 @@ public:
      */
     void disableSampleFileWriting() { _write_samples = false; }
 
+    bool is_running(){ return _running; }
 private:
     void init_buffer();
 
@@ -173,10 +173,10 @@ private:
     double _min_gain;
     double _max_gain;
     std::string _antenna;
-    unsigned _overflows;
-    unsigned _underflows;
+//    unsigned _overflows; //unused
+//    unsigned _underflows; //unused
 
-    cf_t *_read_buffer;
+//    cf_t *_read_buffer; //unused
 
     srsran_filesource_t file_source;
     srsran_filesink_t file_sink;

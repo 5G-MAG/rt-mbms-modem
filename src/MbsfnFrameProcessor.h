@@ -32,6 +32,11 @@
 #include "Phy.h"
 #include "RestHandler.h"
 
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+
+
 /**
  *  Frame processor for MBSFN subframes. Handles the complete processing chain for
  *  a CAS subframe: calls FFT and channel estimation, decodes PDSCH and passes received PDUs to RLC.
@@ -48,8 +53,8 @@ class MbsfnFrameProcessor {
      *  @param rest RESTful API handler reference
      */
     MbsfnFrameProcessor(const libconfig::Config& cfg, srsran::rlc& rlc, Phy& phy, srslog::basic_logger& log_h, RestHandler& rest, unsigned rx_channels )
-      : _cfg(cfg)
-      , _rlc(rlc)
+      : /*_cfg(cfg)
+      , */_rlc(rlc)
       , _phy(phy)
       , _rest(rest)
       , mch_mac_msg(20, log_h)
@@ -57,6 +62,7 @@ class MbsfnFrameProcessor {
       {
         _allow_rrc_sn_across_periods = false;
         cfg.lookupValue("modem.phy.allow_rrc_sn_across_periods", _allow_rrc_sn_across_periods); 
+        id = lastid++;
       }
 
     /**
@@ -93,7 +99,18 @@ class MbsfnFrameProcessor {
      *  If process() is not called by the application after calling this method, it must unlock the 
      *  processor itself by calling unlock()
      */
-    cf_t** get_rx_buffer_and_lock() { _mutex.lock(); return _signal_buffer_rx; }
+    cf_t** get_rx_buffer() { 
+      //_mutex.lock(); 
+      //return _signal_buffer_rx; 
+    //  auto t0 = std::chrono::high_resolution_clock::now();
+   /*   _mutex.lock();
+    //  printf("lock waited %ld us\n", std::chrono::high_resolution_clock::now()-t0);
+      return _signal_buffer_rx;
+*/
+//      if (_mutex.try_lock())
+        return _signal_buffer_rx;
+//      return nullptr;
+    }
 
     /**
      *  Size of the signal buffer
@@ -134,8 +151,11 @@ class MbsfnFrameProcessor {
      */
     float cinr_db() { return _ue_dl.chest_res.snr_db; }
 
+    int get_id() { return id; }
+//    std::atomic<bool> busy{false};
+//    void release() { busy.store(false, std::memory_order_release); }
   private:
-    const libconfig::Config& _cfg;
+//    const libconfig::Config& _cfg;
     srsran::rlc& _rlc;
     Phy& _phy;
 
@@ -156,10 +176,10 @@ class MbsfnFrameProcessor {
     uint8_t _area_id = 1;
     bool _mbsfn_configured = false;
 
+    RestHandler& _rest;
+
     srsran::mch_pdu mch_mac_msg;
     std::mutex _mutex;
-
-    RestHandler& _rest;
 
     unsigned _rx_channels;
 
@@ -169,4 +189,33 @@ class MbsfnFrameProcessor {
 
     static std::mutex _rlc_mutex;
     static int _current_mcs;
+
+    inline static int lastid = 0; 
+    int id;
+};
+
+class ProcessorQueue {
+  public:
+    void push(MbsfnFrameProcessor* p) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        q.push(p);
+      }
+      cv.notify_one();
+    }
+
+
+    MbsfnFrameProcessor* pop() {
+      std::unique_lock<std::mutex> lock(mutex);
+      
+      cv.wait(lock, [&] { return !q.empty(); });
+      auto p = q.front();
+      q.pop();
+      return p;
+    }
+
+  private:
+    std::queue<MbsfnFrameProcessor*> q;
+    std::mutex mutex;
+    std::condition_variable cv;
 };
