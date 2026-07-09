@@ -256,7 +256,7 @@ void Phy::set_mch_scheduling_info(const srsran::sib13_t& sib13) {
   if (sib13.nof_mbsfn_area_info > 0) {
     _sib13 = sib13;
 
-    bzero(&_mcch_table[0], sizeof(uint8_t) * 10);
+    memset(&_mcch_table[0], 0, sizeof(uint8_t) * 10);
     if (sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info_is_r16) {
       generate_mcch_table_r16(
           &_mcch_table[0],

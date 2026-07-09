@@ -54,9 +54,7 @@ using libconfig::Config;
 using libconfig::FileIOException;
 using libconfig::ParseException;
 
-using std::placeholders::_1;
-using std::placeholders::_2;
-using std::placeholders::_3;
+using namespace std::placeholders;
 
 static void print_version(FILE *stream, struct argp_state *state);
 void (*argp_program_version_hook)(FILE *, struct argp_state *) = print_version;
@@ -334,6 +332,27 @@ auto main(int argc, char **argv) -> int {
   cfg.lookupValue("modem.measurement_file.enabled", enable_measurement_file);
   MeasurementFileWriter measurement_file(cfg);
 
+  auto srs_level = srslog::basic_levels::none;
+  switch (arguments.srs_log_level) {
+    case 0: srs_level = srslog::basic_levels::debug; break;
+    case 1: srs_level = srslog::basic_levels::info; break;
+    case 2: srs_level = srslog::basic_levels::warning; break;
+    case 3: srs_level = srslog::basic_levels::error; break;
+    case 4: 
+    default: srs_level = srslog::basic_levels::none; break;
+  }
+
+  // Configure srsRAN logging
+ auto& mac_log = srslog::fetch_basic_logger("MAC", false);
+  mac_log.set_level(srs_level);
+ auto& phy_log = srslog::fetch_basic_logger("PHY", false);
+  phy_log.set_level(srs_level);
+ auto& rlc_log = srslog::fetch_basic_logger("RLC", false);
+  rlc_log.set_level(srs_level);
+ auto& asn1_log = srslog::fetch_basic_logger("ASN1", false);
+  asn1_log.set_level(srs_level);
+
+
   // Create the layer components: Phy, RLC, RRC and GW
   Phy phy(
       std::bind(&SdrReader::get_samples, &sdr, _1, _2, _3),  // NOLINT
@@ -354,26 +373,6 @@ auto main(int argc, char **argv) -> int {
 
   rlc.init(&pdcp, &rrc, &timers, 0 /* RB_ID_SRB0 */);
   pdcp.init(&rlc, &rrc,  &gw);
-
-  auto srs_level = srslog::basic_levels::none;
-  switch (arguments.srs_log_level) {
-    case 0: srs_level = srslog::basic_levels::debug; break;
-    case 1: srs_level = srslog::basic_levels::info; break;
-    case 2: srs_level = srslog::basic_levels::warning; break;
-    case 3: srs_level = srslog::basic_levels::error; break;
-    case 4: srs_level = srslog::basic_levels::none; break;
-  }
-
-
-  // Configure srsRAN logging
- auto& mac_log = srslog::fetch_basic_logger("MAC", false);
-  mac_log.set_level(srs_level);
- auto& phy_log = srslog::fetch_basic_logger("PHY", false);
-  phy_log.set_level(srs_level);
- auto& rlc_log = srslog::fetch_basic_logger("RLC", false);
-  rlc_log.set_level(srs_level);
- auto& asn1_log = srslog::fetch_basic_logger("ASN1", false);
-  asn1_log.set_level(srs_level);
 
 
   state_t state = searching;
@@ -429,7 +428,7 @@ auto main(int argc, char **argv) -> int {
 
   float measurement_interval_f = 5;
   cfg.lookupValue("modem.measurement_file.interval_secs", measurement_interval_f);
-  uint32_t measurement_interval = measurement_interval_f * 1000;
+  uint32_t measurement_interval = static_cast<uint32_t>(measurement_interval_f) * 1000;
   uint32_t tick = 0;
 
   // Initial state: searching a cell
@@ -661,7 +660,7 @@ auto main(int argc, char **argv) -> int {
         cols.push_back(std::to_string(((mcch_bler_iter * 1.0) / (mcch_total_global * 1.0))));
 
         cols.push_back(std::to_string(tti)); // Current TTI
-        cols.emplace_back(std::string("")); // Blank to maintain the column, only used when desync.
+        cols.emplace_back(""); // Blank to maintain the column, only used when desync.
         cols.push_back(std::to_string(lost_subframes)); // Total amount of lost subframes
 
         auto mch_info = phy.mch_info();
@@ -694,30 +693,30 @@ auto main(int argc, char **argv) -> int {
               mch_idx++;
             });
       } else if (state == syncing) { // In syncing and searching states we place in every row and column NaN, this way is easier to process after, since every time measured theres always a row in the csv.
-        cols.emplace_back(std::string("NOT SYNC - SYNCING...")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
+        cols.emplace_back("NOT SYNC - SYNCING..."); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
         cols.push_back(std::to_string(sync_losses)); 
         cols.push_back(std::to_string(lost_subframes));
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
 
       } else {
-        cols.emplace_back(std::string("SEARCHING FOR A CELL...")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string(""));
+        cols.emplace_back("SEARCHING FOR A CELL..."); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("");
         cols.push_back(std::to_string(lost_subframes));
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
-        cols.emplace_back(std::string("nan")); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
+        cols.emplace_back("nan"); 
       }
     
       if (enable_measurement_file) {
