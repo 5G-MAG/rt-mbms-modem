@@ -111,13 +111,28 @@ public:
   }
 
   /// Writes the provided memory buffer into an open file, otherwise does
-  /// nothing.
+  /// nothing. A short fwrite() (e.g. interrupted by a signal, common in this
+  /// multi-threaded, multi-timer codebase) is not by itself a fatal error -
+  /// retry the remaining bytes. Only give up (and disable the sink, matching
+  /// the previous behaviour) when fwrite() makes no progress at all, which
+  /// means a real, non-transient error.
   detail::error_string write(detail::memory_buffer buffer)
   {
-    if (handle && std::fwrite(buffer.data(), sizeof(char), buffer.size(), handle) != buffer.size()) {
-      auto err_str = format_error(fmt::format("Unable to write log file \"{}\"", path), errno);
-      close();
-      return err_str;
+    if (!handle) {
+      return {};
+    }
+
+    const char* data      = buffer.data();
+    size_t      remaining = buffer.size();
+    while (remaining > 0) {
+      size_t written = std::fwrite(data, sizeof(char), remaining, handle);
+      if (written == 0) {
+        auto err_str = format_error(fmt::format("Unable to write log file \"{}\"", path), errno);
+        close();
+        return err_str;
+      }
+      data += written;
+      remaining -= written;
     }
 
     return {};
