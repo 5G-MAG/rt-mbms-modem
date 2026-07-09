@@ -115,6 +115,7 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell) {
 
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
   _sf_cfg.tti = tti;
+  _last_pdcch_locations.clear();
 
   // _pdsch.total/errors are advanced per actual SI decode below (in the CRC
   // handling) so BLER = CRC failures / decode attempts is a genuine block-error
@@ -157,6 +158,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
     // TS 36.211 §6.8.1: 1 CCE = 9 REGs = 36 REs. location.L is the aggregation
     // level as a log2 value, so nof_cce = 2^L.
     _last_pdcch_nof_re = (1u << dci[k].location.L) * 36u;
+    _last_pdcch_locations.emplace_back(dci[k].location.ncce, dci[k].location.L);
     _rest._pdcch.SetData(pdcch_data());
 
     if (srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant)) {
@@ -184,9 +186,10 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       }
     }
 
-    _rest._ce_values    = std::move(ce_values());
-    _rest._cir_values   = std::move(cir_values());
-    _rest._cas_grid     = std::move(cas_grid());
+    _rest._ce_values      = std::move(ce_values());
+    _rest._cir_values     = std::move(cir_values());
+    _rest._cas_grid       = std::move(cas_grid());
+    _rest._cas_composition = std::move(composition_grid());
 
     // Decode PDSCH..
     auto ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
@@ -268,6 +271,13 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
   }
   if (nof_grants == 0) {
     // CAS occasion processed fine, but no SI message/paging was pending this cycle.
+    // Still refresh ce/cir/grid/composition here - no grant means no PDCCH to
+    // mark, but CRS/PSS/SSS/PBCH positions are independent of whether a
+    // grant was found, so the UI shouldn't be left showing a stale frame.
+    _rest._ce_values      = std::move(ce_values());
+    _rest._cir_values     = std::move(cir_values());
+    _rest._cas_grid       = std::move(cas_grid());
+    _rest._cas_composition = std::move(composition_grid());
     _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_IDLE);
     _rest._pdcch.errors++;
   }
@@ -331,6 +341,119 @@ auto CasFrameProcessor::cas_grid() -> std::vector<uint8_t> {
   srsran_vec_abs_dB_cf(_ue_dl.sf_symbols[0], -80, mag.data(), nof_re);
   const uint8_t* data = reinterpret_cast<const uint8_t*>(mag.data());
   return std::vector<uint8_t>(data, data + nof_re * sizeof(float));
+}
+
+auto CasFrameProcessor::composition_grid() -> std::vector<uint8_t> {
+  const uint32_t nsymb      = SRSRAN_CP_NSYMB(_cell.cp); // 6 (ECP) or 7 (NCP) per slot
+  const uint32_t subcarriers = _cell.nof_prb * SRSRAN_NRE;
+  const uint32_t symbols     = 2 * nsymb;
+  std::vector<uint8_t> comp(subcarriers * symbols, COMP_OTHER);
+  auto mark = [&](uint32_t l, uint32_t k, uint8_t v) {
+    if (l < symbols && k < subcarriers) comp[l * subcarriers + k] = v;
+  };
+
+  // --- PBCH: standard base (slot 1, symbols 0..3) --------------------------
+  // Mirrors srsran_pbch_cp()'s layout (pbch.c): 72 contiguous-ish subcarriers
+  // centred on DC, across the first 4 symbols of slot 1. The exact per-RE
+  // interleave with CRS on symbols 0/1/(3 for ECP) is handled by CRS marking
+  // them over this afterwards, below - those REs really are CRS, not PBCH.
+  {
+    const uint32_t pbch_k0 = subcarriers / 2 - 36;
+    const uint32_t nof_pbch_symbols = SRSRAN_CP_ISNORM(_cell.cp) ? 4 : 4;
+    for (uint32_t i = 0; i < nof_pbch_symbols; i++) {
+      for (uint32_t k = 0; k < 72; k++) mark(nsymb + i, pbch_k0 + k, COMP_PBCH);
+    }
+  }
+
+  // --- PBCH: this fork's CAS repetition (TS 103 720, see pbch.c's
+  // PBCH_CAS_MAP_NCP/ECP) - extra copies of PBCH content at fixed (slot,
+  // symbol) positions beyond the standard subframe-0-only placement, so a
+  // CAS occasion on an MBMS-dedicated (no regular scheduling) carrier can
+  // recover MIB without waiting for subframe 0 specifically. Same 72-SC
+  // centred range as the standard case.
+  {
+    struct Map { uint32_t dst_ns, dst_l; };
+    static const Map MAP_NCP[] = {{0, 4}, {1, 4}, {1, 5}, {0, 3}, {1, 6}};
+    static const Map MAP_ECP[] = {{0, 3}, {1, 4}, {1, 5}};
+    const uint32_t pbch_k0 = subcarriers / 2 - 36;
+    const Map* map = SRSRAN_CP_ISNORM(_cell.cp) ? MAP_NCP : MAP_ECP;
+    size_t map_n = SRSRAN_CP_ISNORM(_cell.cp) ? (sizeof(MAP_NCP) / sizeof(Map)) : (sizeof(MAP_ECP) / sizeof(Map));
+    for (size_t i = 0; i < map_n; i++) {
+      uint32_t l = map[i].dst_ns * nsymb + map[i].dst_l;
+      for (uint32_t k = 0; k < 72; k++) mark(l, pbch_k0 + k, COMP_PBCH);
+    }
+  }
+
+  // --- PSS / SSS: last slot of subframes 0 and 5 only (standard LTE, no
+  // CAS-specific repetition exists for these in this fork). Symbol/subcarrier
+  // formula mirrors srsran_pss_put_slot()/srsran_sss_put_slot() exactly
+  // (pss.c/sss.c): last symbol of the slot for PSS, second-to-last for SSS,
+  // both 62 contiguous subcarriers centred on DC.
+  {
+    uint32_t sf_idx = _sf_cfg.tti % 10;
+    if (sf_idx == 0 || sf_idx == 5) {
+      const uint32_t k0 = subcarriers / 2 - 31;
+      const uint32_t pss_l = 2 * nsymb - 1;
+      const uint32_t sss_l = 2 * nsymb - 2;
+      for (uint32_t k = 0; k < 62; k++) {
+        mark(pss_l, k0 + k, COMP_PSS);
+        mark(sss_l, k0 + k, COMP_SSS);
+      }
+    }
+  }
+
+  // --- CRS: srsran_refsignal_cs_nsymbol()/cs_fidx()/cs_v() exactly, for
+  // every configured port - the same functions the receiver's own channel
+  // estimator uses (refsignal_dl.c), so this can never disagree with what
+  // chest_dl actually read as reference symbols.
+  for (uint32_t port = 0; port < _cell.nof_ports; port++) {
+    uint32_t n_l = srsran_refsignal_cs_nof_symbols(nullptr, &_sf_cfg, port);
+    for (uint32_t l = 0; l < n_l; l++) {
+      uint32_t nsymbol = srsran_refsignal_cs_nsymbol(l, _cell.cp, port);
+      // Matches srsran_refsignal_cs_fidx() exactly (refsignal_dl.c): starting
+      // offset is (v + cell.id % 6) % 6, NOT just v - missing the cell-ID
+      // shift here would silently produce wrong positions for any cell.id
+      // where cell.id % 6 != 0.
+      uint32_t fidx = (srsran_refsignal_cs_v(port, l) + (_cell.id % 6)) % 6;
+      for (uint32_t i = 0; i < 2 * _cell.nof_prb; i++) {
+        mark(nsymbol, fidx, COMP_CRS);
+        fidx += SRSRAN_NRE / 2;
+      }
+    }
+  }
+
+  // --- PCFICH: REGs already computed by srsRAN internally (from cell.id/
+  // cell.nof_prb, at set_cell() time) for the current CFI hypothesis -
+  // PCFICH's own REG set doesn't depend on CFI, so index [0] always holds it.
+  {
+    srsran_regs_ch_t& pcfich = _ue_dl.regs[0].pcfich;
+    for (uint32_t i = 0; i < pcfich.nof_regs; i++) {
+      srsran_regs_reg_t* reg = pcfich.regs[i];
+      for (uint32_t j = 0; j < 4; j++) mark(reg->l, reg->k[j], COMP_PCFICH);
+    }
+  }
+
+  // --- PDCCH: the exact REGs backing the candidate(s) actually decoded this
+  // occasion (from _last_pdcch_locations, set in process() right after
+  // srsran_ue_dl_find_dl_dci() returns) - ground truth from this frame's own
+  // blind decode, not a guessed position. REGs for CFI=cfi are ordered by
+  // increasing CCE (9 REGs/CCE) in _ue_dl.regs[cfi-1].pdcch.regs[].
+  {
+    uint32_t cfi = _sf_cfg.cfi > 0 ? _sf_cfg.cfi : 1;
+    if (cfi >= 1 && cfi <= 3) {
+      srsran_regs_ch_t& pdcch = _ue_dl.regs[0].pdcch[cfi - 1];
+      for (const auto& loc : _last_pdcch_locations) {
+        uint32_t ncce = loc.first, L = loc.second;
+        uint32_t first_reg = ncce * 9, nof_regs = (1u << L) * 9u;
+        for (uint32_t r = first_reg; r < first_reg + nof_regs && r < pdcch.nof_regs; r++) {
+          srsran_regs_reg_t* reg = pdcch.regs[r];
+          for (uint32_t j = 0; j < 4; j++) mark(reg->l, reg->k[j], COMP_PDCCH);
+        }
+      }
+    }
+  }
+
+  return comp;
 }
 
 auto CasFrameProcessor::pdcch_data() -> std::vector<uint8_t> {

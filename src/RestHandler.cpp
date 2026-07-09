@@ -20,6 +20,7 @@
 //#include "RestHandler.h"
 #include "CasFrameProcessor.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -161,6 +162,9 @@ void RestHandler::get(http_request message) {
     } else if (paths[0] == "cas_grid") {
       auto gridstream = Concurrency::streams::bytestream::open_istream(_cas_grid);
       message.reply(status_codes::OK, gridstream);
+    } else if (paths[0] == "cas_composition") {
+      auto compstream = Concurrency::streams::bytestream::open_istream(_cas_composition);
+      message.reply(status_codes::OK, compstream);
     } else if (paths[0] == "ce_values_mbsfn") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values_mbsfn);
       message.reply(status_codes::OK, cestream);
@@ -562,8 +566,32 @@ void RestHandler::record_subframe_event(uint32_t tti, uint8_t type, uint8_t stat
 }
 
 std::vector<RestHandler::SubframeEvent> RestHandler::subframe_log_snapshot() {
-  std::lock_guard<std::mutex> lock(_subframe_log_mutex);
-  return std::vector<SubframeEvent>(_subframe_log.begin(), _subframe_log.end());
+  std::vector<SubframeEvent> log;
+  {
+    std::lock_guard<std::mutex> lock(_subframe_log_mutex);
+    log.assign(_subframe_log.begin(), _subframe_log.end());
+  }
+  // record_subframe_event() is called from CasFrameProcessor's worker-pool
+  // threads, one occasion at a time - the mutex above makes each push_back
+  // itself thread-safe, but doesn't guarantee occasions finish (and thus get
+  // pushed) in the same order they were dispatched in. Empirically ~2% of
+  // entries land out of order by exactly one frame. Re-sort chronologically
+  // here rather than at the write site, so every caller (not just this one)
+  // gets a correctly-ordered view regardless of which worker happened to
+  // finish first. SFN wraps at 1024 (10.24s) within this <=500-frame log, so
+  // a plain numeric sort would misorder anything spanning a wrap - rebase
+  // relative to the presumed-oldest (front) entry with modular arithmetic
+  // first, matching the front's sf so ties within the same frame stay put.
+  if (!log.empty()) {
+    uint32_t ref = log.front().sfn;
+    auto key = [ref](const SubframeEvent& e) {
+      return ((e.sfn + 1024 - ref) % 1024) * 10 + e.sf;
+    };
+    std::stable_sort(log.begin(), log.end(), [&](const SubframeEvent& a, const SubframeEvent& b) {
+      return key(a) < key(b);
+    });
+  }
+  return log;
 }
 
 namespace {

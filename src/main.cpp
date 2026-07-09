@@ -397,11 +397,15 @@ auto main(int argc, char **argv) -> int {
   thread_param.sched_priority = 20;
   cfg.lookupValue("modem.phy.main_thread_priority_rt", thread_param.sched_priority);
 
+  if (thread_param.sched_priority > 0) {
   spdlog::info("Raising main thread to realtime scheduling priority {}", thread_param.sched_priority);
 
   int error = pthread_setschedparam(pthread_self(), SCHED_RR, &thread_param);
   if (error != 0) {
     spdlog::error("Cannot set main thread priority to realtime: {}. Thread will run at default priority.", strerror(error));
+  }
+  } else {
+    spdlog::info("main_thread_priority_rt=0, skipping realtime scheduling for main thread");
   }
 
   bool enable_measurement_file = false;

@@ -142,6 +142,12 @@ class RestHandler {
     std::vector<uint8_t> _cas_grid = {};
 
     /**
+     *  Channel-type ID per RE, same layout as _cas_grid - see
+     *  CasFrameProcessor::CasComponent for the legend.
+     */
+    std::vector<uint8_t> _cas_composition = {};
+
+    /**
      *  Frequency domain subcarrier CE values (MBSFN - MCCH/MCH)
      */
     std::vector<uint8_t> _ce_values_mbsfn = {};

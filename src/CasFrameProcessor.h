@@ -124,6 +124,19 @@ class CasFrameProcessor {
    std::vector<uint8_t> cas_grid();
 
    /**
+    *  Channel-type ID per RE, same layout/size as cas_grid(). Categorical
+    *  ("what is this RE") rather than power ("how strong is this RE") - see
+    *  CasComponent for the legend. Computed from srsRAN's own deterministic
+    *  position functions (refsignal_cs_*, pss/sss_put_slot's k formula,
+    *  pbch_cp's symbol/subcarrier ranges, this fork's PBCH_CAS_MAP_*, and
+    *  the REGS structures already populated during PCFICH/PDCCH decode) -
+    *  not re-derived from scratch, so it inherits the receiver's own
+    *  ground truth instead of risking a second, divergent implementation.
+    */
+   enum CasComponent : uint8_t { COMP_OTHER = 0, COMP_PSS = 1, COMP_SSS = 2, COMP_PBCH = 3, COMP_CRS = 4, COMP_PCFICH = 5, COMP_PDCCH = 6 };
+   std::vector<uint8_t> composition_grid();
+
+   /**
     *  Get the constellation diagram data for the PDCCH candidate found in the
     *  most recent occasion (post-equalization symbols, before blind decode).
     */
@@ -207,6 +220,12 @@ class CasFrameProcessor {
     // Number of REs the most recently found PDCCH candidate occupied (from its
     // aggregation level), so pdcch_data() knows how much of _ue_dl.pdcch.d is valid.
     uint32_t _last_pdcch_nof_re = 0;
+
+    // nCCE/aggregation level of the most recently found PDCCH candidate(s) this
+    // occasion, so composition_grid() (called after the decode loop) can mark
+    // exactly which REs carried it. Cleared at the top of process() so a CAS
+    // occasion with no grant correctly shows no PDCCH in the composition.
+    std::vector<std::pair<uint32_t, uint32_t>> _last_pdcch_locations; // (ncce, L)
 
     srsran_ue_dl_t     _ue_dl     = {};
     srsran_ue_dl_cfg_t _ue_dl_cfg = {};
