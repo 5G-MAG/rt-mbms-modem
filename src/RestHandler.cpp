@@ -158,6 +158,9 @@ void RestHandler::get(http_request message) {
     } else if (paths[0] == "ce_values") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values);
       message.reply(status_codes::OK, cestream);
+    } else if (paths[0] == "cas_grid") {
+      auto gridstream = Concurrency::streams::bytestream::open_istream(_cas_grid);
+      message.reply(status_codes::OK, gridstream);
     } else if (paths[0] == "ce_values_mbsfn") {
       auto cestream = Concurrency::streams::bytestream::open_istream(_ce_values_mbsfn);
       message.reply(status_codes::OK, cestream);

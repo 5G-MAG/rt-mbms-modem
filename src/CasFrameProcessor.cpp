@@ -186,6 +186,7 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
 
     _rest._ce_values    = std::move(ce_values());
     _rest._cir_values   = std::move(cir_values());
+    _rest._cas_grid     = std::move(cas_grid());
 
     // Decode PDSCH..
     auto ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
@@ -318,6 +319,18 @@ auto CasFrameProcessor::cir_values() -> std::vector<uint8_t> {
 auto CasFrameProcessor::pdsch_data() -> std::vector<uint8_t> {
   const uint8_t* data = reinterpret_cast<uint8_t*>(_ue_dl.pdsch.d[0]);
   return std::vector<uint8_t>( data, data + _ue_dl_cfg.cfg.pdsch.grant.nof_re * sizeof(cf_t));
+}
+
+auto CasFrameProcessor::cas_grid() -> std::vector<uint8_t> {
+  // Full received resource grid for this CAS subframe: nof_prb*12 subcarriers x
+  // (2 slots * CP_NSYMB) OFDM symbols. sf_symbols[0] is allocated at max PRB, so
+  // reading SRSRAN_SF_LEN_RE(nof_prb) is always in bounds. Magnitude in dB
+  // (floor -80), same convention as ce_values(); returned as raw float bytes.
+  uint32_t nof_re = SRSRAN_SF_LEN_RE(_cell.nof_prb, _cell.cp);
+  std::vector<float> mag(nof_re, 0);
+  srsran_vec_abs_dB_cf(_ue_dl.sf_symbols[0], -80, mag.data(), nof_re);
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(mag.data());
+  return std::vector<uint8_t>(data, data + nof_re * sizeof(float));
 }
 
 auto CasFrameProcessor::pdcch_data() -> std::vector<uint8_t> {

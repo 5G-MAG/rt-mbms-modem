@@ -115,6 +115,15 @@ class CasFrameProcessor {
    std::vector<uint8_t> pdsch_data();
 
    /**
+    *  Get the full received CAS resource grid: per-RE magnitude (dB, floor -80)
+    *  for the whole subframe, laid out symbol-major (RE index = symbol *
+    *  (nof_prb*12) + subcarrier), 14 OFDM symbols x nof_prb*12 subcarriers.
+    *  Lets the UI draw a 1 ms resource-element map showing where PSS/SSS/PBCH/
+    *  CRS/PDCCH/PDSCH sit as a power pattern.
+    */
+   std::vector<uint8_t> cas_grid();
+
+   /**
     *  Get the constellation diagram data for the PDCCH candidate found in the
     *  most recent occasion (post-equalization symbols, before blind decode).
     */

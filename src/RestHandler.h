@@ -136,6 +136,12 @@ class RestHandler {
     std::vector<uint8_t> _ce_values = {};
 
     /**
+     *  Full received CAS resource grid: per-RE magnitude (dB) for the whole
+     *  subframe, symbol-major (14 symbols x nof_prb*12 subcarriers), float bytes.
+     */
+    std::vector<uint8_t> _cas_grid = {};
+
+    /**
      *  Frequency domain subcarrier CE values (MBSFN - MCCH/MCH)
      */
     std::vector<uint8_t> _ce_values_mbsfn = {};
