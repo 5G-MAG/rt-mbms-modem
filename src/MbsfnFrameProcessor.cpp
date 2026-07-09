@@ -371,6 +371,13 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     mch_mac_msg.parse_packet(_payload_buffer);
 
     while (mch_mac_msg.next()) {
+      if (getenv("PMCH_TI_DIAG")) {
+        auto* s = mch_mac_msg.get();
+        bool sdu = s->is_sdu();
+        fprintf(stderr, "TI_DIAG_SUBH sfidx=%u is_mcch=%d is_sdu=%d ce_type=%d lcid=%d\n",
+                mbsfn_cfg.mch_subframe_idx, (int)mbsfn_cfg.is_mcch, (int)sdu,
+                (int)s->mch_ce_type(), sdu ? (int)s->get_sdu_lcid() : -1);
+      }
       if (srsran::mch_lcid::MCH_SCHED_INFO == mch_mac_msg.get()->mch_ce_type()) {
         uint16_t stop = 0;
         uint8_t lcid = 0;
@@ -444,7 +451,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
             for (uint32_t k = 0; k < sz && k < 48; k++) {
               snprintf(hex + k * 2, 3, "%02x", p[k]);
             }
-            fprintf(stderr, "TI_DIAG_MACSDU lcid=%u sz=%u first48=%s\n", lcid, sz, hex);
+            fprintf(stderr, "TI_DIAG_MACSDU sfidx=%u lcid=%u sz=%u first48=%s\n", mbsfn_cfg.mch_subframe_idx, lcid, sz, hex);
           }
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
           const std::lock_guard<std::mutex> lock(_rlc_mutex);

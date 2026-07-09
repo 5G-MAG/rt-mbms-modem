@@ -20,6 +20,7 @@
 #include "Phy.h"
 
 #include <chrono>
+#include <thread>
 #include <utility>
 #include <iomanip>
 
@@ -321,6 +322,12 @@ void Phy::set_mch_scheduling_info(const srsran::sib13_t& sib13) {
 }
 
 void Phy::set_mbsfn_config(const srsran::mcch_msg_t& mcch) {
+  if (getenv("RACE_DIAG")) {
+    auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+    fprintf(stderr, "RACEDIAG_WRITE_BEGIN thread=%zu ns=%lld\n",
+            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+            (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+  }
   _mcch = mcch;
   _mch_configured = true;
 
@@ -360,6 +367,12 @@ void Phy::set_mbsfn_config(const srsran::mcch_msg_t& mcch) {
     }
 
     _mch_info.push_back(mch_info);
+  }
+  if (getenv("RACE_DIAG")) {
+    auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+    fprintf(stderr, "RACEDIAG_WRITE_END thread=%zu ns=%lld\n",
+            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+            (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
   }
 }
 
@@ -600,6 +613,12 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
           cfg.mch_subframe_idx = (uint32_t)sf_idx - pmch_start;
           cfg.pmch_idx         = (uint8_t)i;
           cfg.enable = true;
+          if (cfg.mch_subframe_idx == 0 && getenv("RACE_DIAG")) {
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+            fprintf(stderr, "RACEDIAG_READ tti=%u thread=%zu ns=%lld\n", tti,
+                    std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                    (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+          }
           /* pmch-TimeInterleavingN/M-LastMTCH-r19 (TS 36.331 CR5168r3): mirrors TX's
            * identical is_mch_subframe() logic exactly -- MbsfnFrameProcessor pushes
            * the last session's window start via set_last_mtch_start() once per
