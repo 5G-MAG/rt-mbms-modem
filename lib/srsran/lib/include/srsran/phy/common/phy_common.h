@@ -339,6 +339,22 @@ typedef struct SRSRAN_API {
   uint8_t               semi_static_cfi;   /* 0..3; 0 also doubles as "not yet decoded" on RX */
 } srsran_cell_t;
 
+/* Rel-16 CAS (MBMS) detection. On a Rel-16 MBMS-dedicated CAS the PBCH is repeated
+ * (TS 36.211 §6.6.4.1); the repetition does not fill its whole OFDM symbol, so the
+ * unused REs carry PDSCH. The SI-PDSCH RE mapping (ra_dl.c/pdsch.c) must therefore
+ * account for those extra PDSCH REs, or the rate-matched LLRs desync and the SI
+ * turbo block fails CRC at every cfi/RV (clean symbols, wrong bits).
+ * Proxy detector: a cell signalling semiStaticCFI-MBMS-r16 (semi_static_cfi != 0)
+ * is a Rel-16 CAS. This cleanly separates the Rel-16 captures from legacy ones and
+ * cannot affect a legacy cell (semi_static_cfi == 0). A fully general detector would
+ * correlation-check the PBCH repetition itself (cf. jsroldan srsRAN
+ * srsran_rel16_pbch_mrc) — upgrade here if a Rel-16 CAS with semiStaticCFI disabled
+ * but PBCH repetition present is ever encountered. */
+static inline bool srsran_cell_is_mbms_r16(const srsran_cell_t* cell)
+{
+  return cell->mbms_dedicated && cell->nof_prb > 6 && cell->semi_static_cfi != 0;
+}
+
 // Common downlink properties that may change every subframe
 typedef struct SRSRAN_API {
   srsran_tdd_config_t tdd_config;

@@ -94,6 +94,20 @@ static inline bool pdsch_cp_skip_symbol(const srsran_cell_t*        cell,
       if (s == 0 && (sf_idx == 0 || sf_idx == 5) && (l >= grant->nof_symb_slot[s] - 2)) {
         return true;
       }
+
+      /* Rel-16 CAS repeated-PBCH symbols (TS 36.211 §6.6.4.1). These carry PBCH in the
+       * center block and are not plain PDSCH; skip the normal full-PRB copy here. The
+       * subset of them that also carry interleaved PDSCH REs is recovered separately via
+       * pdsch_cp_repeated_pbch_symbol()/prb_extract_re_ref(). Gated by the same Rel-16
+       * proxy as the RE count in ra_dl.c, so legacy cells are unaffected. */
+      if (srsran_cell_is_mbms_r16(cell) && sf_idx == 0 &&
+          ((s == 0 && l == 3) ||
+           (s == 0 && l == 4 && cell->cp == SRSRAN_CP_NORM) ||
+           (s == 1 && l == 4) ||
+           (s == 1 && l == 5) ||
+           (s == 1 && l == 6 && cell->cp == SRSRAN_CP_NORM))) {
+        return true;
+      }
     } else {
       // TDD SSS
       if (s == 1 && (sf_idx == 0 || sf_idx == 5) && (l >= grant->nof_symb_slot[s] - 1)) {
@@ -110,6 +124,29 @@ static inline bool pdsch_cp_skip_symbol(const srsran_cell_t*        cell,
     }
   }
 
+  return false;
+}
+
+/* Rel-16 CAS: true for the repeated-PBCH symbols whose non-PBCH REs carry PDSCH,
+ * i.e. the symbols where prb_extract_re_ref() must recover interleaved PDSCH REs.
+ * Ported from jsroldan/rt-mbms-modem@srsRAN (TS 36.211 §6.6.4.1). */
+static inline bool pdsch_cp_repeated_pbch_symbol(const srsran_cell_t* cell,
+                                                 uint32_t             sf_idx,
+                                                 uint32_t             s,
+                                                 uint32_t             l,
+                                                 uint32_t             n)
+{
+  // Only the center block carries PBCH
+  if ((n >= cell->nof_prb / 2 - 3 && n < cell->nof_prb / 2 + 3 + (cell->nof_prb % 2))) {
+    if (cell->frame_type == SRSRAN_FDD) {
+      if (srsran_cell_is_mbms_r16(cell) && sf_idx == 0 &&
+          ((s == 0 && l == 3 && cell->cp == SRSRAN_CP_EXT) ||
+           (s == 1 && l == 4 && cell->cp == SRSRAN_CP_NORM && cell->nof_ports == 1) ||
+           (s == 1 && l == 5 && cell->cp == SRSRAN_CP_EXT))) {
+        return true;
+      }
+    }
+  }
   return false;
 }
 
@@ -162,7 +199,8 @@ static int srsran_pdsch_cp(const srsran_pdsch_t*       q,
       for (uint32_t n = 0; n < q->cell.nof_prb; n++) {
         // If this PRB is assigned
         if (grant->prb_idx[s][n]) {
-          bool skip = pdsch_cp_skip_symbol(&q->cell, grant, sf_idx, s, l, n);
+          bool skip            = pdsch_cp_skip_symbol(&q->cell, grant, sf_idx, s, l, n);
+          bool pbch_with_pdsch = pdsch_cp_repeated_pbch_symbol(&q->cell, sf_idx, s, l, n);
 
           // Get grid pointer
           if (put) {
@@ -188,13 +226,22 @@ static int srsran_pdsch_cp(const srsran_pdsch_t*       q,
               } else {
                 prb_cp_half(&in_ptr, &out_ptr, 1);
               }
+              // Rel-16 repeated PBCH: recover the interleaved PDSCH REs in this half-RB.
+              if (pbch_with_pdsch) {
+                prb_extract_re_ref(&in_ptr, &out_ptr, q->cell.id % 6, 2, 1, put);
+              }
             } else if (n == q->cell.nof_prb / 2 + 3) {
-              // Upper sync block half RB
-              // Skip half RB on the grid
-              if (put) {
-                out_ptr += SRSRAN_NRE / 2;
+              if (pbch_with_pdsch) {
+                // Rel-16 repeated PBCH: recover the interleaved PDSCH REs instead of skipping.
+                prb_extract_re_ref(&in_ptr, &out_ptr, q->cell.id % 6, 2, 1, put);
               } else {
-                in_ptr += SRSRAN_NRE / 2;
+                // Upper sync block half RB
+                // Skip half RB on the grid
+                if (put) {
+                  out_ptr += SRSRAN_NRE / 2;
+                } else {
+                  in_ptr += SRSRAN_NRE / 2;
+                }
               }
 
               if (has_crs) {
@@ -203,6 +250,12 @@ static int srsran_pdsch_cp(const srsran_pdsch_t*       q,
                 prb_cp_half(&in_ptr, &out_ptr, 1);
               }
             }
+          }
+          // Rel-16 repeated PBCH, middle full PRBs: recover the interleaved PDSCH REs.
+          if (pbch_with_pdsch &&
+              ((n >= q->cell.nof_prb / 2 - 3 && n < q->cell.nof_prb / 2 + 3 && (q->cell.nof_prb % 2 == 0)) ||
+               (n > q->cell.nof_prb / 2 - 3 && n < q->cell.nof_prb / 2 + 3))) {
+            prb_extract_re_ref(&in_ptr, &out_ptr, q->cell.id % 6, 2, 2, put);
           }
         }
       }

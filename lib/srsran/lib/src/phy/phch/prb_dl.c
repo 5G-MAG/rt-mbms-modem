@@ -80,6 +80,29 @@ void prb_cp_ref_scs(cf_t** input, cf_t** output, int offset, int nof_refs, int n
   }
 }
 
+// Extracts the PDSCH REs interleaved within a repeated-PBCH symbol on a Release-16
+// CAS (MBMS-dedicated) carrier. The repeated PBCH does not fill every RE of its OFDM
+// symbol; the unused REs carry PDSCH, spaced every ref_interval subcarriers. Copies
+// only those PDSCH REs (one per interval) into the compact output. Ported from
+// jsroldan/rt-mbms-modem@srsRAN (TS 36.211 clause 6.6.4.1).
+void prb_extract_re_ref(cf_t** input, cf_t** output, int offset, int nof_refs, int nof_intervals, bool advance_output)
+{
+  int i;
+
+  int ref_interval = ((SRSRAN_NRE_SCS(SRSRAN_SCS_15KHZ) / nof_refs));
+  *input += offset;
+  for (i = 0; i < nof_intervals - 1; i++) {
+    memcpy(*output, *input, sizeof(cf_t));
+    (*output)++;
+
+    *input += (ref_interval);
+  }
+
+  memcpy(*output, *input, sizeof(cf_t));
+  (*output)++;
+  *input += (ref_interval - offset);
+}
+
 void prb_cp(cf_t** input, cf_t** output, int nof_prb)
 {
   prb_cp_scs(input, output, nof_prb, SRSRAN_SCS_15KHZ);
