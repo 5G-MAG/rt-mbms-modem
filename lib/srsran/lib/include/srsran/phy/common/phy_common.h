@@ -337,22 +337,22 @@ typedef struct SRSRAN_API {
   /* Rel-16: semiStaticCFI-MBMS-r16 (TS 36.331/36.213 §9.1.3, MIB-MBMS bits [11-12]):
    * INTEGER(0..3). 0 = derive CFI from PCFICH; 1/2/3 directly ARE the CFI value. */
   uint8_t               semi_static_cfi;   /* 0..3; 0 also doubles as "not yet decoded" on RX */
+  /* Set true once the receiver has confirmed (by a CRC-validated SI-PDSCH decode)
+   * that this MBMS-dedicated CAS transmits PBCH repetition (TS 36.211 §6.6.4.1).
+   * When true, the SI-PDSCH RE mapping recovers the PDSCH REs interleaved in the
+   * repeated-PBCH symbols. Determined at decode time rather than from signalling:
+   * §6.6.4 "configured with repetition" is not conveyed to the UE before PBCH
+   * decode, so presence is established by whether the recovery makes the SI TB's
+   * 24-bit CRC pass. Cleared by default (bzero). */
+  bool                  is_mbms_r16;
 } srsran_cell_t;
 
-/* Rel-16 CAS (MBMS) detection. On a Rel-16 MBMS-dedicated CAS the PBCH is repeated
- * (TS 36.211 §6.6.4.1); the repetition does not fill its whole OFDM symbol, so the
- * unused REs carry PDSCH. The SI-PDSCH RE mapping (ra_dl.c/pdsch.c) must therefore
- * account for those extra PDSCH REs, or the rate-matched LLRs desync and the SI
- * turbo block fails CRC at every cfi/RV (clean symbols, wrong bits).
- * Proxy detector: a cell signalling semiStaticCFI-MBMS-r16 (semi_static_cfi != 0)
- * is a Rel-16 CAS. This cleanly separates the Rel-16 captures from legacy ones and
- * cannot affect a legacy cell (semi_static_cfi == 0). A fully general detector would
- * correlation-check the PBCH repetition itself (cf. jsroldan srsRAN
- * srsran_rel16_pbch_mrc) — upgrade here if a Rel-16 CAS with semiStaticCFI disabled
- * but PBCH repetition present is ever encountered. */
+/* True when the repeated-PBCH SI-PDSCH RE recovery (TS 36.211 §6.6.4.1) must be
+ * applied: an MBMS-dedicated wideband cell (the spec precondition N_RB^DL > 6) on
+ * which repetition has been confirmed present (see is_mbms_r16). */
 static inline bool srsran_cell_is_mbms_r16(const srsran_cell_t* cell)
 {
-  return cell->mbms_dedicated && cell->nof_prb > 6 && cell->semi_static_cfi != 0;
+  return cell->mbms_dedicated && cell->nof_prb > 6 && cell->is_mbms_r16;
 }
 
 // Common downlink properties that may change every subframe

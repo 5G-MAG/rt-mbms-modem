@@ -200,6 +200,41 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
      * before the round-robin fix (every occasion carried the same SI message
      * with the same shape), but a visible one-cycle-stale glitch now that
      * different SI messages (different MCS/TBS index) rotate through here. */
+
+    /* TS 36.211 §6.6.4.1: on an MBMS-dedicated wideband CAS (N_RB^DL > 6) the PBCH
+     * is repeated, and the repeated-PBCH symbols do not fill every RE, so the unused
+     * REs carry SI-PDSCH. Whether a given cell transmits this repetition is not
+     * signalled to the UE before PBCH decode, so we determine it by decode success:
+     * if the legacy decode failed CRC, retry once with the repeated-PBCH RE recovery
+     * enabled (ra_dl.c/pdsch.c, gated by cell.is_mbms_r16). Keep it enabled only if
+     * the SI TB's 24-bit CRC then passes; otherwise revert. A wrong RE set cannot
+     * pass the CRC, so this never mis-triggers on a non-repetition cell (which decodes
+     * on the first, legacy attempt and never reaches here). Once confirmed, the flag
+     * persists on the ue_dl/pdsch cell copies, so later CAS occasions use the recovery
+     * directly. */
+    if (ret == 0 && !pdsch_res[0].crc && _cell.mbms_dedicated && _cell.nof_prb > 6 &&
+        !_ue_dl.cell.is_mbms_r16 && _ue_dl_cfg.cfg.pdsch.grant.tb[0].enabled) {
+      _ue_dl.cell.is_mbms_r16       = true;
+      _ue_dl.pdsch.cell.is_mbms_r16 = true;
+      srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant);
+      srsran_softbuffer_rx_reset_tbs(_ue_dl_cfg.cfg.pdsch.softbuffers.rx[0],
+                                     (uint32_t)_ue_dl_cfg.cfg.pdsch.grant.tb[0].tbs);
+      pdsch_res[0].crc = false;
+      int rret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
+      if (rret != 0 || !pdsch_res[0].crc) {
+        _ue_dl.cell.is_mbms_r16       = false;  // not a repetition cell: revert
+        _ue_dl.pdsch.cell.is_mbms_r16 = false;
+      } else {
+        _cell.is_mbms_r16 = true;
+        spdlog::info("Confirmed Rel-16 CAS PBCH repetition (TS 36.211 6.6.4.1): SI-PDSCH decoded via repeated-PBCH RE recovery");
+        if (getenv("CAS_PDSCH_DIAG")) {
+          fprintf(stderr, "R16REP_CONFIRMED tti=%u: SI-PDSCH decoded via TS36.211-6.6.4.1 repeated-PBCH RE recovery "
+                          "(legacy nof_re failed CRC, recovered nof_re=%d passed)\n",
+                  tti, (int)_ue_dl_cfg.cfg.pdsch.grant.nof_re);
+        }
+      }
+    }
+
     _rest._pdsch.SetData(pdsch_data());
     if (ret) {
       // Processing error (bad grant/buffer) before a CRC could even be computed.
