@@ -248,6 +248,35 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
               pdsch_cfg->grant.tb[i].rv = original_rv;
               srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
             }
+            // Temporary diagnostic (CAS_CFI_BRUTEFORCE=1, off by default): the PDSCH
+            // RE mapping/rate-matching depends on sf->cfi (control-region size). The
+            // DCI was found at the real cfi (validated by its PDCCH CRC), but if the
+            // SI-PDSCH data region uses a different effective cfi, the LLRs are
+            // misaligned and turbo fails on every RV with clean symbols. Recompute the
+            // grant at cfi=1/2/3 (keeping the already-decoded DCI) and retry the PDSCH
+            // decode to see whether any cfi actually yields a CRC pass.
+            if (getenv("CAS_CFI_BRUTEFORCE")) {
+              uint32_t orig_cfi = _sf_cfg.cfi;
+              for (uint32_t try_cfi = 1; try_cfi <= 3; try_cfi++) {
+                if (try_cfi == orig_cfi) {
+                  continue;
+                }
+                _sf_cfg.cfi = try_cfi;
+                srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant);
+                srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+                srsran_pdsch_res_t cfi_res = {};
+                cfi_res.payload = _data[i];
+                cfi_res.crc     = false;
+                int cret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, &cfi_res);
+                fprintf(stderr, "CFIBRUTE tti=%u orig_cfi=%u try_cfi=%u nof_re=%d tbs=%d ret=%d crc=%d\n",
+                        tti, orig_cfi, try_cfi, (int)pdsch_cfg->grant.nof_re,
+                        (int)pdsch_cfg->grant.tb[i].tbs, cret, cfi_res.crc ? 1 : 0);
+              }
+              // Restore the real cfi + grant + softbuffer so downstream logic is unaffected.
+              _sf_cfg.cfi = orig_cfi;
+              srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant);
+              srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+            }
           }
         }
       }
@@ -257,9 +286,9 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       // with the periodic EVM/CINR peaks.
       if (getenv("CAS_PDSCH_DIAG")) {
         fprintf(stderr,
-                "CASDIAG tti=%u mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d format=%d rnti=0x%x nof_prb_alloc=%d L=%d ncce=%d "
+                "CASDIAG tti=%u cfi=%d mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d format=%d rnti=0x%x nof_prb_alloc=%d L=%d ncce=%d "
                 "nof_re=%d nof_bits_E=%d mod=%d\n",
-                tti, dci[k].tb[0].mcs_idx, (double)pdsch_res[0].evm,
+                tti, (int)_sf_cfg.cfi, dci[k].tb[0].mcs_idx, (double)pdsch_res[0].evm,
                 (double)_ue_dl.chest_res.snr_db, pdsch_res[0].crc ? 1 : 0,
                 (int)pdsch_cfg->grant.tb[0].tbs, (int)dci[k].format, dci[k].rnti,
                 (int)pdsch_cfg->grant.nof_prb, (int)dci[k].location.L, (int)dci[k].location.ncce,
