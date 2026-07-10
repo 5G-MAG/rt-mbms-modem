@@ -1111,17 +1111,10 @@ struct mbsfn_area_info_r16_s {
   };
   typedef enumerated<time_separation_r16_opts> time_separation_r16_e_;
 
-  struct pmch_bandwidth_r17_opts {
-    enum options { n40, n35, n30, spare1, nulltype } value;
-    typedef uint8_t number_type;
-
-    std::string to_string() const;
-    uint8_t       to_number() const;
-    std::string to_number_string() const;
-  };
-  typedef enumerated<pmch_bandwidth_r17_opts> pmch_bandwidth_r17_e_;
-
-  // member variables
+  // member variables. NOTE: no pmch-Bandwidth-r17 here -- per TS 36.331's ASN1START block,
+  // that field belongs to the separate MBSFN-AreaInfo-r17 wrapper type below, not to this
+  // type's own (currently empty) extension. MBSFN-AreaInfo-r16 itself has no defined
+  // extension groups as of V19.3.0, hence no ext-group pack/unpack logic in the .cc.
   bool                           ext              = false;
   uint16_t                       mbsfn_area_id_r16 = 0;
   uint8_t                        notif_ind_r16 = 0;
@@ -1129,14 +1122,37 @@ struct mbsfn_area_info_r16_s {
   subcarrier_spacing_mbms_r16_e_ subcarrier_spacing_mbms_r16;
   bool                           time_separation_r16_present = false;
   time_separation_r16_e_         time_separation_r16;
-  bool                           pmch_bandwidth_r17_present = false;
-  pmch_bandwidth_r17_e_          pmch_bandwidth_r17;
 
   // sequence methods
   SRSASN_CODE pack(bit_ref& bref) const;
   SRSASN_CODE unpack(cbit_ref& bref);
   void        to_json(json_writer& j) const;
 };
+
+// MBSFN-AreaInfo-r17 ::= SEQUENCE
+struct mbsfn_area_info_r17_s {
+  struct pmch_bandwidth_r17_opts {
+    enum options { n40, n35, n30, spare1, nulltype } value;
+    typedef uint8_t number_type;
+
+    std::string to_string() const;
+    uint8_t       to_number() const;
+  };
+  typedef enumerated<pmch_bandwidth_r17_opts> pmch_bandwidth_r17_e_;
+
+  // member variables
+  bool                   ext = false;
+  mbsfn_area_info_r16_s  mbsfn_area_info_r17;
+  pmch_bandwidth_r17_e_  pmch_bandwidth_r17;
+
+  // sequence methods
+  SRSASN_CODE pack(bit_ref& bref) const;
+  SRSASN_CODE unpack(cbit_ref& bref);
+  void        to_json(json_writer& j) const;
+};
+
+// MBSFN-AreaInfoList-r17 ::= SEQUENCE (SIZE (1..maxMBSFN-Area)) OF MBSFN-AreaInfo-r17
+using mbsfn_area_info_list_r17_l = dyn_array<mbsfn_area_info_r17_s>;
 
 // NeighCellListCDMA2000 ::= SEQUENCE (SIZE (1..16)) OF NeighCellCDMA2000
 using neigh_cell_list_cdma2000_l = dyn_array<neigh_cell_cdma2000_s>;
@@ -2100,6 +2116,10 @@ struct sib_type13_r9_s {
 
   bool                       mbsfn_area_info_list_r16_present = false;
   mbsfn_area_info_list_r16_l mbsfn_area_info_list_r16;
+
+  // group 2 -- Cond Ded15or25PRB (MBMS-dedicated cell, dl-Bandwidth-MBMS n15 or n25)
+  bool                       mbsfn_area_info_list_r17_present = false;
+  mbsfn_area_info_list_r17_l mbsfn_area_info_list_r17;
 
   // sequence methods
   SRSASN_CODE pack(bit_ref& bref) const;

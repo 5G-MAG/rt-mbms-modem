@@ -2792,19 +2792,9 @@ SRSASN_CODE mbsfn_area_info_r16_s::pack(bit_ref& bref) const
     HANDLE_CODE(time_separation_r16.pack(bref));
   }
 
-  if (ext) {
-    ext_groups_packer_guard group_flags;
-    group_flags[0] |= pmch_bandwidth_r17_present;
-    group_flags.pack(bref);
-
-    if (group_flags[0]) {
-      varlength_field_pack_guard varlen_scope(bref, false);
-      HANDLE_CODE(bref.pack(pmch_bandwidth_r17_present, 1));
-      if (pmch_bandwidth_r17_present) {
-        HANDLE_CODE(pmch_bandwidth_r17.pack(bref));
-      }
-    }
-  }
+  // No ext-group logic here: MBSFN-AreaInfo-r16 has no defined extension groups of its own
+  // (its "..." is bare as of V19.3.0) -- pmch-Bandwidth-r17 belongs to the separate
+  // MBSFN-AreaInfo-r17 wrapper, not to this type's extension.
   return SRSASN_SUCCESS;
 }
 SRSASN_CODE mbsfn_area_info_r16_s::unpack(cbit_ref& bref)
@@ -2824,17 +2814,10 @@ SRSASN_CODE mbsfn_area_info_r16_s::unpack(cbit_ref& bref)
   }
 
   if (ext) {
-    ext_groups_unpacker_guard group_flags(1);
+    // No known extension groups yet; still consume (and skip) whatever a future/foreign
+    // encoder may have put on the wire so any outer SEQUENCE stays bit-aligned.
+    ext_groups_unpacker_guard group_flags(0);
     group_flags.unpack(bref);
-
-    if (group_flags[0]) {
-      varlength_field_unpack_guard varlen_scope(bref, false);
-
-      HANDLE_CODE(bref.unpack(pmch_bandwidth_r17_present, 1));
-      if (pmch_bandwidth_r17_present) {
-        HANDLE_CODE(pmch_bandwidth_r17.unpack(bref));
-      }
-    }
   }
   return SRSASN_SUCCESS;
 }
@@ -2855,11 +2838,6 @@ void mbsfn_area_info_r16_s::to_json(json_writer& j) const
   j.write_str("subcarrierSpacingMBMS-r16", subcarrier_spacing_mbms_r16.to_string());
   if (time_separation_r16_present) {
     j.write_str("timeSeparation-r16", time_separation_r16.to_string());
-  }
-  if (ext) {
-    if (pmch_bandwidth_r17_present) {
-      j.write_str("pmch-Bandwidth-r17", pmch_bandwidth_r17.to_string());
-    }
   }
   j.end_obj();
 }
@@ -2928,15 +2906,46 @@ uint8_t mbsfn_area_info_r16_s::time_separation_r16_opts::to_number() const
   return map_enum_number(options, 2, value, "mbsfn_area_info_r16_s::time_separation_r16_opts");
 }
 
-std::string mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts::to_string() const
+// MBSFN-AreaInfo-r17 ::= SEQUENCE
+SRSASN_CODE mbsfn_area_info_r17_s::pack(bit_ref& bref) const
+{
+  bref.pack(ext, 1);
+  HANDLE_CODE(mbsfn_area_info_r17.pack(bref));
+  HANDLE_CODE(pmch_bandwidth_r17.pack(bref));
+
+  // No ext-group logic: MBSFN-AreaInfo-r17's own "..." has no defined groups as of V19.3.0.
+  return SRSASN_SUCCESS;
+}
+SRSASN_CODE mbsfn_area_info_r17_s::unpack(cbit_ref& bref)
+{
+  bref.unpack(ext, 1);
+  HANDLE_CODE(mbsfn_area_info_r17.unpack(bref));
+  HANDLE_CODE(pmch_bandwidth_r17.unpack(bref));
+
+  if (ext) {
+    ext_groups_unpacker_guard group_flags(0);
+    group_flags.unpack(bref);
+  }
+  return SRSASN_SUCCESS;
+}
+void mbsfn_area_info_r17_s::to_json(json_writer& j) const
+{
+  j.start_obj();
+  j.write_fieldname("mbsfn-AreaInfo-r17");
+  mbsfn_area_info_r17.to_json(j);
+  j.write_str("pmch-Bandwidth-r17", pmch_bandwidth_r17.to_string());
+  j.end_obj();
+}
+
+std::string mbsfn_area_info_r17_s::pmch_bandwidth_r17_opts::to_string() const
 {
   static const char* options[] = {"n40", "n35", "n30", "spare1"};
-  return convert_enum_idx(options, 4, value, "mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts");
+  return convert_enum_idx(options, 4, value, "mbsfn_area_info_r17_s::pmch_bandwidth_r17_opts");
 }
-uint8_t mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts::to_number() const
+uint8_t mbsfn_area_info_r17_s::pmch_bandwidth_r17_opts::to_number() const
 {
   static const uint8_t options[] = {40, 35, 30};
-  return map_enum_number(options, 3, value, "mbsfn_area_info_r16_s::pmch_bandwidth_r17_opts");
+  return map_enum_number(options, 3, value, "mbsfn_area_info_r17_s::pmch_bandwidth_r17_opts");
 }
 
 
@@ -4737,6 +4746,7 @@ SRSASN_CODE sib_type13_r9_s::pack(bit_ref& bref) const
     ext_groups_packer_guard group_flags;
     group_flags[0] |= notif_cfg_v1430.is_present();
     group_flags[1] |= mbsfn_area_info_list_r16_present;
+    group_flags[2] |= mbsfn_area_info_list_r17_present;
     group_flags.pack(bref);
 
     if (group_flags[0]) {
@@ -4754,6 +4764,13 @@ SRSASN_CODE sib_type13_r9_s::pack(bit_ref& bref) const
         HANDLE_CODE(pack_dyn_seq_of(bref, mbsfn_area_info_list_r16, 1, 8));
       }
     }
+    if (group_flags[2]) {
+      varlength_field_pack_guard varlen_scope(bref, false);
+      HANDLE_CODE(bref.pack(mbsfn_area_info_list_r17_present, 1));
+      if (mbsfn_area_info_list_r17_present) {
+        HANDLE_CODE(pack_dyn_seq_of(bref, mbsfn_area_info_list_r17, 1, 8));
+      }
+    }
   }
   return SRSASN_SUCCESS;
 }
@@ -4769,11 +4786,7 @@ SRSASN_CODE sib_type13_r9_s::unpack(cbit_ref& bref)
   }
 
   if (ext) {
-    ext_groups_unpacker_guard group_flags(2);  /* group 0: notif_cfg_v1430; group 1: mbsfn_area_info_list_r16.
-                                                 * Spec (TS 36.331 SystemInformationBlockType13-r9) also defines a
-                                                 * third, separate extension group for mbsfn-AreaInfoList-r17 - not
-                                                 * yet implemented here (would need its own MBSFN-AreaInfo-r17
-                                                 * wrapper type, not a field bolted onto this group). */
+    ext_groups_unpacker_guard group_flags(3);  /* group 0 (v1430), group 1 (r16), group 2 (r17) */
     group_flags.unpack(bref);
 
     if (group_flags[0]) {
@@ -4792,6 +4805,14 @@ SRSASN_CODE sib_type13_r9_s::unpack(cbit_ref& bref)
       HANDLE_CODE(bref.unpack(mbsfn_area_info_list_r16_present, 1));
       if (mbsfn_area_info_list_r16_present) {
         HANDLE_CODE(unpack_dyn_seq_of(mbsfn_area_info_list_r16, bref, 1, 8));
+      }
+    }
+
+    if (group_flags[2]) {
+      varlength_field_unpack_guard varlen_scope(bref, false);
+      HANDLE_CODE(bref.unpack(mbsfn_area_info_list_r17_present, 1));
+      if (mbsfn_area_info_list_r17_present) {
+        HANDLE_CODE(unpack_dyn_seq_of(mbsfn_area_info_list_r17, bref, 1, 8));
       }
     }
   }
@@ -4818,6 +4839,13 @@ void sib_type13_r9_s::to_json(json_writer& j) const
     if (mbsfn_area_info_list_r16_present) {
       j.start_array("mbsfn-AreaInfoList-r16");
       for (const auto& e1 : mbsfn_area_info_list_r16) {
+        e1.to_json(j);
+      }
+      j.end_array();
+    }
+    if (mbsfn_area_info_list_r17_present) {
+      j.start_array("mbsfn-AreaInfoList-r17");
+      for (const auto& e1 : mbsfn_area_info_list_r17) {
         e1.to_json(j);
       }
       j.end_array();

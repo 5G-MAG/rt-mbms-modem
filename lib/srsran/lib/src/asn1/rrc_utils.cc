@@ -1250,9 +1250,15 @@ mbsfn_area_info_t make_mbsfn_area_info(const asn1::rrc::mbsfn_area_info_r16_s& a
   if (asn1_type.time_separation_r16_present) {
     ret.time_separation = from_time_separation_r16(asn1_type.time_separation_r16.value);
   }
-  if (asn1_type.pmch_bandwidth_r17_present) {
-    ret.pmch_bandwidth = asn1_type.pmch_bandwidth_r17.to_number();
-  }
+  // No pmch-Bandwidth-r17 here -- MBSFN-AreaInfo-r16 doesn't carry it (see the wrapper
+  // overload below); this overload only ever sees a bare r16 entry.
+  return ret;
+}
+
+mbsfn_area_info_t make_mbsfn_area_info(const asn1::rrc::mbsfn_area_info_r17_s& asn1_type)
+{
+  mbsfn_area_info_t ret = make_mbsfn_area_info(asn1_type.mbsfn_area_info_r17);
+  ret.pmch_bandwidth = asn1_type.pmch_bandwidth_r17.to_number();
   return ret;
 }
 
@@ -1620,6 +1626,14 @@ sib13_t make_sib13(const asn1::rrc::sib_type13_r9_s& asn1_type)
     sib13.nof_mbsfn_area_info = asn1_type.mbsfn_area_info_list_r16.size();
     for (uint32_t i = 0; i < sib13.nof_mbsfn_area_info; i++) {
       sib13.mbsfn_area_info_list[i] = make_mbsfn_area_info(asn1_type.mbsfn_area_info_list_r16[i]);
+    }
+    // mbsfn-AreaInfoList-r17 entries embed a full copy of their r16 counterpart plus
+    // pmch-Bandwidth-r17 (TS 36.331 §6.3.7); correlate by list position with r16 and prefer
+    // the r17-derived result (adds the bandwidth field) wherever an entry exists.
+    if (asn1_type.mbsfn_area_info_list_r17_present) {
+      for (uint32_t i = 0; i < asn1_type.mbsfn_area_info_list_r17.size() && i < sib13.nof_mbsfn_area_info; i++) {
+        sib13.mbsfn_area_info_list[i] = make_mbsfn_area_info(asn1_type.mbsfn_area_info_list_r17[i]);
+      }
     }
   } else {
     sib13.nof_mbsfn_area_info = asn1_type.mbsfn_area_info_list_r9.size();
