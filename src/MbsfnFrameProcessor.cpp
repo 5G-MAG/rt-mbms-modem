@@ -390,7 +390,24 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
          * second-highest is where the last session's own window starts -- exactly
          * mirroring TX's mtch_sched[num_mtch_sched-2].stop. */
         uint16_t highest_stop = 0, second_highest_stop = 0;
-        while (mch_mac_msg.get()->get_next_mch_sched_info(&lcid, &stop)) {
+        /* TS 36.321 §6.1.3.7a: for a time-interleaved MCH the MSI is an Extended MSI,
+         * whose scheduling entries (LCID+StopMTCH, one per MTCH, identical 2-octet
+         * format to the regular MSI in §6.1.3.7) are FOLLOWED by optional MTCH-suspend
+         * (LCID+S, 1 octet) sub-elements. Those suspend octets must not be misread as
+         * further 2-octet scheduling entries, so cap the scheduling read at the number
+         * of MTCHs configured for this PMCH (from the MCCH). Regular (non-TI) MSI has
+         * only scheduling entries and is left uncapped (unchanged behaviour). The suspend
+         * sub-elements are a UE power-saving hint (which MTCHs to stop decoding); a
+         * forwarding receiver has no consumer for them, so they are parsed-past, not
+         * acted upon. */
+        const srsran::mcch_msg_t& mcch_msi = _phy.current_mcch();
+        uint32_t sched_cap = UINT32_MAX;
+        if (mch_idx < mcch_msi.nof_pmch_info && mcch_msi.pmch_info_list[mch_idx].time_interleaving_n > 1) {
+          sched_cap = mcch_msi.pmch_info_list[mch_idx].nof_mbms_session_info;
+        }
+        uint32_t sched_cnt = 0;
+        while (sched_cnt < sched_cap && mch_mac_msg.get()->get_next_mch_sched_info(&lcid, &stop)) {
+          sched_cnt++;
           const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
           spdlog::debug("Scheduling stop for PMCH {} LCID {} in sf {}", mch_idx, lcid, stop);
           _sched_stops[ {(uint8_t)mch_idx, lcid} ] = stop;

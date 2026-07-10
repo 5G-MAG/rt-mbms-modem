@@ -104,4 +104,9 @@ SRSRAN_API int srsran_ra_tbs_from_idx(uint32_t tbs_idx, uint32_t n_prb);
 
 SRSRAN_API int srsran_ra_tbs_to_table_idx(uint32_t tbs, uint32_t n_prb, uint32_t max_tbs_idx);
 
+/* TS 36.213 j40 §11.1 PMCH time-interleaving: round a TI-scaled TBS to the closest
+ * valid TBS in the union of Table 7.1.7.2.1-1 and the 2/3/4-layer translation
+ * tables (7.1.7.2.2-1/4-1/5-1), ties rounding up. */
+SRSRAN_API uint32_t srsran_ra_tbs_round_pmch_ti(uint32_t scaled_tbs, uint32_t n_prb);
+
 #endif // SRSRAN_RA_H

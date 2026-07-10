@@ -32,6 +32,7 @@
 #include <strings.h>
 
 #include "tbs_tables.h"
+#include "pmch_ti_tbs.h"
 
 /* Convert Type2 scheduling L_crb and RB_start to RIV value */
 uint32_t srsran_ra_type2_to_riv(uint32_t L_crb, uint32_t RB_start, uint32_t nof_prb)
@@ -253,4 +254,59 @@ int srsran_ra_tbs_to_table_idx(uint32_t tbs, uint32_t n_prb, uint32_t max_tbs_id
     }
   }
   return SRSRAN_ERROR;
+}
+
+/* Binary search a (sorted-by-l1) one-to-N-layer TBS translation table for TBS_L1;
+ * returns TBS_LN, or -1 if TBS_L1 has no N-layer counterpart. */
+static int32_t tbs_xlat_lookup(const srsran_tbs_xlat_t* tbl, int n, int32_t l1)
+{
+  int lo = 0, hi = n - 1;
+  while (lo <= hi) {
+    int mid = (lo + hi) / 2;
+    if (tbl[mid].l1 == l1) {
+      return tbl[mid].ln;
+    } else if (tbl[mid].l1 < l1) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return -1;
+}
+
+/* TS 36.213 V19.4.0 (j40) clause 11.1 (PMCH time-interleaving): round a
+ * time-interleaving-scaled transport block size to the closest valid TBS in the
+ * UNION of Table 7.1.7.2.1-1 (one layer, for this n_prb) and the one-to-two /
+ * three / four-layer translation Tables 7.1.7.2.2-1 / 7.1.7.2.4-1 / 7.1.7.2.5-1
+ * applied to those one-layer TBS. On an equal-distance tie the larger TBS is
+ * chosen (per the clause). Applies only when pmch-TimeInterleavingN > 1; the
+ * union supplies the finer set of large valid TBS the one-layer table lacks. */
+uint32_t srsran_ra_tbs_round_pmch_ti(uint32_t scaled_tbs, uint32_t n_prb)
+{
+  if (n_prb == 0 || n_prb > SRSRAN_MAX_PRB) {
+    return scaled_tbs;
+  }
+  int64_t  best      = -1;
+  uint32_t best_dist = UINT32_MAX;
+  for (uint32_t i = 0; i < SRSRAN_RA_NOF_TBS_IDX; i++) {
+    int32_t l1 = tbs_table[i][n_prb - 1];
+    int32_t cand[4];
+    int     nc  = 0;
+    cand[nc++]  = l1; /* Table 7.1.7.2.1-1 (one layer) */
+    int32_t l2  = tbs_xlat_lookup(srsran_tbs_xlat_2layer, SRSRAN_TBS_XLAT_2LAYER_N, l1);
+    if (l2 > 0) { cand[nc++] = l2; } /* Table 7.1.7.2.2-1 (two layer) */
+    int32_t l3  = tbs_xlat_lookup(srsran_tbs_xlat_3layer, SRSRAN_TBS_XLAT_3LAYER_N, l1);
+    if (l3 > 0) { cand[nc++] = l3; } /* Table 7.1.7.2.4-1 (three layer) */
+    int32_t l4  = tbs_xlat_lookup(srsran_tbs_xlat_4layer, SRSRAN_TBS_XLAT_4LAYER_N, l1);
+    if (l4 > 0) { cand[nc++] = l4; } /* Table 7.1.7.2.5-1 (four layer) */
+    for (int c = 0; c < nc; c++) {
+      uint32_t dist = (cand[c] >= (int32_t)scaled_tbs) ? (uint32_t)(cand[c] - (int32_t)scaled_tbs)
+                                                       : (uint32_t)((int32_t)scaled_tbs - cand[c]);
+      if (dist < best_dist || (dist == best_dist && (int64_t)cand[c] > best)) {
+        best_dist = dist;
+        best      = cand[c];
+      }
+    }
+  }
+  return best > 0 ? (uint32_t)best : scaled_tbs;
 }
