@@ -616,6 +616,46 @@ int decode_frame(srsran_pbch_t* q, uint32_t src, uint32_t dst, uint32_t n, uint3
   }
 }
 
+/* One pass of the PBCH frame-combination blind search over the LLRs currently in
+ * q->llr for a given antenna hypothesis (all ordered src/dst/nb combinations). On a
+ * CRC pass it records sfn_offset/nof_tx_ports/bch_payload, derives the next CAS-window
+ * hint, resets decode state, and returns 1; otherwise 0. Factored out so the caller can
+ * run it once WITHOUT CAS-repetition combining and, only if that fails, again WITH the
+ * repeated-PBCH LLRs added (TS 36.211 §6.6.4.1) -- combining as a robustness escalation
+ * rather than unconditionally. */
+static int pbch_try_frame_combinations(srsran_pbch_t* q,
+                                       uint32_t       frame_idx,
+                                       uint32_t       nof_bits,
+                                       uint32_t       nant,
+                                       int*           sfn_offset,
+                                       uint32_t*      nof_tx_ports,
+                                       uint8_t*       bch_payload)
+{
+  for (uint32_t nb = 0; nb < frame_idx; nb++) {
+    for (uint32_t dst = 0; dst < 4 - nb; dst++) {
+      for (uint32_t src = 0; src < frame_idx - nb; src++) {
+        if (decode_frame(q, src, dst, nb + 1, nof_bits, nant) == 1) {
+          if (sfn_offset) {
+            *sfn_offset = (int)dst - (int)src + (int)frame_idx - 1;
+          }
+          if (nof_tx_ports) {
+            *nof_tx_ports = nant;
+          }
+          if (bch_payload) {
+            memcpy(bch_payload, q->data, sizeof(uint8_t) * SRSRAN_BCH_PAYLOAD_LEN);
+          }
+          uint32_t so  = (uint32_t)((int)dst - (int)src + (int)frame_idx - 1);
+          uint32_t nch = 1u + (4u - (so + 1u) % 4u) % 4u;
+          srsran_pbch_decode_reset(q);
+          q->cas_frame_idx_hint = nch;
+          return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
 /* Decodes the PBCH channel
  *
  * The PBCH spans in 40 ms. This function is called every 10 ms. It tries to decode the MIB
@@ -631,7 +671,6 @@ int srsran_pbch_decode(srsran_pbch_t*         q,
                        uint32_t*              nof_tx_ports,
                        int*                   sfn_offset)
 {
-  uint32_t src, dst, nb;
   uint32_t nant;
   int      i;
   int      nof_bits;
@@ -697,14 +736,21 @@ int srsran_pbch_decode(srsran_pbch_t*         q,
         /* demodulate symbols */
         srsran_demod_soft_demodulate(SRSRAN_MOD_QPSK, q->d, &q->llr[nof_bits * (frame_idx - 1)], q->nof_symbols);
 
-        /* CAS soft-combining: accumulate phase-corrected PBCH repetition LLRs (TS 36.211 §6.6.4.1).
-         * Uses the average CE from the standard PBCH position as a flat-channel approximation.
-         * Per TS 36.211 §6.6.4.1 the CAS repetition exists in exactly one frame per 4-frame PBCH
-         * window (sfn%4==0 for wide carriers, sfn%8==4 for narrow).  Combining the CAS symbols
-         * on a non-CAS frame corrupts the LLRs with noise.
-         * cas_frame_idx_hint is derived from sfn_offset at each successful decode and pins the
-         * combine to the correct window position.  Before the first decode it defaults to 1
-         * (conservative: applies to the first accumulated frame as a best-guess fallback). */
+        /* Attempt 1: decode over all frame combinations WITHOUT CAS-repetition
+         * combining (all ordered src/dst/nb combinations of the accumulated frames). */
+        if (pbch_try_frame_combinations(q, frame_idx, (uint32_t)nof_bits, nant, sfn_offset, nof_tx_ports,
+                                        bch_payload)) {
+          return 1;
+        }
+
+        /* Attempt 2 (robustness escalation, TS 36.211 §6.6.4.1): the plain decode above
+         * failed, so on a Rel-16-capable CAS frame add the phase-corrected repeated-PBCH
+         * LLRs (flat-channel CE approximation) to raise effective SNR and retry. Running
+         * the combine ONLY after the plain decode fails means it never injects noise into
+         * a PBCH that already decodes, nor into a genuine non-repetition cell (which simply
+         * fails both attempts) -- unlike the previous unconditional combining. A successful
+         * retry confirms repetition is present (is_mbms_r16). Per §6.6.4.1 the repetition
+         * lives in one frame per 4-frame PBCH window, pinned by cas_frame_idx_hint. */
         if (q->cell.mbms_dedicated && q->cell.nof_prb > 6 && frame_idx == q->cas_frame_idx_hint) {
           int   nmap     = SRSRAN_CP_ISNORM(q->cell.cp) ? 5 : 3;
           int   cas_re   = nmap * PBCH_CAS_NOF_SC;
@@ -720,45 +766,11 @@ int srsran_pbch_decode(srsran_pbch_t*         q,
           for (int k = 0; k < cas_bits; k++) {
             dst_llr[k % nof_bits] += q->temp[k];
           }
-          INFO("CAS PBCH soft-combining: added %d rep LLRs to frame_idx=%d", cas_bits, frame_idx);
-        }
-
-        /* We don't know where the 40 ms begin, so we try all combinations. E.g. if we received
-         * 4 frames, try 1,2,3,4 individually, 12, 23, 34 in pairs, 123, 234 and finally 1234.
-         * We know they are ordered.
-         */
-        for (nb = 0; nb < frame_idx; nb++) {
-          for (dst = 0; (dst < 4 - nb); dst++) {
-            for (src = 0; src < frame_idx - nb; src++) {
-              ret = decode_frame(q, src, dst, nb + 1, nof_bits, nant);
-              if (ret == 1) {
-                if (sfn_offset) {
-                  *sfn_offset = (int)dst - src + frame_idx - 1;
-                }
-                if (nof_tx_ports) {
-                  *nof_tx_ports = nant;
-                }
-                if (bch_payload) {
-                  memcpy(bch_payload, q->data, sizeof(uint8_t) * SRSRAN_BCH_PAYLOAD_LEN);
-                }
-                INFO("Decoded PBCH: src=%d, dst=%d, nb=%d, sfn_offset=%d",
-                     src,
-                     dst,
-                     nb + 1,
-                     (int)dst - src + frame_idx - 1);
-                /* Derive CAS frame position for the next accumulation window.
-                 * sfn_offset = (dst - src + frame_idx - 1) gives sfn%4 of the
-                 * current frame.  The next window starts at sfn%4 = (sfn_offset+1)%4,
-                 * so the CAS frame (sfn%4==0) falls at frame_idx = 1 + (4 - (sfn_offset+1)%4)%4. */
-                {
-                  uint32_t so = (uint32_t)((int)dst - src + (int)frame_idx - 1);
-                  uint32_t nch = 1u + (4u - (so + 1u) % 4u) % 4u;
-                  srsran_pbch_decode_reset(q);
-                  q->cas_frame_idx_hint = nch;
-                }
-                return 1;
-              }
-            }
+          if (pbch_try_frame_combinations(q, frame_idx, (uint32_t)nof_bits, nant, sfn_offset, nof_tx_ports,
+                                          bch_payload)) {
+            q->cell.is_mbms_r16 = true;
+            INFO("CAS PBCH repetition combining recovered MIB (TS 36.211 6.6.4.1)");
+            return 1;
           }
         }
       }
