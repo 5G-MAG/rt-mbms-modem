@@ -54,7 +54,7 @@ class Phy {
      *  @param cs_nof_prb  Nr of PRBs to use during cell search
      *  @param override_nof_prb  If set, overrides the nof PRB received in the MIB
      */
-    Phy(const libconfig::Config& cfg, get_samples_t cb, uint8_t cs_nof_prb, int8_t override_nof_prb, uint8_t rx_channels);
+    Phy(get_samples_t cb, /*const libconfig::Config& cfg,*/ uint8_t cs_nof_prb, int8_t override_nof_prb, uint8_t rx_channels);
     
     /**
      *  Default destructor.
@@ -290,7 +290,7 @@ class Phy {
     get_samples_t _sample_cb;
 
  private:
-    const libconfig::Config& _cfg;
+//    const libconfig::Config& _cfg; // unused
     srsran_ue_sync_t _ue_sync = {};
     srsran_ue_cellsearch_t _cell_search = {};
     srsran_ue_mib_sync_t  _mib_sync = {};
