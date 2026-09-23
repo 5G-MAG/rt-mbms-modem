@@ -77,7 +77,12 @@ if(CLANG_TIDY_EXE)
       endforeach()
     endif()
   endif()
-  set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,modernize*,performance* ${CLANG_TIDY_EXTRA_ARGS})
+  # -modernize-use-scoped-lock: clang-tidy 21 crashes on this file set, taking the build with it:
+  #   UseScopedLockCheck::diagOnSingleLock(...) -> Segmentation fault
+  # while analysing src/main.cpp. The check is disabled rather than the whole analysis, so
+  # everything else clang-tidy reports is still enforced. Remove this once the crash is fixed
+  # upstream. The same exclusion is in 5G-MAG/rt-mbms-modem PR #53, which hit it independently.
+  set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,modernize*,-modernize-use-scoped-lock,performance* ${CLANG_TIDY_EXTRA_ARGS})
 endif()
 
 add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
