@@ -19,6 +19,9 @@
 
 #include "CasFrameProcessor.h"
 #include "spdlog/spdlog.h"
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
 
 
 auto CasFrameProcessor::init() -> bool {
@@ -63,7 +66,7 @@ auto CasFrameProcessor::init() -> bool {
 
   _ue_dl_cfg.cfg.pdsch.csi_enable         = true;
   _ue_dl_cfg.cfg.pdsch.max_nof_iterations = 8;
-  _ue_dl_cfg.cfg.pdsch.meas_evm_en        = false;
+  _ue_dl_cfg.cfg.pdsch.meas_evm_en        = true;
   _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
   _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer;
 
@@ -79,6 +82,9 @@ CasFrameProcessor::~CasFrameProcessor() {
   }
   srsran_softbuffer_rx_free(&_softbuffer);
   srsran_ue_dl_free(&_ue_dl);
+  if (_cir_plan_ready) {
+    srsran_dft_plan_free(&_cir_plan);
+  }
 }
 
 void CasFrameProcessor::set_cell(srsran_cell_t cell) {
@@ -86,17 +92,41 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell) {
   spdlog::debug("CAS processor setting cell ({} PRB / {} MBSFN PRB).", cell.nof_prb, cell.mbsfn_prb);
   srsran_ue_dl_set_cell(&_ue_dl, cell);
   _started = true;
+
+  /* (Re)plan the CIR IFFT and size its scratch buffers here -- called only
+   * from the single main thread on cell (re)configuration, never from
+   * process()'s worker-pool thread, so there's no risk of concurrent
+   * fftwf_plan_ / fftwf_destroy_plan calls racing across processor instances. */
+  auto sz = (uint32_t)srsran_symbol_sz(_cell.nof_prb);
+  if (!_cir_plan_ready || _cir_plan_size != sz) {
+    if (_cir_plan_ready) {
+      srsran_dft_plan_free(&_cir_plan);
+    }
+    srsran_dft_plan_c(&_cir_plan, (int)sz, SRSRAN_DFT_BACKWARD);
+    srsran_dft_plan_set_norm(&_cir_plan, true);
+    _cir_plan_size  = sz;
+    _cir_plan_ready = true;
+  }
+  _cir_scratch_freq.resize(sz);
+  _cir_scratch_time.resize(sz);
+  _cir_scratch_shifted.resize(sz);
+  _cir_scratch_db.resize(sz);
 }
 
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
   _sf_cfg.tti = tti;
+  _last_pdcch_locations.clear();
 
-  _rest._pdsch.total++;
+  // _pdsch.total/errors are advanced per actual SI decode below (in the CRC
+  // handling) so BLER = CRC failures / decode attempts is a genuine block-error
+  // rate. _pdcch keeps its per-occasion "not found" semantics.
+  _rest._pdcch.total++;
 
   // Run the FFT and do channel estimation
   if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
-    _rest._pdsch.errors++;
+    _rest._pdcch.errors++;
     spdlog::error("Getting PDCCH FFT estimate\n");
+    _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_FAIL);
     _mutex.unlock();
     return false;
   }
@@ -104,17 +134,36 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
   // Feedback the CFO from CE to the Phy
   _phy.set_cfo_from_channel_estimation(_ue_dl.chest_res.cfo);
 
-  // Try to decode DCIs from PDCCH
+  // Try to decode DCIs from PDCCH.
+  // TS 36.321 §7.1 Table 7.1-1 NOTE 2: "SI-RNTI value FFFF may be used for
+  // MBMS-dedicated carrier. SI-RNTI value FFF9 is only used for MBMS-dedicated
+  // carrier." -- i.e. on an MBMS-dedicated cell the network may legally use
+  // EITHER value; there is no SIB/MIB field telling the UE which one is in use.
+  // This project's own rt-mbms-tx always transmits with FFF9 (srsenb/src/stack/
+  // mac/sched_phy_ch/sched_dci.cc), so try that first (cheap, matches the common
+  // case here), then fall back to the standard FFFF if nothing is found -- a
+  // third-party MBMS-dedicated-cell sender may legitimately use the standard
+  // value instead. Non-dedicated cells are unaffected: only ever SRSRAN_SIRNTI.
   srsran_dci_dl_t dci[SRSRAN_MAX_CARRIERS] = {};    // NOLINT
   int nof_grants = srsran_ue_dl_find_dl_dci(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, _cell.mbms_dedicated ? SRSRAN_SIRNTI_MBMS_DEDICATED : SRSRAN_SIRNTI, dci);
+  if (nof_grants == 0 && _cell.mbms_dedicated) {
+    nof_grants = srsran_ue_dl_find_dl_dci(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, SRSRAN_SIRNTI, dci);
+  }
   for (int k = 0; k < nof_grants; k++) {
     char str[512];  // NOLINT
     srsran_dci_dl_info(&dci[k], str, 512);
     _rest._pdsch.mcs =  dci[k].tb[0].mcs_idx;
     spdlog::debug("Decoded PDCCH: {}, snr={} dB\n", str, _ue_dl.chest_res.snr_db);
 
+    // TS 36.211 §6.8.1: 1 CCE = 9 REGs = 36 REs. location.L is the aggregation
+    // level as a log2 value, so nof_cce = 2^L.
+    _last_pdcch_nof_re = (1u << dci[k].location.L) * 36u;
+    _last_pdcch_locations.emplace_back(dci[k].location.ncce, dci[k].location.L);
+    _rest._pdcch.SetData(pdcch_data());
+
     if (srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant)) {
       spdlog::error("Converting DCI message to DL dci\n");
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_FAIL);
     _mutex.unlock();
       return false;
     }
@@ -137,24 +186,100 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       }
     }
 
-    _rest._pdsch.SetData(pdsch_data());
-    _rest._ce_values    = std::move(ce_values());
+    _rest._ce_values      = std::move(ce_values());
+    _rest._cir_values     = std::move(cir_values());
+    _rest._cas_grid       = std::move(cas_grid());
+    _rest._cas_composition = std::move(composition_grid());
 
     // Decode PDSCH..
     auto ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
+    /* pdsch_data() reads _ue_dl.pdsch.d[0], which srsran_ue_dl_decode_pdsch()
+     * itself populates (equalized soft symbols, computed internally during
+     * decode) -- must be captured AFTER decoding, not before, or the
+     * constellation shows the PREVIOUS CAS occasion's symbols. Invisible
+     * before the round-robin fix (every occasion carried the same SI message
+     * with the same shape), but a visible one-cycle-stale glitch now that
+     * different SI messages (different MCS/TBS index) rotate through here. */
+    _rest._pdsch.SetData(pdsch_data());
     if (ret) {
+      // Processing error (bad grant/buffer) before a CRC could even be computed.
       spdlog::error("Error decoding PDSCH\n");
+      _rest._pdsch.total++;
       _rest._pdsch.errors++;
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_FAIL);
     } else {
-      spdlog::debug("Decoded PDSCH");
       _rest._pdsch.evm_rms = pdsch_res[0].evm; // evm of the first codeword
+      // srsran_ue_dl_decode_pdsch() returns SUCCESS even when the CRC fails; the
+      // real per-TB result is in pdsch_res[i].crc. Count each decoded TB as an
+      // attempt and a failed CRC as a real error, so BLER is a true block-error
+      // rate rather than only catching hard processing errors.
+      bool any_crc_fail = false;
       for (int i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
-        // .. and pass received PDUs to RLC for further processing
-        if (pdsch_cfg->grant.tb[i].enabled && pdsch_res[i].crc) {
-          _rlc.write_pdu_bcch_dlsch(_data[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+        if (pdsch_cfg->grant.tb[i].enabled) {
+          _rest._pdsch.total++;
+          if (pdsch_res[i].crc) {
+            // .. and pass received PDUs to RLC for further processing
+            _rlc.write_pdu_bcch_dlsch(_data[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+          } else {
+            _rest._pdsch.errors++;
+            any_crc_fail = true;
+            // Temporary diagnostic (CAS_RV_BRUTEFORCE=1, off by default): DCI format 1C
+            // carries no RV field, so RV is blindly derived (see the rv<0 branch above);
+            // if that formula doesn't match how the sender actually cycled RV, decode
+            // will fail every time regardless of signal quality. Brute-force the other
+            // 3 RV values (fresh softbuffer each try, since rate-matching combines with
+            // buffer state) to see whether any of them actually yields a CRC pass.
+            if (getenv("CAS_RV_BRUTEFORCE")) {
+              int      original_rv = pdsch_cfg->grant.tb[i].rv;
+              for (int try_rv = 0; try_rv < 4; try_rv++) {
+                if (try_rv == original_rv) {
+                  continue;
+                }
+                pdsch_cfg->grant.tb[i].rv = try_rv;
+                srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+                srsran_pdsch_res_t retry_res = {};
+                retry_res.payload = _data[i];
+                retry_res.crc     = false;
+                int retry_ret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, &retry_res);
+                fprintf(stderr, "RVBRUTE tti=%u original_rv=%d try_rv=%d ret=%d crc=%d\n",
+                        tti, original_rv, try_rv, retry_ret, retry_res.crc ? 1 : 0);
+              }
+              // Restore original rv/softbuffer state so downstream logic is unaffected.
+              pdsch_cfg->grant.tb[i].rv = original_rv;
+              srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+            }
+          }
         }
       }
+      spdlog::debug("Decoded PDSCH (crc_fail={})", any_crc_fail);
+      // Env-gated per-CAS decode diagnostic (CAS_PDSCH_DIAG=1, off by default):
+      // logs MCS/EVM/CINR/CRC per SI decode so a CRC failure can be correlated
+      // with the periodic EVM/CINR peaks.
+      if (getenv("CAS_PDSCH_DIAG")) {
+        fprintf(stderr,
+                "CASDIAG tti=%u mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d format=%d rnti=0x%x nof_prb_alloc=%d L=%d ncce=%d "
+                "nof_re=%d nof_bits_E=%d mod=%d\n",
+                tti, dci[k].tb[0].mcs_idx, (double)pdsch_res[0].evm,
+                (double)_ue_dl.chest_res.snr_db, pdsch_res[0].crc ? 1 : 0,
+                (int)pdsch_cfg->grant.tb[0].tbs, (int)dci[k].format, dci[k].rnti,
+                (int)pdsch_cfg->grant.nof_prb, (int)dci[k].location.L, (int)dci[k].location.ncce,
+                (int)pdsch_cfg->grant.nof_re, (int)pdsch_cfg->grant.tb[0].nof_bits, (int)pdsch_cfg->grant.tb[0].mod);
+      }
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS,
+                                  any_crc_fail ? RestHandler::SF_STATUS_FAIL : RestHandler::SF_STATUS_OK);
     }
+  }
+  if (nof_grants == 0) {
+    // CAS occasion processed fine, but no SI message/paging was pending this cycle.
+    // Still refresh ce/cir/grid/composition here - no grant means no PDCCH to
+    // mark, but CRS/PSS/SSS/PBCH positions are independent of whether a
+    // grant was found, so the UI shouldn't be left showing a stale frame.
+    _rest._ce_values      = std::move(ce_values());
+    _rest._cir_values     = std::move(cir_values());
+    _rest._cas_grid       = std::move(cas_grid());
+    _rest._cas_composition = std::move(composition_grid());
+    _rest.record_subframe_event(tti, RestHandler::SF_EVENT_CAS, RestHandler::SF_STATUS_IDLE);
+    _rest._pdcch.errors++;
   }
     _mutex.unlock();
   return true;
@@ -170,7 +295,168 @@ auto CasFrameProcessor::ce_values() -> std::vector<uint8_t> {
   return std::vector<uint8_t>( data, data + sz * sizeof(float));
 }
 
+auto CasFrameProcessor::cir_values() -> std::vector<uint8_t> {
+  auto sz = _cir_plan_size;
+  if (!_cir_plan_ready || sz == 0) {
+    return {}; // set_cell() hasn't run yet - nothing to compute.
+  }
+
+  // Zero-pad the frequency-domain channel estimate into the full symbol
+  // width, at the same subcarrier offset ce_values() uses, then IFFT it to
+  // the time domain to get the channel impulse response. All scratch buffers
+  // are pre-sized in set_cell() - no allocation on this hot path.
+  cf_t* ce_freq = _cir_scratch_freq.data();
+  srsran_vec_cf_zero(ce_freq, sz);
+  uint32_t g = (sz - 12 * _cell.nof_prb) / 2;
+  memcpy(&ce_freq[g], _ue_dl.chest_res.ce[0][0], SRSRAN_NRE * _cell.nof_prb * sizeof(cf_t));
+
+  cf_t* cir_time = _cir_scratch_time.data();
+  srsran_dft_run_c(&_cir_plan, ce_freq, cir_time);
+
+  // fftshift so lag 0 (the main tap) is centered, then convert to dB
+  // magnitude for display, matching ce_values()'s convention.
+  cf_t* cir_shifted = _cir_scratch_shifted.data();
+  for (uint32_t i = 0; i < sz; i++) {
+    cir_shifted[i] = cir_time[(i + sz / 2) % sz];
+  }
+  float* cir_db = _cir_scratch_db.data();
+  srsran_vec_abs_dB_cf(cir_shifted, -80, cir_db, sz);
+
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(cir_db);
+  return std::vector<uint8_t>(data, data + sz * sizeof(float));
+}
+
 auto CasFrameProcessor::pdsch_data() -> std::vector<uint8_t> {
   const uint8_t* data = reinterpret_cast<uint8_t*>(_ue_dl.pdsch.d[0]);
   return std::vector<uint8_t>( data, data + _ue_dl_cfg.cfg.pdsch.grant.nof_re * sizeof(cf_t));
+}
+
+auto CasFrameProcessor::cas_grid() -> std::vector<uint8_t> {
+  // Full received resource grid for this CAS subframe: nof_prb*12 subcarriers x
+  // (2 slots * CP_NSYMB) OFDM symbols. sf_symbols[0] is allocated at max PRB, so
+  // reading SRSRAN_SF_LEN_RE(nof_prb) is always in bounds. Magnitude in dB
+  // (floor -80), same convention as ce_values(); returned as raw float bytes.
+  uint32_t nof_re = SRSRAN_SF_LEN_RE(_cell.nof_prb, _cell.cp);
+  std::vector<float> mag(nof_re, 0);
+  srsran_vec_abs_dB_cf(_ue_dl.sf_symbols[0], -80, mag.data(), nof_re);
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(mag.data());
+  return std::vector<uint8_t>(data, data + nof_re * sizeof(float));
+}
+
+auto CasFrameProcessor::composition_grid() -> std::vector<uint8_t> {
+  const uint32_t nsymb      = SRSRAN_CP_NSYMB(_cell.cp); // 6 (ECP) or 7 (NCP) per slot
+  const uint32_t subcarriers = _cell.nof_prb * SRSRAN_NRE;
+  const uint32_t symbols     = 2 * nsymb;
+  std::vector<uint8_t> comp(subcarriers * symbols, COMP_OTHER);
+  auto mark = [&](uint32_t l, uint32_t k, uint8_t v) {
+    if (l < symbols && k < subcarriers) comp[l * subcarriers + k] = v;
+  };
+
+  // --- PBCH: standard base (slot 1, symbols 0..3) --------------------------
+  // Mirrors srsran_pbch_cp()'s layout (pbch.c): 72 contiguous-ish subcarriers
+  // centred on DC, across the first 4 symbols of slot 1. The exact per-RE
+  // interleave with CRS on symbols 0/1/(3 for ECP) is handled by CRS marking
+  // them over this afterwards, below - those REs really are CRS, not PBCH.
+  {
+    const uint32_t pbch_k0 = subcarriers / 2 - 36;
+    const uint32_t nof_pbch_symbols = SRSRAN_CP_ISNORM(_cell.cp) ? 4 : 4;
+    for (uint32_t i = 0; i < nof_pbch_symbols; i++) {
+      for (uint32_t k = 0; k < 72; k++) mark(nsymb + i, pbch_k0 + k, COMP_PBCH);
+    }
+  }
+
+  // --- PBCH: this fork's CAS repetition (TS 103 720, see pbch.c's
+  // PBCH_CAS_MAP_NCP/ECP) - extra copies of PBCH content at fixed (slot,
+  // symbol) positions beyond the standard subframe-0-only placement, so a
+  // CAS occasion on an MBMS-dedicated (no regular scheduling) carrier can
+  // recover MIB without waiting for subframe 0 specifically. Same 72-SC
+  // centred range as the standard case.
+  {
+    struct Map { uint32_t dst_ns, dst_l; };
+    static const Map MAP_NCP[] = {{0, 4}, {1, 4}, {1, 5}, {0, 3}, {1, 6}};
+    static const Map MAP_ECP[] = {{0, 3}, {1, 4}, {1, 5}};
+    const uint32_t pbch_k0 = subcarriers / 2 - 36;
+    const Map* map = SRSRAN_CP_ISNORM(_cell.cp) ? MAP_NCP : MAP_ECP;
+    size_t map_n = SRSRAN_CP_ISNORM(_cell.cp) ? (sizeof(MAP_NCP) / sizeof(Map)) : (sizeof(MAP_ECP) / sizeof(Map));
+    for (size_t i = 0; i < map_n; i++) {
+      uint32_t l = map[i].dst_ns * nsymb + map[i].dst_l;
+      for (uint32_t k = 0; k < 72; k++) mark(l, pbch_k0 + k, COMP_PBCH);
+    }
+  }
+
+  // --- PSS / SSS: last slot of subframes 0 and 5 only (standard LTE, no
+  // CAS-specific repetition exists for these in this fork). Symbol/subcarrier
+  // formula mirrors srsran_pss_put_slot()/srsran_sss_put_slot() exactly
+  // (pss.c/sss.c): last symbol of the slot for PSS, second-to-last for SSS,
+  // both 62 contiguous subcarriers centred on DC.
+  {
+    uint32_t sf_idx = _sf_cfg.tti % 10;
+    if (sf_idx == 0 || sf_idx == 5) {
+      const uint32_t k0 = subcarriers / 2 - 31;
+      const uint32_t pss_l = 2 * nsymb - 1;
+      const uint32_t sss_l = 2 * nsymb - 2;
+      for (uint32_t k = 0; k < 62; k++) {
+        mark(pss_l, k0 + k, COMP_PSS);
+        mark(sss_l, k0 + k, COMP_SSS);
+      }
+    }
+  }
+
+  // --- CRS: srsran_refsignal_cs_nsymbol()/cs_fidx()/cs_v() exactly, for
+  // every configured port - the same functions the receiver's own channel
+  // estimator uses (refsignal_dl.c), so this can never disagree with what
+  // chest_dl actually read as reference symbols.
+  for (uint32_t port = 0; port < _cell.nof_ports; port++) {
+    uint32_t n_l = srsran_refsignal_cs_nof_symbols(nullptr, &_sf_cfg, port);
+    for (uint32_t l = 0; l < n_l; l++) {
+      uint32_t nsymbol = srsran_refsignal_cs_nsymbol(l, _cell.cp, port);
+      // Matches srsran_refsignal_cs_fidx() exactly (refsignal_dl.c): starting
+      // offset is (v + cell.id % 6) % 6, NOT just v - missing the cell-ID
+      // shift here would silently produce wrong positions for any cell.id
+      // where cell.id % 6 != 0.
+      uint32_t fidx = (srsran_refsignal_cs_v(port, l) + (_cell.id % 6)) % 6;
+      for (uint32_t i = 0; i < 2 * _cell.nof_prb; i++) {
+        mark(nsymbol, fidx, COMP_CRS);
+        fidx += SRSRAN_NRE / 2;
+      }
+    }
+  }
+
+  // --- PCFICH: REGs already computed by srsRAN internally (from cell.id/
+  // cell.nof_prb, at set_cell() time) for the current CFI hypothesis -
+  // PCFICH's own REG set doesn't depend on CFI, so index [0] always holds it.
+  {
+    srsran_regs_ch_t& pcfich = _ue_dl.regs[0].pcfich;
+    for (uint32_t i = 0; i < pcfich.nof_regs; i++) {
+      srsran_regs_reg_t* reg = pcfich.regs[i];
+      for (uint32_t j = 0; j < 4; j++) mark(reg->l, reg->k[j], COMP_PCFICH);
+    }
+  }
+
+  // --- PDCCH: the exact REGs backing the candidate(s) actually decoded this
+  // occasion (from _last_pdcch_locations, set in process() right after
+  // srsran_ue_dl_find_dl_dci() returns) - ground truth from this frame's own
+  // blind decode, not a guessed position. REGs for CFI=cfi are ordered by
+  // increasing CCE (9 REGs/CCE) in _ue_dl.regs[cfi-1].pdcch.regs[].
+  {
+    uint32_t cfi = _sf_cfg.cfi > 0 ? _sf_cfg.cfi : 1;
+    if (cfi >= 1 && cfi <= 3) {
+      srsran_regs_ch_t& pdcch = _ue_dl.regs[0].pdcch[cfi - 1];
+      for (const auto& loc : _last_pdcch_locations) {
+        uint32_t ncce = loc.first, L = loc.second;
+        uint32_t first_reg = ncce * 9, nof_regs = (1u << L) * 9u;
+        for (uint32_t r = first_reg; r < first_reg + nof_regs && r < pdcch.nof_regs; r++) {
+          srsran_regs_reg_t* reg = pdcch.regs[r];
+          for (uint32_t j = 0; j < 4; j++) mark(reg->l, reg->k[j], COMP_PDCCH);
+        }
+      }
+    }
+  }
+
+  return comp;
+}
+
+auto CasFrameProcessor::pdcch_data() -> std::vector<uint8_t> {
+  const uint8_t* data = reinterpret_cast<uint8_t*>(_ue_dl.pdcch.d);
+  return std::vector<uint8_t>(data, data + _last_pdcch_nof_re * sizeof(cf_t));
 }

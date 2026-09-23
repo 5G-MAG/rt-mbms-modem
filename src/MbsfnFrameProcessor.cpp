@@ -19,6 +19,7 @@
 
 #include "MbsfnFrameProcessor.h"
 #include "spdlog/spdlog.h"
+#include <cstring>
 
 std::map<std::pair<uint8_t,uint8_t>, uint16_t> MbsfnFrameProcessor::_sched_stops;
 
@@ -68,7 +69,7 @@ auto MbsfnFrameProcessor::init() -> bool {
 
   _pmch_cfg.pdsch_cfg.csi_enable         = true;
   _pmch_cfg.pdsch_cfg.max_nof_iterations = 8;
-  _pmch_cfg.pdsch_cfg.meas_evm_en        = false;
+  _pmch_cfg.pdsch_cfg.meas_evm_en        = true;
   _pmch_cfg.pdsch_cfg.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
 
   _sf_cfg.sf_type = SRSRAN_SF_MBSFN;
@@ -82,11 +83,34 @@ MbsfnFrameProcessor::~MbsfnFrameProcessor() {
     }
   }
   srsran_ue_dl_free(&_ue_dl);
+  if (_cir_plan_ready) {
+    srsran_dft_plan_free(&_cir_plan);
+  }
 }
 
 void MbsfnFrameProcessor::set_cell(srsran_cell_t cell) {
   _cell = cell;
   srsran_ue_dl_set_cell(&_ue_dl, cell);
+
+  /* (Re)plan the CIR IFFT and size its scratch buffers here -- called only
+   * from the single main thread on cell (re)configuration, never from
+   * process()'s worker-pool thread, so there's no risk of concurrent
+   * fftwf_plan_ / fftwf_destroy_plan calls racing across processor instances. */
+  auto sz = (uint32_t)srsran_symbol_sz(_cell.nof_prb);
+  if (!_cir_plan_ready || _cir_plan_size != sz) {
+    if (_cir_plan_ready) {
+      srsran_dft_plan_free(&_cir_plan);
+    }
+    srsran_dft_plan_c(&_cir_plan, (int)sz, SRSRAN_DFT_BACKWARD);
+    srsran_dft_plan_set_norm(&_cir_plan, true);
+    _cir_plan_size  = sz;
+    _cir_plan_ready = true;
+  }
+  _cir_scratch_freq.resize(sz);
+  _cir_scratch_time.resize(sz);
+  _cir_scratch_shifted.resize(sz);
+  _cir_scratch_db.resize(sz);
+  _ce_scratch_db.resize(sz);
 }
 
 auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
@@ -108,6 +132,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
 
   if (!mbsfn_cfg.enable) {
     spdlog::trace("PMCH: tti {}: neither MCCH nor MCH enabled. Skipping subframe");
+    _rest.record_subframe_event(tti, RestHandler::SF_EVENT_GAP, RestHandler::SF_STATUS_IDLE);
     _mutex.unlock();
     return -1;
   }
@@ -153,6 +178,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       _rest._mch[mch_idx].errors++;
     }
     spdlog::error("Getting PDCCH FFT estimate");
+    _rest.record_subframe_event(
+        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL);
     if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
@@ -237,12 +264,62 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       _ti_reported[ti_slot_m] = true;
     }
     spdlog::warn("Error decoding PMCH");
+    _rest.record_subframe_event(
+        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL);
     if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
   }
 
   if (scs_switched) { restore_scs(); }
+
+  /* PMCH DTX detection. The eNB legitimately transmits NO PMCH on MCH data
+   * subframes where MAC has nothing scheduled (cc_worker::encode_pmch returns
+   * early when dci.rnti==0 - idle MTCH window), so what arrives here is an
+   * RS-only subframe with empty data REs. Decoding it anyway is meaningless:
+   * the all-zero LLR input usually "succeeds" by converging to the valid
+   * all-zero codeword, but a +/-1-sample timing-dither at a CAS re-track
+   * breaks FFT circularity just enough (~-60dB RS leakage into the empty data
+   * bins, confirmed by raw-capture cross-correlation: failing subframes show
+   * the RX window at lag=1 vs the TX waveform, passing ones at lag=0) to
+   * occasionally flip that into a CRC failure - both outcomes are artifacts
+   * of decoding a non-transmitted TB, and the failures polluted the MCH BLER
+   * (~0.15%, always sf5, in 4-frame bursts = one CAS re-track period).
+   * Standard receiver practice (cf. PDCCH DTX detection): gate on received
+   * energy. Equalized data symbols of a real QPSK TB have ~unit average
+   * power; an absent PMCH leaves ~0 (exactly 0 on a clean channel, noise-level
+   * otherwise). Threshold 1e-3 sits ~30dB below real signal and well above
+   * the leakage artifact. MCCH is never DTX (always transmitted). */
+  if (!mbsfn_cfg.is_mcch) {
+    float data_pw = srsran_vec_avg_power_cf(_ue_dl.pmch.d, _pmch_cfg.pdsch_cfg.grant.nof_re);
+    if (data_pw < 1e-3f) {
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_IDLE);
+      spdlog::trace("PMCH DTX in TTI {} (data-RE power {}), skipping decode accounting", tti, data_pw);
+      _mutex.unlock();
+      return 0;
+    }
+  }
+
+  /* Temporary, env-gated (MCH_SF5_DIAG) per-subframe diagnostic for the
+   * occasional subframe-5 PMCH CRC failures. Captures BOTH pass and fail so the
+   * failing rows can be compared against the passing ones: snr_db distinguishes
+   * an RF/estimate cause (low snr at failure) from a decode-config mismatch
+   * (high snr but crc=0 => wrong mch_subframe_idx/mcs/tbs/grant). Silent unless
+   * the env var is set, so it costs nothing in normal operation. */
+  if (!mbsfn_cfg.is_mcch && getenv("MCH_SF5_DIAG")) {
+    // Extra discriminators: evm (symbol-domain quality) and n_iter (turbo
+    // iterations). Low evm + few iters but crc=0 => clean symbols, wrong bits
+    // => RX decoding a TB the TX didn't send there. High evm/max iters => the
+    // symbols themselves are corrupt (RE-extraction / channel). rx_pwr gauges
+    // whether the TX transmitted anything at all on this subframe.
+    float rx_pwr = srsran_vec_avg_power_cf(_ue_dl.sf_symbols[0], _ue_dl.cell.nof_prb * SRSRAN_NRE);
+    fprintf(stderr,
+            "MCHDIAG sfn=%u sf=%u mch_sf_idx=%u pmch_idx=%u mcs=%d nof_re=%d tbs=%d crc=%d evm=%.4f n_iter=%.2f rxpwr=%.3e\n",
+            sfn, (unsigned)sf, mbsfn_cfg.mch_subframe_idx, mch_idx,
+            _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx,
+            _pmch_cfg.pdsch_cfg.grant.nof_re, (int)_pmch_cfg.pdsch_cfg.grant.tb[0].tbs,
+            (int)pmch_dec.crc, pmch_dec.evm, pmch_dec.avg_iterations_block, rx_pwr);
+  }
 
   spdlog::trace("PMCH: tti: {}, l_crb={}, tbs={}, mcs={}, crc={}, snr={} dB, n_iter={}\n",
       tti,
@@ -256,10 +333,23 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   if (mbsfn_cfg.is_mcch) {
     _rest._mcch.SetData(mch_data());
     _rest._mcch.mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
+    _rest._mcch.evm_rms = pmch_dec.evm;
   } else {
     _rest._mch[mch_idx].SetData(mch_data());
     _rest._mch[mch_idx].mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
+    _rest._mch[mch_idx].evm_rms = pmch_dec.evm;
     _rest._mch[mch_idx].present = true;
+  }
+  if (++_ce_cir_update_counter >= CE_CIR_UPDATE_STRIDE) {
+    _ce_cir_update_counter  = 0;
+    // Fill persistent member buffers (reusing their capacity), then publish by
+    // O(1) swap - the previously-published buffer comes back into the member for
+    // reuse next cycle, so this is allocation-free in steady state. Same
+    // pointer-swap publish semantics as the previous std::move assignment.
+    ce_values(_ce_out_bytes);
+    cir_values(_cir_out_bytes);
+    _rest._ce_values_mbsfn.swap(_ce_out_bytes);
+    _rest._cir_values_mbsfn.swap(_cir_out_bytes);
   }
 
   if (pmch_dec.crc) {
@@ -281,6 +371,13 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     mch_mac_msg.parse_packet(_payload_buffer);
 
     while (mch_mac_msg.next()) {
+      if (getenv("PMCH_TI_DIAG")) {
+        auto* s = mch_mac_msg.get();
+        bool sdu = s->is_sdu();
+        fprintf(stderr, "TI_DIAG_SUBH sfidx=%u is_mcch=%d is_sdu=%d ce_type=%d lcid=%d\n",
+                mbsfn_cfg.mch_subframe_idx, (int)mbsfn_cfg.is_mcch, (int)sdu,
+                (int)s->mch_ce_type(), sdu ? (int)s->get_sdu_lcid() : -1);
+      }
       if (srsran::mch_lcid::MCH_SCHED_INFO == mch_mac_msg.get()->mch_ce_type()) {
         uint16_t stop = 0;
         uint8_t lcid = 0;
@@ -324,7 +421,14 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
          * RRC/MCCH handler, corrupting Phy::_mcch (nof_pmch_info reset to 0)
          * until the next real MCCH occasion overwrites it. */
         if (lcid == (uint32_t)srsran::mch_lcid::MCCH && !mbsfn_cfg.is_mcch) {
-          spdlog::warn("Dropping spurious MCCH-LCID SDU decoded from a non-MCCH subframe (mch_idx {})", mch_idx);
+          /* warn (not debug) would be appropriate severity-wise, but this fires on
+           * EVERY MCH subframe whenever no real MBMS traffic is queued (the normal
+           * idle state, not an error) - at up to ~1kHz that's synchronous log I/O
+           * flooding the real-time decode thread, which was actually causing
+           * periodic CINR/sync glitches (confirmed via a live capture correlating
+           * dips with this exact log line's timestamps). debug so it's silent at
+           * this project's default -l 2 (info) but still available via -l 0/1. */
+          spdlog::debug("Dropping spurious MCCH-LCID SDU decoded from a non-MCCH subframe (mch_idx {})", mch_idx);
           continue;
         }
 
@@ -347,7 +451,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
             for (uint32_t k = 0; k < sz && k < 48; k++) {
               snprintf(hex + k * 2, 3, "%02x", p[k]);
             }
-            fprintf(stderr, "TI_DIAG_MACSDU lcid=%u sz=%u first48=%s\n", lcid, sz, hex);
+            fprintf(stderr, "TI_DIAG_MACSDU sfidx=%u lcid=%u sz=%u first48=%s\n", mbsfn_cfg.mch_subframe_idx, lcid, sz, hex);
           }
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
           const std::lock_guard<std::mutex> lock(_rlc_mutex);
@@ -364,6 +468,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
      * would double-count the same logical TB and this trailing subframe
      * would be misreported as a fresh failure. */
     if (!mbsfn_cfg.is_mcch && ti_active && _ti_reported[ti_slot_m]) {
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_OK);
       _mutex.unlock();
       return 0;
     }
@@ -371,6 +476,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
      * remaining subframes of this slot's own N-span (ti_slot_n/ti_active
      * computed earlier from the same (m,n) split used for the softbuffer). */
     if (ti_active && ti_slot_n < (uint32_t)(mbsfn_cfg.time_interleaving_n - 1u)) {
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_IDLE);
       _mutex.unlock();
       return 0;
     }
@@ -388,6 +494,27 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       if (ti_active) {
         _ti_reported[ti_slot_m] = true;
       }
+    }
+    _rest.record_subframe_event(
+        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL);
+
+    /* Failure-triggered raw-sample dump: the sporadic sf5 failures drift in
+     * tti even within a run, so only a capture taken AT the failure itself is
+     * race-free. This processor still owns _signal_buffer_rx (mutex held), so
+     * dump the exact time-domain input whose decode just failed CRC, for
+     * offline FFT/window-offset comparison against the TX's (verified
+     * bit-identical) postifft reference. Env-gated; ~1 failure per 1-3s and
+     * 120kB each, bounded by tti-name wraparound. */
+    if (!mbsfn_cfg.is_mcch && getenv("PMCH_RE_DUMP")) {
+      char fn[128];
+      snprintf(fn, sizeof(fn), "/tmp/pmch_rx_rawFAIL_tti%u.bin", tti);
+      FILE* fr = fopen(fn, "wb");
+      if (fr) {
+        fwrite(_signal_buffer_rx[0], sizeof(cf_t), 15360, fr);
+        fclose(fr);
+      }
+      fprintf(stderr, "[PMCH_RE_DUMP] RX RAWFAIL tti=%u sfn=%u sf=%u mch_sf_idx=%u\n",
+              tti, sfn, (unsigned)sf, mbsfn_cfg.mch_subframe_idx);
     }
 
     spdlog::trace("PMCH in TTI {} failed with CRC error", tti);
@@ -430,6 +557,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rlc.stop_mch(0, 0);
     _rest._mcch.present = true;
   }
+  _rest.record_subframe_event(
+      tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_OK);
   _mutex.unlock();
   return mbsfn_cfg.is_mcch ? 0 : 1;
 }
@@ -447,4 +576,52 @@ void MbsfnFrameProcessor::configure_mbsfn(uint8_t area_id, srsran_scs_t subcarri
 auto MbsfnFrameProcessor::mch_data() const -> std::vector<uint8_t> const {
   const uint8_t* data = reinterpret_cast<uint8_t*>(_ue_dl.pmch.d);
   return std::move(std::vector<uint8_t>( data, data + _pmch_cfg.pdsch_cfg.grant.nof_re * sizeof(cf_t)));
+}
+
+void MbsfnFrameProcessor::ce_values(std::vector<uint8_t>& out) {
+  auto sz = _cir_plan_size; // set once in set_cell(), shared sizing for ce/cir scratch
+  if (sz == 0) {
+    out.clear(); // set_cell() hasn't run yet - nothing to compute.
+    return;
+  }
+  float* ce_abs = _ce_scratch_db.data();
+  memset(ce_abs, 0, sz * sizeof(float));
+  uint32_t g = (sz - 12 * _cell.nof_prb) / 2;
+  srsran_vec_abs_dB_cf(_ue_dl.chest_res.ce[0][0], -80, &ce_abs[g], SRSRAN_NRE * _cell.nof_prb);
+  // assign() reuses out's existing capacity - no heap allocation after the
+  // first call (out is a persistent member, swapped into _rest below).
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(ce_abs);
+  out.assign(data, data + sz * sizeof(float));
+}
+
+void MbsfnFrameProcessor::cir_values(std::vector<uint8_t>& out) {
+  auto sz = _cir_plan_size;
+  if (!_cir_plan_ready || sz == 0) {
+    out.clear(); // set_cell() hasn't run yet - nothing to compute.
+    return;
+  }
+
+  // Same construction as CasFrameProcessor::cir_values(): zero-pad the
+  // frequency-domain channel estimate to the full symbol width, IFFT it,
+  // fftshift so lag 0 is centered, then take the magnitude in dB. All
+  // scratch buffers are pre-sized in set_cell() - no allocation here.
+  cf_t* ce_freq = _cir_scratch_freq.data();
+  srsran_vec_cf_zero(ce_freq, sz);
+  uint32_t g = (sz - 12 * _cell.nof_prb) / 2;
+  memcpy(&ce_freq[g], _ue_dl.chest_res.ce[0][0], SRSRAN_NRE * _cell.nof_prb * sizeof(cf_t));
+
+  cf_t* cir_time = _cir_scratch_time.data();
+  srsran_dft_run_c(&_cir_plan, ce_freq, cir_time);
+
+  cf_t* cir_shifted = _cir_scratch_shifted.data();
+  for (uint32_t i = 0; i < sz; i++) {
+    cir_shifted[i] = cir_time[(i + sz / 2) % sz];
+  }
+  float* cir_db = _cir_scratch_db.data();
+  srsran_vec_abs_dB_cf(cir_shifted, -80, cir_db, sz);
+
+  // assign() reuses out's existing capacity - no heap allocation after the
+  // first call (out is a persistent member, swapped into _rest below).
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(cir_db);
+  out.assign(data, data + sz * sizeof(float));
 }

@@ -403,9 +403,10 @@ struct pmch_info_t {
   // pmch_cfg_t
   uint16_t sf_alloc_end = 0;
   uint8_t  data_mcs     = 0;
-  /* Rel-19 LTE_terr_bcast_Ph2 adds rf4 (r12), rf7,rf14,rf28,rf53,rf56,rf108,rf112,rf212,rf424 (TS 36.331 §6.3.7) */
+  /* Rel-12 mch-SchedulingPeriod-v1430 adds rf1,rf2; Rel-19 LTE_terr_bcast_Ph2 adds rf4
+   * (r12), rf7,rf14,rf28,rf53,rf56,rf108,rf112,rf212,rf424 (TS 36.331 §6.3.7) */
   enum class mch_sched_period_t {
-    rf4, rf7, rf8, rf14, rf16, rf28, rf32, rf53, rf56, rf64, rf108, rf112, rf128, rf212, rf256, rf424, rf512, rf1024, nulltype
+    rf1, rf2, rf4, rf7, rf8, rf14, rf16, rf28, rf32, rf53, rf56, rf64, rf108, rf112, rf128, rf212, rf256, rf424, rf512, rf1024, nulltype
   } mch_sched_period;
   // mbms_session_info_list
   struct mbms_session_info_t {
@@ -442,7 +443,7 @@ struct pmch_info_t {
 };
 inline uint16_t enum_to_number(const pmch_info_t::mch_sched_period_t& mch_period)
 {
-  constexpr static uint16_t options[] = {4, 7, 8, 14, 16, 28, 32, 53, 56, 64, 108, 112, 128, 212, 256, 424, 512, 1024};
+  constexpr static uint16_t options[] = {1, 2, 4, 7, 8, 14, 16, 28, 32, 53, 56, 64, 108, 112, 128, 212, 256, 424, 512, 1024};
   return enum_to_number(options, (uint32_t)pmch_info_t::mch_sched_period_t::nulltype, (uint32_t)mch_period);
 }
 
@@ -456,6 +457,25 @@ struct mcch_msg_t {
   uint32_t    nof_pmch_info;
   pmch_info_t pmch_info_list[15];
   // mbsfn_area_cfg_v930_ies non crit ext OPTIONAL
+
+  /* commonSF-Alloc-v1430 (TS 36.331 MBSFNAreaConfiguration-v1430-IEs): declares which
+   * of subframe #4 / subframe #9 carry MBSFN-common content, extending the r9
+   * 6-subframe pattern. Bit order confirmed directly against spec field
+   * description text: "the first/leftmost bit indicated by oneFrame-v1430 defines
+   * the MBSFN allocation for subframe #4 and the second bit for #9" - leftmost=sf4,
+   * second=sf9. */
+  bool common_sf_alloc_v1430_present = false;
+  bool common_sf_alloc_v1430_sf4     = false;
+  bool common_sf_alloc_v1430_sf9     = false;
+
+  /* commonSF-Alloc-v1610 (TS 36.331): present only on MBMS-dedicated cells,
+   * declares which of subframe #0 / subframe #5 carry MBSFN-common content.
+   * Bit order confirmed directly against the same spec field description entry
+   * as v1430 above ("the allocation indicated by fourFrames-v1610, if present,
+   * applies to subframes #0 and #5", same leftmost/first-bit convention). */
+  bool common_sf_alloc_v1610_present = false;
+  bool common_sf_alloc_v1610_sf0     = false;
+  bool common_sf_alloc_v1610_sf5     = false;
 };
 inline uint16_t enum_to_number(const mcch_msg_t::common_sf_alloc_period_t& alloc_period)
 {

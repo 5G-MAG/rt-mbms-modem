@@ -216,11 +216,20 @@ typedef enum {
 #define SRSRAN_SYMBOL_HAS_REF_MBSFN_7KHZ5(l, s) ((l == 1 && s == 0) || (l == 0 && s == 1) || (l == 2 && s == 1))
 #define SRSRAN_SYMBOL_HAS_REF_MBSFN_1KHZ25(l, s) (true)
 #define SRSRAN_SYMBOL_HAS_REF_MBSFN_2KHZ5(l, s) (true)
+/* TS 36.211 §6.10.2.2.4: SL4 type-1 RS occupy only l=0 per slot (pilot spacing 12 does not fit
+ * evenly in 6 symbols). SL2 type-2 and base 0.37 kHz have RS in every OFDM symbol. Reconciled
+ * from rt-mbms-tx's phy_common.h, which had this SL2/SL4 split and this copy didn't - this
+ * generic "always true" version silently over-counted SL4 RS-bearing symbols wherever
+ * SRSRAN_SYMBOL_HAS_REF_MBSFN_SCS is used (ra_dl.c, pmch.c), corrupting RE counts for SL4. */
 #define SRSRAN_SYMBOL_HAS_REF_MBSFN_370HZ(l, s) (true)
+#define SRSRAN_SYMBOL_HAS_REF_MBSFN_370HZ_SL2(l, s) (true)
+#define SRSRAN_SYMBOL_HAS_REF_MBSFN_370HZ_SL4(l, s) ((l) == 0)
 #define SRSRAN_SYMBOL_HAS_REF_MBSFN_SCS(l, s, scs) (scs == SRSRAN_SCS_15KHZ ? SRSRAN_SYMBOL_HAS_REF_MBSFN(l, s) : \
     (scs == SRSRAN_SCS_7KHZ5 ? SRSRAN_SYMBOL_HAS_REF_MBSFN_7KHZ5(l, s) : \
     (scs == SRSRAN_SCS_2KHZ5 ? SRSRAN_SYMBOL_HAS_REF_MBSFN_2KHZ5(l, s) : \
-    (SRSRAN_SCS_IS_370HZ(scs) ? SRSRAN_SYMBOL_HAS_REF_MBSFN_370HZ(l, s) : SRSRAN_SYMBOL_HAS_REF_MBSFN_1KHZ25(l, s)))))
+    (scs == SRSRAN_SCS_370HZ_SL4 ? SRSRAN_SYMBOL_HAS_REF_MBSFN_370HZ_SL4(l, s) : \
+    (scs == SRSRAN_SCS_370HZ_SL2 ? SRSRAN_SYMBOL_HAS_REF_MBSFN_370HZ_SL2(l, s) : \
+    (SRSRAN_SCS_IS_370HZ(scs) ? SRSRAN_SYMBOL_HAS_REF_MBSFN_370HZ(l, s) : SRSRAN_SYMBOL_HAS_REF_MBSFN_1KHZ25(l, s)))))))
 
 #define SRSRAN_SYMBOL_REF_OFFSET_MBSFN(l, s) ((l == 2 && s == 0) || (l == 0 && s == 1) || (l == 4 && s == 1))
 

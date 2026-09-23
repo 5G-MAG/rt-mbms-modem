@@ -888,7 +888,22 @@ int srsran_ue_sync_run_track_pss_mode(srsran_ue_sync_t* q, cf_t* input_buffer[SR
   bool find_peak;
   if (q->cell.mbms_dedicated) {
     /* search PSS in subframe 0 of every 4th radio frame */
-    find_peak = q->frame_number%4==0 && q->sf_idx == 0;
+    bool is_cas_frame = q->frame_number % 4 == 0;
+    if (is_cas_frame && q->cell.cas_muting) {
+      /* Rel-19 CAS muting (TS 36.211 CR 0577): only the first 4*k_cas frames of every
+       * 16*n_cas-frame period actually carry PSS/SSS - the rest are muted (real MBSFN
+       * data there instead, by design). Without this check, every muted occasion looked
+       * identical to a genuinely lost PSS peak, and a muted stretch longer than
+       * TRACK_MAX_LOST (very common - e.g. k_cas=4,n_cas=2 leaves a 16-frame contiguous
+       * muted run, 4 missed occasions > TRACK_MAX_LOST=3) deterministically forced
+       * q->state back to SF_FIND every single period, tearing down full frame lock
+       * before the receiver could ever reach a MCCH occasion on a longer schedule.
+       * Treat a known-muted occasion the same as any other non-CAS-candidate frame:
+       * skip the search entirely rather than searching for a signal known to be
+       * absent (see the unconditional `return 1` path below for is_cas_frame=false). */
+      is_cas_frame = (q->frame_number % (16u * (uint32_t)q->cell.n_cas)) < (4u * (uint32_t)q->cell.k_cas);
+    }
+    find_peak = is_cas_frame && q->sf_idx == 0;
   } else {
     /* Every SF idx 0 and 5, find peak around known position q->peak_idx */
     find_peak = ((q->sfind.frame_type == SRSRAN_FDD && (q->sf_idx == 0 || q->sf_idx == 5)) ||

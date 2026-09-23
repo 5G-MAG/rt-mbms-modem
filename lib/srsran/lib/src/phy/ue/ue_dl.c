@@ -28,6 +28,31 @@
 #define CURRENT_SFLEN_RE SRSRAN_NOF_RE(q->cell)
 #define MAX_SFLEN_RE SRSRAN_SF_LEN_RE(max_prb, q->cell.cp)
 
+/* Mirror of pmch.c's pmch_re_dump_enabled: env gate + single-tti filter via
+ * env or the dynamic /tmp/pmch_dump_tti file. Without this, the diag dump
+ * sites below fire on EVERY MBSFN subframe when PMCH_RE_DUMP is set with no
+ * tti target - ~100MB/s of /tmp writes that exhaust the tmpfs within minutes
+ * (observed live). Static per-file copy to avoid cross-library exports for
+ * diagnostic-only code. */
+static bool pmch_re_dump_tti_match(uint32_t tti)
+{
+  if (!getenv("PMCH_RE_DUMP")) {
+    return false;
+  }
+  const char* target = getenv("PMCH_RE_DUMP_TTI");
+  if (target) {
+    return (uint32_t)atoi(target) == tti;
+  }
+  FILE* f = fopen("/tmp/pmch_dump_tti", "r");
+  if (!f) {
+    return false;
+  }
+  unsigned t  = 0;
+  bool     ok = (fscanf(f, "%u", &t) == 1);
+  fclose(f);
+  return ok && t == tti;
+}
+
 const static srsran_dci_format_t ue_dci_formats[8][2] = {
     /* Mode 1 */ {SRSRAN_DCI_FORMAT1A, SRSRAN_DCI_FORMAT1},
     /* Mode 2 */ {SRSRAN_DCI_FORMAT1A, SRSRAN_DCI_FORMAT1},
@@ -373,8 +398,11 @@ static int estimate_pdcch_pcfich(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, srsr
     srsran_chest_dl_estimate_cfg(&q->chest, sf, &cfg->chest_cfg, q->sf_symbols, &q->chest_res);
 
     /* semiStaticCFI-MBMS-r16: skip PCFICH decoding and use the fixed CFI from MIB-MBMS.
-     * When semi_static_cfi is 0 the field is not yet decoded — fall back to PCFICH. */
-    if (q->cell.semi_static_cfi != 0) {
+     * When semi_static_cfi is 0 the field is not yet decoded — fall back to PCFICH.
+     * Temporary diagnostic (FORCE_PCFICH_DECODE=1, off by default): always decode the
+     * real PCFICH regardless of semi_static_cfi, to check whether a capture's declared
+     * semi-static CFI actually matches what was transmitted. */
+    if (q->cell.semi_static_cfi != 0 && !getenv("FORCE_PCFICH_DECODE")) {
       sf->cfi = q->cell.semi_static_cfi;
       INFO("semiStaticCFI-MBMS-r16: using fixed CFI=%d, sf_idx=%d", sf->cfi, sf->tti % 10);
     } else {
@@ -411,7 +439,7 @@ int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, 
      * where the signal is still in the time domain, so the two can be compared
      * sample-for-sample across the wire without any FFT/RE-mapping assumptions on
      * either side. */
-    if (getenv("PMCH_RE_DUMP") && sf->sf_type == SRSRAN_SF_MBSFN) {
+    if (pmch_re_dump_tti_match(sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
       uint32_t sf_len = (uint32_t)SRSRAN_SF_LEN_PRB(q->cell.nof_prb);
       char     fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_prefft_tti%u.bin", sf->tti);
@@ -439,7 +467,7 @@ int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, 
      * a decode failure is upstream of channel estimation entirely (FFT window/CP
      * timing, RE-to-subcarrier mapping) rather than in the reference-signal/channel-
      * estimation code already fixed. */
-    if (getenv("PMCH_RE_DUMP") && sf->sf_type == SRSRAN_SF_MBSFN) {
+    if (pmch_re_dump_tti_match(sf->tti) && sf->sf_type == SRSRAN_SF_MBSFN) {
       uint32_t dump_n = SRSRAN_NRE_SCS(sf->subcarrier_spacing) * q->cell.nof_prb;
       char     fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_postfft_tti%u.bin", sf->tti);
@@ -560,6 +588,16 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
         INFO("Skipping location L=%d, ncce=%d. Already allocated", search_space->loc[l].L, search_space->loc[l].ncce);
         continue;
       }
+      // Multiple formats can share the same length/CCE aggregation (e.g. the common-SS
+      // SI/P/RA-RNTI search tries both FORMAT1A and FORMAT1C at every location) and more
+      // than one may independently cross the correlation threshold at the same location --
+      // a real ambiguity, not just noise, since e.g. a compact FORMAT1C payload can also
+      // happen to look like a valid (but wrong) FORMAT1A interpretation. Evaluate every
+      // format at this location and keep only the best-correlating one, instead of
+      // accepting whichever format happens to be checked first in search_space->formats.
+      bool             have_best = false;
+      float            best_corr = 0.0f;
+      srsran_dci_msg_t best_msg  = {};
       for (uint32_t f = 0; f < search_space->nof_formats; f++) {
         INFO("Searching format %s in %d,%d (%d/%d)",
              srsran_dci_format_string(search_space->formats[f]),
@@ -569,26 +607,52 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
              search_space->nof_locations);
 
         // Try to decode a valid DCI msg
-        dci_msg[nof_dci].location = search_space->loc[l];
-        dci_msg[nof_dci].format   = search_space->formats[f];
-        dci_msg[nof_dci].rnti     = 0;
-        if (srsran_pdcch_decode_msg(&q->pdcch, sf, dci_cfg, &dci_msg[nof_dci])) {
+        srsran_dci_msg_t candidate = {};
+        candidate.location = search_space->loc[l];
+        candidate.format   = search_space->formats[f];
+        candidate.rnti     = 0;
+        if (srsran_pdcch_decode_msg(&q->pdcch, sf, dci_cfg, &candidate)) {
           ERROR("Error decoding DCI msg");
           return SRSRAN_ERROR;
         }
 
         // Check if RNTI is matched
-        if ((dci_msg[nof_dci].rnti == rnti) && (dci_msg[nof_dci].nof_bits > 0)) {
+        bool  rnti_match = (candidate.rnti == rnti) && (candidate.nof_bits > 0);
+        float corr       = 0.0f;
+        if (rnti_match) {
           // Compute decoded message correlation to drastically reduce false alarm probability
-          float corr = srsran_pdcch_msg_corr(&q->pdcch, &dci_msg[nof_dci]);
+          corr = srsran_pdcch_msg_corr(&q->pdcch, &candidate);
+        }
+        // Temporary diagnostic (DCI_SWEEP_DIAG=1, off by default): dump every
+        // location/format/rnti-match/correlation combo tried, to find candidates
+        // the normal 0.5-threshold accept path never surfaces.
+        if (getenv("DCI_SWEEP_DIAG")) {
+          fprintf(stderr,
+                  "DCISWEEP tti=%u ncce=%d L=%d format=%d rnti_req=0x%x rnti_match=%d "
+                  "decoded_rnti=0x%x nof_bits=%d corr=%.4f\n",
+                  sf->tti, search_space->loc[l].ncce, search_space->loc[l].L,
+                  (int)search_space->formats[f], rnti, rnti_match ? 1 : 0, candidate.rnti,
+                  candidate.nof_bits, (double)corr);
+        }
 
+        if (rnti_match) {
           // Skip candidate if the threshold is not reached
           // 0.5 is set from pdcch_test
           if (!isnormal(corr) || corr < 0.5f) {
             continue;
           }
 
-          // Look for the messages found and apply the new format if the location is common
+          if (corr > best_corr) {
+            best_corr = corr;
+            best_msg  = candidate;
+            have_best = true;
+          }
+        }
+      }
+
+      if (have_best) {
+        dci_msg[nof_dci] = best_msg;
+        // Look for the messages found and apply the new format if the location is common
           if (search_in_common && (dci_cfg->multiple_csi_request_enabled || dci_cfg->srs_request_enabled)) {
             /*
              * A UE configured to monitor PDCCH candidates whose CRCs are scrambled with C-RNTI or SPS C-RNTI,
@@ -634,11 +698,9 @@ static int dci_blind_search(srsran_ue_dl_t*     q,
               q->nof_allocated_locations++;
             }
             nof_dci++;
-            break;
           } else {
             INFO("Ignoring message with size %d, already decoded", dci_msg[nof_dci].nof_bits);
           }
-        }
       }
     }
   } else {

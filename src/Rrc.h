@@ -77,7 +77,7 @@ class Rrc : public srsue::rrc_interface_rlc, public srsue::rrc_interface_pdcp {
     void notify_pdcp_integrity_error(uint32_t lcid) override {};
 
  private:
-    void handle_sib1(const asn1::rrc::sib_type1_mbms_r14_s& sib1);
+    void handle_sib1(const asn1::rrc::sib_type1_mbms_r14_s& sib1, uint64_t now_ms);
     rrc_state_t _state = ACQUIRE_SIB;
 
     static constexpr uint8_t kValueTagUnset = 0xFF;

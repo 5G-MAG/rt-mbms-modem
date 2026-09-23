@@ -54,9 +54,18 @@ void generate_mcch_table(uint8_t* table, uint32_t sf_alloc)
   generate_frame_table(table, alloc);
 }
 
+/* TS 36.331 sf-AllocInfo-r16 is a BIT STRING (SIZE(10)) covering all 10
+ * subframes (0-9) of a radio frame - unlike the legacy r9 sf-AllocInfo (a
+ * 6-bit map restricted to {1,2,3,6,7,8}, the only MBSFN-eligible subframes
+ * on a regular, non-dedicated cell), the r16 extension is meant for
+ * MBMS-dedicated cells, which have no unicast traffic reserving subframe 0.
+ * The previous loop (sf=1..9) only ever consumed 9 of those 10 bits and
+ * never set table[0], so a schedule that places MCCH on subframe 0 - the
+ * MSB of this bitstring - was silently never recognized as an MCCH
+ * subframe at all. */
 void generate_mcch_table_r16(uint8_t* table, uint32_t alloc)
 {
-  for (uint32_t sf = 1; sf <= 9; sf++) {
+  for (uint32_t sf = 0; sf <= 9; sf++) {
     table[sf] = (alloc >> (9 - sf)) & 0x01;
   }
 }

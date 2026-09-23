@@ -19,12 +19,22 @@
 
 #include "Phy.h"
 
+#include <chrono>
+#include <thread>
 #include <utility>
 #include <iomanip>
 
 #include "srsran/interfaces/rrc_interface_types.h"
 #include "srsran/asn1/rrc_utils.h"
 #include "spdlog/spdlog.h"
+
+namespace {
+uint64_t now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+} // namespace
 
 static auto receive_callback(void* obj, cf_t* data[SRSRAN_MAX_CHANNELS],         // NOLINT
                              uint32_t nsamples, srsran_timestamp_t* rx_time)
@@ -77,17 +87,43 @@ auto Phy::synchronize_subframe() -> bool {
           srsran_ue_mib_decode(&_mib, bch_payload.data(), nullptr, &sfn_offset);
       if (n == 1) {
         uint32_t sfn = 0;
-        if (_cell.mbms_dedicated) {
+        /* Unlike cell_search() (which decodes into a scratch new_cell and only
+         * commits after validating it), this resync path used to unpack
+         * straight into the live _cell with no validity check at all - a
+         * corrupted/out-of-range MIB decode (e.g. a reserved dl-Bandwidth
+         * codepoint) would silently overwrite the live cell with garbage
+         * (observed: nof_prb=125 from a reserved bw_idx=6), crashing whatever
+         * downstream PHY component next tried to use it. Decode into a copy
+         * first and validate before committing.
+         *
+         * Deliberately check only nof_prb (via srsran_nofprb_isvalid()), NOT
+         * the broader srsran_cell_isvalid() - the latter also checks
+         * mbsfn_prb<=nof_prb and the CAS-muting n_cas set, neither of which
+         * this MIB unpack touches. mbsfn_prb in particular is legitimately
+         * allowed to exceed the MIB-derived nof_prb in file-source mode
+         * (main.cpp's "decode a narrow CAS from a wider channel" case, where
+         * mbsfn_prb is sized from the file's native capture bandwidth, not
+         * the transmitted cell's own PRB count) - re-validating it here would
+         * wrongly reject that legitimate configuration on every resync. */
+        srsran_cell_t candidate_cell = _cell;
+        if (candidate_cell.mbms_dedicated) {
           uint32_t add_non_mbsfn = 0;
-          srsran_pbch_mib_mbms_unpack(bch_payload.data(), &_cell, &sfn, &add_non_mbsfn,
+          srsran_pbch_mib_mbms_unpack(bch_payload.data(), &candidate_cell, &sfn, &add_non_mbsfn,
               _override_nof_prb);
-          _cell.additional_non_mbms_frames = (uint8_t)add_non_mbsfn;
+          candidate_cell.additional_non_mbms_frames = (uint8_t)add_non_mbsfn;
           sfn = (sfn + sfn_offset * kSfnOffset) % kMaxSfn;
         } else {
-          srsran_pbch_mib_unpack(bch_payload.data(), &_cell, &sfn);
+          srsran_pbch_mib_unpack(bch_payload.data(), &candidate_cell, &sfn);
           sfn = (sfn + sfn_offset) % kMaxSfn;
         }
+        if (!srsran_nofprb_isvalid(candidate_cell.nof_prb)) {
+          spdlog::error("Phy: resync MIB decode produced an invalid nof_prb={} - discarding, keeping previous cell state",
+                        candidate_cell.nof_prb);
+          return false;
+        }
+        _cell = candidate_cell;
         _tti =  sfn * kSubframesPerFrame;
+        _last_mib_decoded_at = now_ms();
         return true;
       }
     }
@@ -186,6 +222,8 @@ auto Phy::cell_search() -> bool {
 
     _cell = new_cell;
     _cell.mbsfn_prb = _cell.nof_prb;
+    _mib_decode_count++;
+    _last_mib_decoded_at = now_ms();
 
     if (srsran_ue_sync_set_cell(&_ue_sync, cell()) != 0) {
       spdlog::error("Phy: failed to set cell.\n");
@@ -254,7 +292,10 @@ void Phy::set_mch_scheduling_info(const srsran::sib13_t& sib13) {
   }
 
   if (sib13.nof_mbsfn_area_info > 0) {
-    _sib13 = sib13;
+    {
+      std::lock_guard<std::mutex> lock(_sib13_mutex);
+      _sib13 = sib13;
+    }
 
     bzero(&_mcch_table[0], sizeof(uint8_t) * 10);
     if (sib13.mbsfn_area_info_list[0].mcch_cfg.sf_alloc_info_is_r16) {
@@ -281,6 +322,12 @@ void Phy::set_mch_scheduling_info(const srsran::sib13_t& sib13) {
 }
 
 void Phy::set_mbsfn_config(const srsran::mcch_msg_t& mcch) {
+  if (getenv("RACE_DIAG")) {
+    auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+    fprintf(stderr, "RACEDIAG_WRITE_BEGIN thread=%zu ns=%lld\n",
+            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+            (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+  }
   _mcch = mcch;
   _mch_configured = true;
 
@@ -320,6 +367,12 @@ void Phy::set_mbsfn_config(const srsran::mcch_msg_t& mcch) {
     }
 
     _mch_info.push_back(mch_info);
+  }
+  if (getenv("RACE_DIAG")) {
+    auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+    fprintf(stderr, "RACEDIAG_WRITE_END thread=%zu ns=%lld\n",
+            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+            (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
   }
 }
 
@@ -369,6 +422,18 @@ auto Phy::is_mbsfn_subframe(unsigned tti) -> bool
       if (sf >= 1 && sf <= _cell.additional_non_mbms_frames && is_cas_subframe((tti / 10) * 10)) {
         return false;
       }
+    }
+    /* commonSF-Alloc-v1610: when the network has actually signalled it, only
+     * treat sf#0/sf#5 as MBSFN-common capacity if declared (see mcch_msg_t's
+     * comment for the bit-order caveat). Absent - before MCCH is decoded, or
+     * for a third-party cell that doesn't send this extension - preserves the
+     * prior always-eligible assumption, so this is purely additive: it cannot
+     * regress a deployment (like this project's own TX, which always declares
+     * both) that never exercises the "not declared" case. MCCH's own subframe
+     * is exempted, same as the additionalNonMBSFNSubframes check above. */
+    if (!is_mcch_sf && _mcch_configured && _mcch.common_sf_alloc_v1610_present) {
+      if (sf == 0 && !_mcch.common_sf_alloc_v1610_sf0) return false;
+      if (sf == 5 && !_mcch.common_sf_alloc_v1610_sf5) return false;
     }
     return true;
   } else {
@@ -460,17 +525,15 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
 
   if (sfn % enum_to_number(area_info.mcch_cfg.mcch_repeat_period) == area_info.mcch_cfg.mcch_offset &&
       _mcch_table[sf] == 1) {
-    /* MCCH SCS mirrors TX phy_common::is_mcch_subframe: 7.5kHz for 7.5kHz areas, 15kHz for
-     * plain-15kHz MBMS-dedicated areas, 1.25kHz for all others (including 0.37kHz, where
-     * MCCH uses the control SCS). */
-    using SCS_t = srsran::mbsfn_area_info_t::subcarrier_spacing_t;
-    if (area_info.subcarrier_spacing == SCS_t::khz_7dot5) {
-      cfg.subcarrier_spacing = SRSRAN_SCS_7KHZ5;
-    } else if (area_info.subcarrier_spacing == SCS_t::khz_15) {
-      cfg.subcarrier_spacing = SRSRAN_SCS_15KHZ;
-    } else {
-      cfg.subcarrier_spacing = SRSRAN_SCS_1KHZ25;
-    }
+    /* MCCH and MTCH are both carried over the same PMCH, so they share the same
+     * subcarrier spacing - SCS is a property of the PMCH transmission itself, not
+     * of the logical channel mapped onto it. cfg.subcarrier_spacing is already set
+     * to data_scs above from the same area_info.subcarrier_spacing; no separate,
+     * narrower mapping for MCCH is correct here. (Previously this branch redundantly
+     * re-derived a SCS using only 3 of the 5 real cases, silently defaulting 2.5kHz
+     * and 0.37kHz areas' MCCH to 1.25kHz - wrong per spec, though only externally
+     * visible as a decode failure for 7.5kHz, where the corresponding TX-side branch
+     * has an explicit correct case that this incomplete one didn't mirror.) */
     if (_decode_mcch.load(std::memory_order_acquire)) {
       cfg.mbsfn_mcs               = enum_to_number(area_info.mcch_cfg.sig_mcs);
       cfg.enable                  = true;
@@ -550,6 +613,12 @@ auto Phy::mbsfn_config_for_tti(uint32_t tti, unsigned& area)
           cfg.mch_subframe_idx = (uint32_t)sf_idx - pmch_start;
           cfg.pmch_idx         = (uint8_t)i;
           cfg.enable = true;
+          if (cfg.mch_subframe_idx == 0 && getenv("RACE_DIAG")) {
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+            fprintf(stderr, "RACEDIAG_READ tti=%u thread=%zu ns=%lld\n", tti,
+                    std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                    (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+          }
           /* pmch-TimeInterleavingN/M-LastMTCH-r19 (TS 36.331 CR5168r3): mirrors TX's
            * identical is_mch_subframe() logic exactly -- MbsfnFrameProcessor pushes
            * the last session's window start via set_last_mtch_start() once per

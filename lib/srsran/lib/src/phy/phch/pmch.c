@@ -42,6 +42,36 @@
  * 15 kHz MBSFN value of 2 slots × 6 symbols × 12 NRE = 144. */
 #define MAX_PMCH_RE SRSRAN_NRE_SCS_370HZ
 
+/* PMCH_RE_DUMP fires on nearly every MBSFN subframe (~90% density) - left
+ * unrestricted it fills a size-capped /tmp within seconds. PMCH_RE_DUMP_TTI,
+ * if set, restricts the dump to that one tti so a live TX/RX comparison run
+ * only ever writes a handful of files. */
+static bool pmch_re_dump_enabled(uint32_t tti)
+{
+  if (!getenv("PMCH_RE_DUMP")) {
+    return false;
+  }
+  const char* target = getenv("PMCH_RE_DUMP_TTI");
+  if (target) {
+    return (uint32_t)atoi(target) == tti;
+  }
+  /* Dynamic filter: /tmp/pmch_dump_tti holds the target tti, re-read per call
+   * so it can be set AFTER launch, once the current run's failing ttis are
+   * known (the failing positions depend on a runtime phase established at
+   * sync, so they cannot be predicted before the process starts). Absent
+   * file = dump nothing; PMCH_RE_DUMP=1 alone is inert until the file is
+   * written. The per-subframe fopen only happens in diagnostic runs (env
+   * gate above), never in normal operation. */
+  FILE* f = fopen("/tmp/pmch_dump_tti", "r");
+  if (!f) {
+    return false;
+  }
+  unsigned t  = 0;
+  bool     ok = (fscanf(f, "%u", &t) == 1);
+  fclose(f);
+  return ok && t == tti;
+}
+
 /* Rel-19 adds 256QAM for PMCH (TS 36.213 Table 11.1-2). */
 const static srsran_mod_t modulations[5] = {
     SRSRAN_MOD_BPSK, SRSRAN_MOD_QPSK, SRSRAN_MOD_16QAM, SRSRAN_MOD_64QAM, SRSRAN_MOD_256QAM
@@ -748,7 +778,7 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
          * be inspected directly against the sparse pilot_estimates dump added in
          * chest_dl.c, to check whether interpolate_pilots() fills the full grid
          * smoothly/consistently or scrambles/misindexes between pilot positions. */
-        if (getenv("PMCH_RE_DUMP") && i == 0 && j == 0 && sf->subcarrier_spacing != SRSRAN_SCS_15KHZ) {
+        if (pmch_re_dump_enabled(sf->tti) && i == 0 && j == 0 && sf->subcarrier_spacing != SRSRAN_SCS_15KHZ) {
           uint32_t dump_n = SRSRAN_NRE_SCS(sf->subcarrier_spacing) * q->cell.nof_prb;
           char     fn[128];
           snprintf(fn, sizeof(fn), "/tmp/pmch_rx_fullce_tti%u.bin", sf->tti);
@@ -781,7 +811,7 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
      * srsran_pmch_encode above. Dumps the post-equalization data symbols (same
      * point TX dumps its post-modulation symbols) so the two can be diffed
      * directly for the same tti. */
-    if (getenv("PMCH_RE_DUMP")) {
+    if (pmch_re_dump_enabled(sf->tti)) {
       char fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_sym_tti%u.bin", sf->tti);
       FILE* fsym = fopen(fn, "wb");
@@ -877,7 +907,7 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
      * post-anti-cyclic-shift - i.e. immediately before dlsch_decode) so they can be
      * hard-thresholded and diffed bit-for-bit against TX's scrambled bit dump for
      * the same tti. */
-    if (getenv("PMCH_RE_DUMP")) {
+    if (pmch_re_dump_enabled(sf->tti)) {
       char fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_llr_tti%u.bin", sf->tti);
       FILE* fllr = fopen(fn, "wb");
@@ -962,6 +992,24 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
       }
       out[0].crc                  = (srsran_dlsch_decode(&q->dl_sch, &cfg->pdsch_cfg, q->e, out[0].payload) == 0);
       out[0].avg_iterations_block = srsran_sch_last_noi(&q->dl_sch);
+
+      /* Failure-triggered LLR dump: the sporadic sf5 CRC failures drift in tti
+       * even within a run, so a fixed-tti filter can never catch one. This
+       * fires exactly WHEN a failure happens (env-gated; rare - ~1 per 1-3s -
+       * and 24kB each, so bounded), capturing the descrambled LLRs that failed
+       * to decode, for bit-diff against the TX's continuously-refreshed
+       * per-sf5 scrambled-bit dumps of the same tti. */
+      if (!out[0].crc && getenv("PMCH_RE_DUMP")) {
+        char fn[128];
+        snprintf(fn, sizeof(fn), "/tmp/pmch_rx_llrFAIL_tti%u.bin", sf->tti);
+        FILE* ff = fopen(fn, "wb");
+        if (ff) {
+          fwrite(q->e, sizeof(int16_t), Mbit_sf_rx, ff);
+          fclose(ff);
+        }
+        fprintf(stderr, "[PMCH_RE_DUMP] RX FAIL-DUMP tti=%u Mbit=%u tbs=%d\n",
+                sf->tti, Mbit_sf_rx, (int)cfg->pdsch_cfg.grant.tb[0].tbs);
+      }
     }
 
     return SRSRAN_SUCCESS;
@@ -1193,7 +1241,7 @@ int srsran_pmch_encode(srsran_pmch_t*      q,
      * (post-scramble, pre-modulation), one file per tti so a specific subframe's
      * TX-side data can be diffed against the matching RX-side dump (see the
      * decode()-side PMCH_RE_DUMP block below) for the same tti. */
-    if (getenv("PMCH_RE_DUMP")) {
+    if (pmch_re_dump_enabled(sf->tti)) {
       char fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_tx_sym_tti%u.bin", sf->tti);
       FILE* fsym = fopen(fn, "wb");
@@ -1231,7 +1279,7 @@ int srsran_pmch_encode(srsran_pmch_t*      q,
     /* PMCH_RE_DUMP: scratch instrumentation, see the matching comment in
      * rt-mbms-tx's copy of this function (this app is receive-only, so this path is
      * not actually live here, but kept mirrored for consistency). */
-    if (getenv("PMCH_RE_DUMP")) {
+    if (pmch_re_dump_enabled(sf->tti)) {
       uint32_t dump_n = SRSRAN_NRE_SCS(sf->subcarrier_spacing) * q->cell.nof_prb;
       char     fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_tx_preifft_tti%u.bin", sf->tti);

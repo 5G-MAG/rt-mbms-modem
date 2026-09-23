@@ -131,6 +131,20 @@ class MbsfnFrameProcessor {
     const std::vector<uint8_t> mch_data() const;
 
     /**
+     *  Fill `out` with the CE values (frequency domain) for displaying the
+     *  spectrum, same convention as CasFrameProcessor::ce_values(). Reuses
+     *  out's capacity (no allocation once out is sized).
+     */
+    void ce_values(std::vector<uint8_t>& out);
+
+    /**
+     *  Fill `out` with the channel impulse response (IFFT of the
+     *  frequency-domain channel estimate), magnitude in dB, fftshifted so lag 0
+     *  is centered. Reuses out's capacity (no allocation once out is sized).
+     */
+    void cir_values(std::vector<uint8_t>& out);
+
+    /**
      *  Get the CINR estimate (in dB)
      */
     float cinr_db() { return _ue_dl.chest_res.snr_db; }
@@ -180,6 +194,33 @@ class MbsfnFrameProcessor {
     RestHandler& _rest;
 
     unsigned _rx_channels;
+
+    /* IFFT plan and scratch buffers for cir_values()/ce_values(), (re)created
+     * in set_cell() -- called only from the single main thread, never from
+     * process()'s worker-pool thread -- and sized once so these never
+     * allocate on their hot per-subframe path. */
+    srsran_dft_plan_t  _cir_plan       = {};
+    bool               _cir_plan_ready = false;
+    uint32_t           _cir_plan_size  = 0;
+    std::vector<cf_t>  _cir_scratch_freq;
+    std::vector<cf_t>  _cir_scratch_time;
+    std::vector<cf_t>  _cir_scratch_shifted;
+    std::vector<float> _cir_scratch_db;
+    std::vector<float> _ce_scratch_db;
+    /* Persistent output byte-buffers for ce_values()/cir_values(), swapped into
+     * the _rest members for publishing so neither the fill nor the publish
+     * allocates in steady state (the swapped-back buffer is reused next cycle). */
+    std::vector<uint8_t> _ce_out_bytes;
+    std::vector<uint8_t> _cir_out_bytes;
+
+    /* ce_values()/cir_values() are only ever polled by the UI at ~10Hz, but
+     * this process() runs on every MBSFN subframe (up to ~1kHz across all
+     * mbsfn_processors) - recomputing the IFFT and re-deriving the CE
+     * snapshot on every single one is wasted work and, worse, wasted
+     * allocation/compute pressure on the actual decode hot path for no
+     * visible benefit. Update only every Nth subframe. */
+    static constexpr uint32_t CE_CIR_UPDATE_STRIDE = 10;
+    uint32_t _ce_cir_update_counter = 0;
 
     bool _allow_rrc_sn_across_periods = false;
     static std::mutex _sched_stop_mutex;

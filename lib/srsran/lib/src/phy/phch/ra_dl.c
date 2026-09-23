@@ -470,6 +470,13 @@ static int dl_dci_compute_tb(bool pdsch_use_tbs_index_alt, const srsran_dci_dl_t
   if (!SRSRAN_RNTI_ISUSER(dci->rnti) && !SRSRAN_RNTI_ISMBSFN(dci->rnti)) {
     if (dci->format == SRSRAN_DCI_FORMAT1A) {
       n_prb = dci->type2_alloc.n_prb1a == SRSRAN_RA_TYPE2_NPRB1A_2 ? 2 : 3;
+      /* Temporary diagnostic (FORCE_NPRB1A=2 or 3, unset by default): force the
+       * other n_prb1a interpretation, to test whether this single DCI bit is
+       * being misread. */
+      const char* force_nprb1a = getenv("FORCE_NPRB1A");
+      if (force_nprb1a) {
+        n_prb = (uint32_t)atoi(force_nprb1a);
+      }
       i_tbs = dci->tb[0].mcs_idx;
       tbs   = srsran_ra_tbs_from_idx(i_tbs, n_prb);
       if (tbs < 0) {

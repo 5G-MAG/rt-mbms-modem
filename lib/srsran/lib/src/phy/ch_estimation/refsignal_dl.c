@@ -822,7 +822,6 @@ int srsran_refsignal_mbsfn_get_sf(srsran_cell_t cell, uint32_t port_id, cf_t* sf
           fidx = 3 * (ns_37 % 2);
         } else {
           fidx = srsran_refsignal_mbsfn_fidx(l, scs);
-          act_prb_get = cell.nof_prb; /* non-SL2 SCS use nof_prb (no extended BW) */
         }
         for (i = 0; i < srsran_refsignal_mbsfn_rs_per_symbol(scs) * act_prb_get; i++) {
           pilots[SRSRAN_REFSIGNAL_PILOT_IDX_MBSFN(i, l, cell, scs) + nonmbsfn_offset] =

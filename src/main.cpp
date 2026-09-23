@@ -28,6 +28,7 @@
  *
  */
 
+#include <algorithm>
 #include <argp.h>
 
 #include <cstdlib>
@@ -53,6 +54,7 @@
 using libconfig::Config;
 using libconfig::FileIOException;
 using libconfig::ParseException;
+using libconfig::Setting;
 
 using std::placeholders::_1;
 using std::placeholders::_2;
@@ -215,6 +217,54 @@ void set_params(const std::string& ant, unsigned fc, double g, unsigned sr, unsi
 }
 
 /**
+ * Load the TV Service Configuration MO (ETSI TS 103 720 clause 5.10, MO
+ * urn:oma:mo:ext-3gpp-tv-config:1.0, defined in ETSI TS 124 117) from
+ * modem.conf's optional [modem.tv_config] section. This is the static,
+ * config-file equivalent of RestHandler's PUT /tv_config - lets a deployment
+ * provision PLMN/EARFCN/TMGI info before the REST API is even reachable,
+ * most importantly so the initial search frequency (below) can come from a
+ * single, spec-defined source instead of the flat, easily-drifting
+ * modem.sdr.center_frequency_hz value compared against whatever a live
+ * MBMS-ROM-Info redirect later advertises.
+ */
+std::vector<Phy::TvConfigPlmn> load_tv_config_from_cfg(const Config& cfg) {
+  std::vector<Phy::TvConfigPlmn> plmns;
+  if (!cfg.exists("modem.tv_config")) {
+    return plmns;
+  }
+  auto parse_tmgi_list = [](const Setting& s) {
+    std::vector<Phy::TvConfigTmgi> out;
+    for (int k = 0; k < s.getLength(); k++) {
+      Phy::TvConfigTmgi tmgi;
+      s[k].lookupValue("tmgi", tmgi.tmgi);
+      s[k].lookupValue("usd", tmgi.usd);
+      out.push_back(tmgi);
+    }
+    return out;
+  };
+  const Setting& tv_config = cfg.lookup("modem.tv_config");
+  for (int i = 0; i < tv_config.getLength(); i++) {
+    const Setting& p = tv_config[i];
+    Phy::TvConfigPlmn plmn;
+    p.lookupValue("plmn_id", plmn.plmn_id);
+    if (p.exists("ran_info")) {
+      const Setting& ran_info = p["ran_info"];
+      for (int j = 0; j < ran_info.getLength(); j++) {
+        plmn.earfcns.push_back((uint32_t)(int)ran_info[j]);
+      }
+    }
+    if (p.exists("tmgi_list_for_sa")) {
+      plmn.tmgis_for_sa = parse_tmgi_list(p["tmgi_list_for_sa"]);
+    }
+    if (p.exists("tmgi_list_for_service")) {
+      plmn.tmgis_for_service = parse_tmgi_list(p["tmgi_list_for_service"]);
+    }
+    plmns.push_back(plmn);
+  }
+  return plmns;
+}
+
+/**
  *  Main entry point for the program.
  *  
  * @param argc  Command line agument count
@@ -301,6 +351,28 @@ auto main(int argc, char **argv) -> int {
   }
 
 
+  /* If a TV Service Configuration MO (ETSI TS 103 720 clause 5.10) has been
+   * provisioned, its first PLMN's first RANInfo/EARFCN is the spec-intended
+   * source for which frequency to search on - takes priority over the flat
+   * modem.sdr.center_frequency_hz above, which has no way to stay consistent
+   * with what the network actually broadcasts/advertises via ROM-Info. */
+  std::vector<Phy::TvConfigPlmn> initial_tv_config = load_tv_config_from_cfg(cfg);
+  for (const auto& plmn : initial_tv_config) {
+    if (!plmn.earfcns.empty()) {
+      double freq_mhz = srsran_band_fd(plmn.earfcns[0]);
+      if (freq_mhz > 0.0) {
+        frequency = static_cast<unsigned>(freq_mhz * 1e6);
+        spdlog::info("TV Service Configuration MO: using EARFCN={} ({:.3f} MHz) from PLMN '{}' as "
+                     "initial search frequency, overriding modem.sdr.center_frequency_hz",
+                     plmn.earfcns[0], freq_mhz, plmn.plmn_id);
+      } else {
+        spdlog::warn("TV Service Configuration MO: EARFCN={} from PLMN '{}' does not resolve to a "
+                     "frequency, ignoring", plmn.earfcns[0], plmn.plmn_id);
+      }
+      break;
+    }
+  }
+
   cfg.lookupValue("modem.sdr.normalized_gain", gain);
   cfg.lookupValue("modem.sdr.antenna", antenna);
   cfg.lookupValue("modem.sdr.use_agc", use_agc);
@@ -325,11 +397,15 @@ auto main(int argc, char **argv) -> int {
   thread_param.sched_priority = 20;
   cfg.lookupValue("modem.phy.main_thread_priority_rt", thread_param.sched_priority);
 
+  if (thread_param.sched_priority > 0) {
   spdlog::info("Raising main thread to realtime scheduling priority {}", thread_param.sched_priority);
 
   int error = pthread_setschedparam(pthread_self(), SCHED_RR, &thread_param);
   if (error != 0) {
     spdlog::error("Cannot set main thread priority to realtime: {}. Thread will run at default priority.", strerror(error));
+  }
+  } else {
+    spdlog::info("main_thread_priority_rt=0, skipping realtime scheduling for main thread");
   }
 
   bool enable_measurement_file = false;
@@ -337,14 +413,17 @@ auto main(int argc, char **argv) -> int {
   MeasurementFileWriter measurement_file(cfg);
 
   // Create the layer components: Phy, RLC, RRC and GW
+  uint8_t cs_nof_prb = arguments.file_bw ? arguments.file_bw * 5
+                       : (arguments.override_nof_prb >= 0 ? (uint8_t)arguments.override_nof_prb : 25);
   Phy phy(
       cfg,
       std::bind(&SdrReader::get_samples, &sdr, _1, _2, _3),  // NOLINT
-      arguments.file_bw ? arguments.file_bw * 5 : 25,
+      cs_nof_prb,
       arguments.override_nof_prb,
       rx_channels);
 
   phy.init();
+  phy.set_tv_config(std::move(initial_tv_config));
 
   srsran::pdcp pdcp(nullptr, "PDCP");
   srsran::rlc rlc("RLC");
@@ -447,6 +526,22 @@ auto main(int argc, char **argv) -> int {
             // those resolve against a dummy sentinel with a nonzero frequency. Acceptable
             // because ROM targets in practice are always valid broadcast EARFCNs.
             if (freq_mhz > 0.0) {
+              /* Cross-check against the provisioned TV Service Configuration MO
+               * (ETSI TS 103 720 clause 5.10), if any - a live RRC-signalled ROM
+               * redirect pointing somewhere the MO's RANInfo never provisioned is
+               * legitimate (RRC signaling is dynamic, the MO is a coarser
+               * provisioning hint) but worth surfacing, since in practice it
+               * usually means the two are out of sync rather than a deliberate
+               * cross-carrier move. Purely informational - the redirect is still
+               * honoured either way. */
+              auto provisioned = phy.tv_config_earfcns();
+              if (!provisioned.empty() &&
+                  std::find(provisioned.begin(), provisioned.end(), rom_earfcn) == provisioned.end()) {
+                spdlog::warn("ROM redirect: EARFCN={} is not in the provisioned TV Service "
+                             "Configuration MO's RANInfo list - honouring it anyway, but this "
+                             "usually indicates the MO and the live SIB13 ROM-Info have drifted "
+                             "out of sync", rom_earfcn);
+              }
               unsigned rom_freq_hz = static_cast<unsigned>(freq_mhz * 1e6);
               if (rom_freq_hz != frequency) {
                 spdlog::info("ROM redirect: retuning SDR to EARFCN={} ({:.3f} MHz, {} PRB)",
@@ -604,6 +699,7 @@ auto main(int argc, char **argv) -> int {
             } else {
               // Nothing to do yet, we lack the data from SIB1/SIB13
               // Discard the samples and unlock the processor.
+              rest_handler.record_subframe_event(tti, RestHandler::SF_EVENT_GAP, RestHandler::SF_STATUS_IDLE);
               mbsfn_processors[mb_idx]->unlock();
             }
           } else {
@@ -665,7 +761,12 @@ auto main(int argc, char **argv) -> int {
           if (arguments.sample_file && arguments.file_bw) {
             // Samples files are recorded at a fixed sample rate that can be determined from the bandwidth command line argument.
             // If we're decoding from file, do not readjust the rate to match the CAS PRBs, but stay at this rate and instead configure the
-            // PHY to decode a narrow CAS from a wider channel.
+            // PHY to decode a narrow CAS from a wider channel: CAS/cell-access signalling always stays at a
+            // traditional LTE bandwidth (nof_prb, from 1.4 up to 20 MHz), while PMCH (mbsfn_nof_prb) can
+            // legitimately run wider, non-standard bandwidths (e.g. 6/7/8 MHz-equivalent PRB counts) - this
+            // is the normal 5G Terrestrial Broadcast / FeMBMS case, not a mismatch to reconcile away. See
+            // srsran_cell_isvalid()'s doc comment (lib/srsran/lib/src/phy/common/phy_common.c) for the
+            // buffer-capacity reasoning on why mbsfn_prb no longer has to equal nof_prb.
             mbsfn_nof_prb = arguments.file_bw * 5;
             phy.set_nof_mbsfn_prb(mbsfn_nof_prb);
             phy.set_cell();

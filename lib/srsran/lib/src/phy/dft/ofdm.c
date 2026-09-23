@@ -573,10 +573,16 @@ static void ofdm_rx_slot_mbsfn(srsran_ofdm_t* q, cf_t* input, cf_t* output)
 {
   uint32_t i;
   for (i = 0; i < q->nof_symbols_mbsfn * SRSRAN_MBSFN_NOF_SLOTS(q->cfg.subcarrier_spacing); i++) {
-    /* Non-MBSFN guard compensates for the normal→extended CP transition in standard
-     * 15 kHz MBSFN subframes.  FeMBMS SCS types (1.25/2.5/7.5/0.37 kHz) use a fixed
-     * extended-like CP throughout and have no such boundary; skip the guard for them. */
-    if (q->cfg.subcarrier_spacing == SRSRAN_SCS_15KHZ && i == (uint32_t)q->non_mbsfn_region) {
+    /* Non-MBSFN guard compensates for the normal→extended CP transition in standard,
+     * genuinely mixed-CP 15 kHz MBSFN subframes (SRSRAN_CP_ISNORM(q->cfg.cp) - a real
+     * normal-CP control region followed by an extended-CP MBSFN region). FeMBMS SCS
+     * types (1.25/2.5/7.5/0.37 kHz), and any 15 kHz cell configured with SRSRAN_CP_EXT
+     * from the start (e.g. pmch_test's QPSK/16QAM/64QAM cases), use a fixed
+     * extended-like CP throughout with no such boundary - matches the equivalent gate
+     * added to ofdm_tx_slot_mbsfn (same file); without it here too, RX skips a guard
+     * TX never actually inserted, misaligning every symbol from i==non_mbsfn_region on. */
+    if (q->cfg.subcarrier_spacing == SRSRAN_SCS_15KHZ && SRSRAN_CP_ISNORM(q->cfg.cp) &&
+        i == (uint32_t)q->non_mbsfn_region) {
       input += SRSRAN_NON_MBSFN_REGION_GUARD_LENGTH(q->non_mbsfn_region, q->cfg.symbol_sz);
     }
     if (q->cfg.subcarrier_spacing != SRSRAN_SCS_15KHZ) {
@@ -586,21 +592,27 @@ static void ofdm_rx_slot_mbsfn(srsran_ofdm_t* q, cf_t* input, cf_t* output)
       } else {
         input += q->cfg.symbol_sz / 4U;
       }
-    } else {
-      /* The non-MBSFN region (symbols before non_mbsfn_region) uses normal CP
-       * length and the MBSFN region uses extended CP length, based purely on
-       * the symbol index vs. non_mbsfn_region - this must NOT depend on
-       * q->cfg.cp (the CP configured for this OFDM object's *own* symbols,
-       * e.g. slot 1 - not a statement that the whole grid uses one uniform
-       * CP). A prior version of this function gated the split on
-       * SRSRAN_CP_ISNORM(q->cfg.cp): whenever the object was configured with
-       * SRSRAN_CP_EXT (the common case for MBSFN), RX always assumed extended
-       * CP for the non-MBSFN symbols too, regardless of non_mbsfn_region -
-       * a symbol/sample misalignment that corrupted every MBSFN payload
-       * symbol in slot 0 (see pmch_test's QPSK/16QAM/64QAM cases, which
-       * exercise exactly this srsran_ofdm_tx/rx_init_mbsfn(..., SRSRAN_CP_EXT, ...)
-       * configuration). */
+    } else if (SRSRAN_CP_ISNORM(q->cfg.cp)) {
+      /* TS 36.211 governs the two regions separately: "Unless otherwise specified,
+       * transmission in each downlink subframe shall use the same cyclic prefix length
+       * as used for downlink subframe #0" (Sec. 6, general rule) covers the non-MBSFN
+       * region, while "The PMCH shall use extended cyclic prefix" (Sec. 6.3, unconditional)
+       * covers the MBSFN region regardless of the cell's own CP. With q->cfg.cp == NORM
+       * (subframe #0 uses normal CP), that means: symbols before non_mbsfn_region use
+       * normal CP length, symbols from non_mbsfn_region on use extended CP length. */
       input += (i >= q->non_mbsfn_region) ? SRSRAN_CP_LEN_EXT(q->cfg.symbol_sz) : SRSRAN_CP_LEN_NORM(i, q->cfg.symbol_sz);
+    } else {
+      /* Same two spec clauses, but with q->cfg.cp == EXT (subframe #0 itself uses
+       * extended CP, e.g. pmch_test's QPSK/16QAM/64QAM cases): the non-MBSFN region
+       * clause now also resolves to extended CP, so both regions use extended CP and
+       * the whole subframe is uniform, independent of non_mbsfn_region. Previously this
+       * branch didn't exist: the case above ran unconditionally for any 15 kHz cell
+       * regardless of q->cfg.cp, so RX read symbols before non_mbsfn_region assuming the
+       * shorter *normal* CP length while TX (once its own SRSRAN_CP_ISNORM gate was
+       * added) wrote those same symbols with the *extended* length for exactly this
+       * cp==EXT case - a sample-count mismatch misaligning every FFT read from the very
+       * first symbol, corrupting the entire decoded payload regardless of MCS. */
+      input += SRSRAN_CP_LEN_EXT(q->cfg.symbol_sz);
     }
     srsran_dft_run_c(&q->fft_plan, input, q->tmp);
     memcpy(output, &q->tmp[q->nof_guards], q->nof_re * sizeof(cf_t));
@@ -747,9 +759,17 @@ void ofdm_tx_slot_mbsfn(srsran_ofdm_t* q, cf_t* input, cf_t* output)
        * non_mbsfn_region check) - this makes TX match that. TS 36.211 Table
        * 6.12-1: CP/Nu = 1/4 for 7.5/1.25/2.5 kHz; 1/9 for 0.37 kHz (CR 0548). */
       cp_len = SRSRAN_SCS_IS_370HZ(q->cfg.subcarrier_spacing) ? (int)(symbol_sz / 9U) : SRSRAN_CP_LEN_EXT(symbol_sz);
-    } else {
+    } else if (SRSRAN_CP_ISNORM(q->cfg.cp)) {
+      /* Normal-CP 15 kHz MBSFN: extended CP within the MBSFN region, normal CP outside
+       * it. Reconciled from rt-mbms-tx's ofdm.c: an earlier version of this file always
+       * used this branch's formula regardless of q->cfg.cp, silently applying the
+       * NORMAL-CP length even for extended-CP cells whenever i < non_mbsfn_region. */
       bool is_mbsfn_sym = (q->non_mbsfn_region < 0 || (int)i >= q->non_mbsfn_region);
       cp_len = is_mbsfn_sym ? SRSRAN_CP_LEN_EXT(symbol_sz) : SRSRAN_CP_LEN_NORM(i, symbol_sz);
+    } else {
+      /* Extended-CP cell: every symbol uses the extended length, independent of
+       * non_mbsfn_region (there's no "normal CP outside MBSFN" case to fall back to). */
+      cp_len = SRSRAN_CP_LEN_EXT(q->cfg.symbol_sz);
     }
     memcpy(&q->tmp[q->nof_guards], input, q->nof_re * sizeof(cf_t));
     srsran_dft_run_c(&q->fft_plan, q->tmp, &output[cp_len]);
@@ -758,15 +778,23 @@ void ofdm_tx_slot_mbsfn(srsran_ofdm_t* q, cf_t* input, cf_t* output)
     memcpy(output, &output[symbol_sz], cp_len * sizeof(cf_t));
     output += symbol_sz + cp_len;
 
-    /* Skip the small section between the non-MBSFN and MBSFN regions - 15 kHz only.
-     * For non-15 kHz SCS this must never fire: q->non_mbsfn_region can be a small
-     * positive value there too (the same upstream issue as above), and this guard
-     * insertion would otherwise splice spurious extra samples into the output
-     * exactly where the CP fix above already established there is no such
-     * boundary to skip. rt-mbms-tx's copy of this function has this same check
-     * commented out entirely for the same reason; gated here instead of removed
-     * so the 15 kHz path (which does need it) is unchanged. */
-    if (q->cfg.subcarrier_spacing == SRSRAN_SCS_15KHZ && i == (uint32_t)(q->non_mbsfn_region - 1)) {
+    /* Skip the small section between the non-MBSFN and MBSFN regions - only meaningful
+     * for a genuine mixed-CP 15 kHz cell (a real normal-CP control region followed by an
+     * extended-CP MBSFN region, the SRSRAN_CP_ISNORM(q->cfg.cp) branch above). For a cell
+     * configured with SRSRAN_CP_EXT from the start (the else branch above - e.g.
+     * pmch_test's QPSK/16QAM/64QAM cases, which construct their ofdm_tx/rx_init_mbsfn
+     * objects with SRSRAN_CP_EXT directly), every symbol already uses the same extended
+     * CP uniformly - there is no normal-to-extended transition boundary to skip, so this
+     * must not fire regardless of q->non_mbsfn_region's value. Previously this checked
+     * only subcarrier_spacing==15kHz, unconditionally on q->cfg.cp, which spliced a
+     * spurious extra gap into every symbol from i==non_mbsfn_region-1 onward for any
+     * uniformly-extended-CP 15kHz cell - a sample misalignment that corrupted the entire
+     * decoded payload from the very first symbol. rt-mbms-tx's copy of this function has
+     * this check commented out entirely, which is overly broad (it also disables the
+     * guard for the genuine mixed-CP case that does need it) but happens to be correct
+     * for every SCS/CP combination actually exercised there so far. */
+    if (q->cfg.subcarrier_spacing == SRSRAN_SCS_15KHZ && SRSRAN_CP_ISNORM(q->cfg.cp) &&
+        i == (uint32_t)(q->non_mbsfn_region - 1)) {
       output += SRSRAN_NON_MBSFN_REGION_GUARD_LENGTH(q->non_mbsfn_region, symbol_sz);
     }
   }

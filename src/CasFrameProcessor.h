@@ -104,9 +104,43 @@ class CasFrameProcessor {
    std::vector<uint8_t> ce_values();
 
    /**
+    *  Get the channel impulse response (IFFT of the frequency-domain channel
+    *  estimate), magnitude in dB, fftshifted so lag 0 is centered.
+    */
+   std::vector<uint8_t> cir_values();
+
+   /**
     *  Get the constellation diagram data (I/Q data of the subcarriers after CE)
     */
    std::vector<uint8_t> pdsch_data();
+
+   /**
+    *  Get the full received CAS resource grid: per-RE magnitude (dB, floor -80)
+    *  for the whole subframe, laid out symbol-major (RE index = symbol *
+    *  (nof_prb*12) + subcarrier), 14 OFDM symbols x nof_prb*12 subcarriers.
+    *  Lets the UI draw a 1 ms resource-element map showing where PSS/SSS/PBCH/
+    *  CRS/PDCCH/PDSCH sit as a power pattern.
+    */
+   std::vector<uint8_t> cas_grid();
+
+   /**
+    *  Channel-type ID per RE, same layout/size as cas_grid(). Categorical
+    *  ("what is this RE") rather than power ("how strong is this RE") - see
+    *  CasComponent for the legend. Computed from srsRAN's own deterministic
+    *  position functions (refsignal_cs_*, pss/sss_put_slot's k formula,
+    *  pbch_cp's symbol/subcarrier ranges, this fork's PBCH_CAS_MAP_*, and
+    *  the REGS structures already populated during PCFICH/PDCCH decode) -
+    *  not re-derived from scratch, so it inherits the receiver's own
+    *  ground truth instead of risking a second, divergent implementation.
+    */
+   enum CasComponent : uint8_t { COMP_OTHER = 0, COMP_PSS = 1, COMP_SSS = 2, COMP_PBCH = 3, COMP_CRS = 4, COMP_PCFICH = 5, COMP_PDCCH = 6 };
+   std::vector<uint8_t> composition_grid();
+
+   /**
+    *  Get the constellation diagram data for the PDCCH candidate found in the
+    *  most recent occasion (post-equalization symbols, before blind decode).
+    */
+   std::vector<uint8_t> pdcch_data();
 
    /**
     *  Get the CINR estimate (in dB)
@@ -183,6 +217,16 @@ class CasFrameProcessor {
     srsran_softbuffer_rx_t _softbuffer;
     uint8_t* _data[SRSRAN_MAX_CODEWORDS];
 
+    // Number of REs the most recently found PDCCH candidate occupied (from its
+    // aggregation level), so pdcch_data() knows how much of _ue_dl.pdcch.d is valid.
+    uint32_t _last_pdcch_nof_re = 0;
+
+    // nCCE/aggregation level of the most recently found PDCCH candidate(s) this
+    // occasion, so composition_grid() (called after the decode loop) can mark
+    // exactly which REs carried it. Cleared at the top of process() so a CAS
+    // occasion with no grant correctly shows no PDCCH in the composition.
+    std::vector<std::pair<uint32_t, uint32_t>> _last_pdcch_locations; // (ncce, L)
+
     srsran_ue_dl_t     _ue_dl     = {};
     srsran_ue_dl_cfg_t _ue_dl_cfg = {};
     srsran_dl_sf_cfg_t _sf_cfg = {};
@@ -192,4 +236,16 @@ class CasFrameProcessor {
     unsigned _rx_channels;
 
     bool _started = 0;
+
+    /* IFFT plan and scratch buffers for cir_values(), (re)created in set_cell()
+     * -- called only from the single main thread, never from process()'s
+     * worker-pool thread -- and sized once so cir_values() never allocates on
+     * its hot per-subframe path. */
+    srsran_dft_plan_t  _cir_plan       = {};
+    bool               _cir_plan_ready = false;
+    uint32_t           _cir_plan_size  = 0;
+    std::vector<cf_t>  _cir_scratch_freq;
+    std::vector<cf_t>  _cir_scratch_time;
+    std::vector<cf_t>  _cir_scratch_shifted;
+    std::vector<float> _cir_scratch_db;
 };

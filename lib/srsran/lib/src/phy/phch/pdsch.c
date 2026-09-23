@@ -736,6 +736,45 @@ static int srsran_pdsch_codeword_decode(srsran_pdsch_t*     q,
       csi_correction(q, cfg, codeword_idx, tb_idx, q->e[codeword_idx]);
     }
 
+    /* Temporary diagnostic (PDSCH_LLR_DUMP=1, off by default): dump the raw
+     * post-descrambling, pre-turbo-decode LLR array for forensic comparison
+     * between a working and a failing capture. */
+    if (getenv("PDSCH_LLR_DUMP")) {
+      char fn[128];
+      snprintf(fn, sizeof(fn), "/tmp/pdsch_llr_tti%u_tb%d.bin", sf->tti, tb_idx);
+      FILE* fllr = fopen(fn, "wb");
+      if (fllr) {
+        uint32_t n = cfg->grant.tb[tb_idx].nof_bits;
+        if (q->llr_is_8bit) {
+          fwrite(q->e[codeword_idx], sizeof(int8_t), n, fllr);
+        } else {
+          fwrite(q->e[codeword_idx], sizeof(int16_t), n, fllr);
+        }
+        fclose(fllr);
+        fprintf(stderr, "[PDSCH_LLR_DUMP] tti=%u tb=%d n=%u llr_is_8bit=%d rnti=0x%x mcs=%d -> %s\n",
+                sf->tti, tb_idx, n, q->llr_is_8bit, cfg->rnti, cfg->grant.tb[tb_idx].mcs_idx, fn);
+      }
+    }
+
+    /* Temporary diagnostic (PDSCH_LLR_FLIP=1, off by default): test whether an
+     * inverted LLR sign convention explains a consistent, high-confidence
+     * decode failure - flip every LLR's sign right before rate-dematching/
+     * turbo decode. */
+    if (getenv("PDSCH_LLR_FLIP")) {
+      uint32_t n = cfg->grant.tb[tb_idx].nof_bits;
+      if (q->llr_is_8bit) {
+        int8_t* e = (int8_t*)q->e[codeword_idx];
+        for (uint32_t i = 0; i < n; i++) {
+          e[i] = (int8_t)(-e[i]);
+        }
+      } else {
+        int16_t* e = (int16_t*)q->e[codeword_idx];
+        for (uint32_t i = 0; i < n; i++) {
+          e[i] = (int16_t)(-e[i]);
+        }
+      }
+    }
+
     /* Return  */
     ret = srsran_dlsch_decode2(dl_sch, cfg, q->e[codeword_idx], data[tb_idx].payload, tb_idx, nof_layers);
 
