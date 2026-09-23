@@ -81,10 +81,12 @@ class MbsfnFrameProcessor {
 
     /**
      *  Set the parameters for the cell (Nof PRB, etc).
-     * 
+     *
      *  @param cell The cell we're camping on
+     *  @param mbsfn_scs Real MBSFN subcarrier spacing, for correctly sizing the FFT
+     *         when cell.mbsfn_prb != cell.nof_prb - see srsran_ue_dl_set_cell_scs().
      */
-    void set_cell(srsran_cell_t cell);
+    void set_cell(srsran_cell_t cell, srsran_scs_t mbsfn_scs = SRSRAN_SCS_15KHZ);
 
     /**
      *  Get a handle of the signal buffer to store samples for processing in, 
@@ -110,6 +112,20 @@ class MbsfnFrameProcessor {
      *  Returns tru if MBSFN params have already been configured
      */
     bool mbsfn_configured() { return _mbsfn_configured; }
+
+    /**
+     *  The grid width (nof_prb, already resolved to max(cell nof_prb,
+     *  mbsfn_prb) by the caller) this instance was last configured with -
+     *  see set_cell()'s doc comment for why the caller must reconfigure
+     *  (not just check mbsfn_configured()) when this changes: pmch_bandwidth
+     *  can legitimately change value mid-session (e.g. a live SET), and each
+     *  of the thread_cnt worker instances only ever configures once without
+     *  this check, silently keeping a stale FFT/buffer width indefinitely
+     *  and corrupting every subsequent decode (confirmed live 2026-07-17,
+     *  NaN post-equalization power once the actual width no longer matched
+     *  what this instance was still using).
+     */
+    uint32_t configured_nof_prb() { return _cell.nof_prb; }
 
     /**
      *  Unlock the processor
@@ -179,6 +195,16 @@ class MbsfnFrameProcessor {
      * failures. Reset at slot m's own n==0 (new TB starting), same moment
      * the softbuffer itself resets. */
     bool                   _ti_reported[SRSRAN_PMCH_MAX_TI_M] = {};
+    /* Last (N, M) this processor actually saw, so process() can detect a LIVE change (the eNB's
+     * control socket allows changing embms.pmch1.time_interleaving_n/m while running -- see
+     * rrc::reconfigure_embms()) and flush the slot-indexed softbuffer state above before it goes
+     * stale. Sentinel 0xFF (not a legal N or M) so the very first call after construction always
+     * takes the "changed" branch too -- harmless there since every slot starts uninitialized
+     * anyway, but it keeps the check itself branch-free (no separate "is this the first call"
+     * flag). See process()'s own comment on why a block-length change makes existing softbuffer
+     * state actively wrong, not just stale. */
+    uint8_t                _last_ti_n = 0xFF;
+    uint8_t                _last_ti_m = 0xFF;
 
     srsran_ue_dl_t     _ue_dl     = {};
     srsran_ue_dl_cfg_t _ue_dl_cfg = {};
@@ -221,6 +247,14 @@ class MbsfnFrameProcessor {
      * visible benefit. Update only every Nth subframe. */
     static constexpr uint32_t CE_CIR_UPDATE_STRIDE = 10;
     uint32_t _ce_cir_update_counter = 0;
+
+    /* Worst-case code-block count for a time-interleaved MCH TB: a TI'd
+     * TBS is inflated by the TI factor then rounded against
+     * pmch_ti_tbs.h's fixed tables, which saturate at 502624 bits
+     * regardless of mbsfn_prb. 502624/(SRSRAN_TCOD_MAX_LEN_CB-24)+1 = 83,
+     * about 4x srsran_softbuffer_rx_init(q, 100)'s untuned single-subframe
+     * sizing (21 CBs) - see the softbuffer init sites in the .cpp. */
+    static constexpr uint32_t PMCH_MAX_CB_TI = 83;
 
     bool _allow_rrc_sn_across_periods = false;
     static std::mutex _sched_stop_mutex;

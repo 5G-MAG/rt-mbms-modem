@@ -600,6 +600,13 @@ static int decode_tb(srsran_sch_t*           q,
   }
 
   if (cb_segm->C > softbuffer->max_cb) {
+    if (getenv("SOFTBUFFER_DIAG")) {
+      fprintf(stderr,
+              "SOFTBUFFER_DIAG REJECT cb_segm.C=%d softbuffer.max_cb=%d tbs=%d\n",
+              cb_segm->C,
+              softbuffer->max_cb,
+              cb_segm->tbs);
+    }
     fprintf(stderr,
             "Error number of CB to decode (%d) exceeds soft buffer size (%d CBs)\n",
             cb_segm->C,

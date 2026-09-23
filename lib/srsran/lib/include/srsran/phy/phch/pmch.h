@@ -40,6 +40,7 @@
 #include "srsran/phy/mimo/layermap.h"
 #include "srsran/phy/mimo/precoding.h"
 #include "srsran/phy/modem/demod_soft.h"
+#include "srsran/phy/modem/evm.h"
 #include "srsran/phy/modem/mod.h"
 #include "srsran/phy/phch/dci.h"
 #include "srsran/phy/phch/pdsch.h"
@@ -90,6 +91,11 @@ typedef struct SRSRAN_API {
   cf_t* x[SRSRAN_MAX_PORTS];
   cf_t* d;
   void* e;
+
+  /* EVM measurement buffer (RX only) - pdsch.c's srsran_pdsch_res_t::evm was
+   * always left at its zero-initialized default for PMCH, since nothing ever
+   * computed it (see srsran_pmch_decode's evm_run_s call). */
+  srsran_evm_buffer_t* evm_buffer;
 
   /* tx & rx objects */
   srsran_modem_table_t mod[5]; /* BPSK, QPSK, 16QAM, 64QAM, 256QAM */

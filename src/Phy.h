@@ -21,6 +21,8 @@
 
 #include <functional>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <map>
 #include <vector>
@@ -32,11 +34,48 @@
 #include <libconfig.h++>
 
 #include "srsran/srsran.h"
+#include "srsran/phy/resampling/resampler.h"
 #include "srsran/interfaces/rrc_interface_types.h"
 #include "srsran/common/gen_mch_tables.h"
 #include "srsran/phy/common/phy_common.h"
 
 constexpr unsigned int MAX_PRB = 100;
+
+/* TS 36.211 §6.10.2.2.4 / §6.10.2.1.4: 0.37 kHz MBSFN content is organised in 3 ms
+ * slots, 13 per 40 ms period (13*3=39, one subframe short of 40) - the RS stagger/
+ * cinit bookkeeping (refsignal_dl.c's put_sf/get_sf/interpolate_pilots) treats the
+ * first local slot per period as spanning subframes pos40 0..3 (4, not 3) purely to
+ * make the numbering add up (4+3*12=40).
+ *
+ * That accounting is right for the RS table index, but WRONG as a guide to which
+ * raw subframes actually carry MBSFN samples: Phy::is_cas_subframe() shows pos40==0
+ * (tti%40==0, for nof_prb>=25 - TS 36.211 §6.6.4.1) is unconditionally the CAS
+ * occasion, a completely separate, always-15kHz transmission, never MBSFN content
+ * at all. So the first logical slot's REAL, sample-bearing subframes are pos40
+ * 1..3 - still exactly 3, same as every other slot - not 4; confirmed live (a
+ * naive first attempt that waited for pos40==0 before starting accumulation never
+ * saw it fire, since is_mbsfn_subframe()/is_cas_subframe() correctly never
+ * dispatch that tti to the MBSFN path in the first place).
+ *
+ * Returns {pos_in_slot (0-based, 0..2), slot_len (always 3)}. Used both to widen
+ * which subframes Phy::mbsfn_config_for_tti()/is_mbsfn_subframe() mark as an active
+ * 370 kHz MCCH/MCH occasion, and by MbsfnFrameProcessor to know where in its 3-
+ * subframe accumulation window this tti's fresh samples belong.
+ *
+ * Only verified against a nof_prb>=25 cell (cas_period=40, the only real 0.37 kHz
+ * test file available); is_cas_subframe()'s nof_prb<25 branch uses a different
+ * period/offset (80/40) not exercised or re-derived here. */
+inline std::pair<uint32_t, uint32_t> scs370_slot_position(uint32_t tti) {
+  uint32_t pos40 = tti % 40u;
+  if (pos40 == 0u) {
+    return {0u, 0u};  // slot_len=0: CAS's own subframe, never a real MBSFN position
+  }
+  if (pos40 <= 3u) {
+    return {pos40 - 1u, 3u};
+  }
+  uint32_t adj = pos40 - 4u;
+  return {adj % 3u, 3u};
+}
 
 /**
  *  The PHY component. Handles synchronisation and is the central hub for
@@ -109,12 +148,64 @@ class Phy {
     /**
      * Get the current CFO value
      */
-    float cfo() { return srsran_ue_sync_get_cfo(&_ue_sync);}
+    float cfo() { std::lock_guard<std::mutex> lock(_ue_sync_mutex); return srsran_ue_sync_get_cfo(&_ue_sync);}
+
+    /**
+     * Get the actual number of fresh raw samples delivered per get_next_frame() call
+     * (diagnostic use, WIDE_FFT_DIAG -- checking whether this covers a wide-SCS symbol)
+     */
+    uint32_t ue_sync_sf_len() { std::lock_guard<std::mutex> lock(_ue_sync_mutex); return _ue_sync.sf_len; }
+
+    /**
+     * 0.37 kHz only: accumulate this subframe's just-delivered fresh samples
+     * (already sitting in signal_buffer[ch][0..sf_len)) into the correct offset
+     * of a persistent, source-rate accumulation window, then, once every
+     * constituent subframe of the current 3-subframe slot has been gathered
+     * (see scs370_slot_position()), resample the assembled window up to this
+     * numerology's own rate (CR 0548 / srsran_sampling_freq_hz_scs()) and copy
+     * the result back into signal_buffer, ready for the caller's existing,
+     * unmodified FFT/decode path. Returns true when signal_buffer is ready to
+     * decode THIS call, false if still waiting on more subframes of the same
+     * slot (caller should skip its decode attempt this call, not count it as
+     * an error).
+     *
+     * Deliberately lives here, not on MbsfnFrameProcessor: main.cpp round-
+     * robins its mb_idx (hence which MbsfnFrameProcessor instance handles a
+     * given tti) on every dispatched subframe whenever there's no active,
+     * time-interleaved MCH content to pin it to one instance (confirmed live -
+     * an MCCH-only occasion, like every 0.37kHz file tested so far, hits
+     * exactly this case) - per-instance accumulation state would never survive
+     * across the 3 consecutive subframes one slot spans. Phy is the one
+     * object every call is guaranteed to share.
+     */
+    bool scs370_accumulate_and_prepare(uint32_t tti, cf_t* signal_buffer[SRSRAN_MAX_PORTS],
+                                        unsigned rx_channels, uint32_t nof_prb, srsran_scs_t scs);
 
     /**
      * Set the CFO value from channel estimation
+     *
+     * This is the one _ue_sync touchpoint called from a worker thread (CasFrameProcessor::
+     * process(), via CAS's per-occasion CFO estimate -- see the loop-bandwidth comment on
+     * srsran_ue_sync_set_cfo_loop_bw() below), while get_next_frame() below runs on the main
+     * thread and reads/updates this same cfo_current_value internally on every subframe.
+     * Both are now serialized on _ue_sync_mutex: previously unsynchronized (the loop-bandwidth
+     * reduction only shrank each update's magnitude, it never made the underlying read/write
+     * itself thread-safe). Confirmed live, 2026-07-22: this cross-thread race's trigger rate
+     * scales with CAS-occasion frequency -- an MBMS/Unicast-mixed cell's CAS period (every
+     * 5ms, TS 36.300's original Rel-9 mixed-cell subframe 0/5) hits it 8-16x more often than
+     * an MBMS-dedicated cell's 40/80ms CAS period, matching the periodic "Synchronization
+     * lost while processing" seen only in the former (SYNC_OFFSET_DIAG showed genuine PSS
+     * correlation collapse -- peak 1.0-1.5 vs a healthy 4.6-9.7 -- consistent with CFO
+     * correction occasionally applied from a torn/stale read of a concurrently-written value).
      */
-    void set_cfo_from_channel_estimation(float cfo) { srsran_ue_sync_set_cfo_ref(&_ue_sync, cfo); }
+    void set_cfo_from_channel_estimation(float cfo) { std::lock_guard<std::mutex> lock(_ue_sync_mutex); srsran_ue_sync_set_cfo_ref(&_ue_sync, cfo); }
+
+    /* Diagnostic accessors (2026-07-19): expose _ue_sync's own ongoing timing-
+     * tracking state, to compare baseline vs a widened mbsfn_prb directly - see
+     * CAS_CE_DIAG in CasFrameProcessor.cpp. */
+    double   ue_sync_mean_sample_offset() { return _ue_sync.mean_sample_offset; }
+    int      ue_sync_next_rf_sample_offset() { return _ue_sync.next_rf_sample_offset; }
+    float    ue_sync_track_peak_value() { return _ue_sync.strack.peak_value; }
 
     /**
      *  Number of times the MIB has been successfully decoded (once at initial
@@ -176,7 +267,11 @@ class Phy {
     /**
      * Clear configuration values
      */
-    void reset() { _mcch_configured = _mch_configured = false; }
+    void reset() {
+      _mcch_configured = false;
+      std::lock_guard<std::mutex> lock(_mcch_mutex);
+      _mch_configured = false;
+    }
 
     /**
      * Return true if MCCH has been configured
@@ -218,9 +313,16 @@ class Phy {
     }
 
     /**
-     * Return the most recently decoded MCCH message (for change detection)
+     * Return the most recently decoded MCCH message (for change detection).
+     * By-value (copy under lock) -- see _mcch_mutex's doc comment. Binding the
+     * result to a `const auto&`/`const srsran::mcch_msg_t&` at the call site
+     * still works correctly (lifetime-extends the temporary); no caller
+     * changes needed for this signature change.
      */
-    const srsran::mcch_msg_t& current_mcch() const { return _mcch; }
+    srsran::mcch_msg_t current_mcch() const {
+      std::lock_guard<std::mutex> lock(_mcch_mutex);
+      return _mcch;
+    }
 
     /**
      * Get number of PRB in MBSFN/PMCH
@@ -420,6 +522,12 @@ class Phy {
     struct TvConfigTmgi {
       std::string tmgi;
       std::string usd; /* TS 26.346 User Service Description, opaque here */
+      /* FLUTE Transport Session Identifier of this TMGI's download session.
+       * For a TMGIListForSA entry this is the ROM SACH TSI -- one of the
+       * "pre-defined ... TSI value" ROM SACH session parameters provisioned
+       * via this MO (TS 26.346 clause 5.2.3.1.1 / TS 24.117). The middleware
+       * reads it from here instead of a hand-edited config. */
+      uint32_t tsi = 0;
     };
     struct TvConfigPlmn {
       std::string plmn_id;
@@ -702,7 +810,12 @@ class Phy {
       std::vector< mtch_info_t > mtchs;
     } mch_info_t;
 
-    const std::vector< mch_info_t>& mch_info() { return _mch_info;  }
+    /* By-value (copy under lock) -- _mch_info is rebuilt alongside _mcch in
+     * set_mbsfn_config(), same race as _mcch_mutex's doc comment covers. */
+    std::vector<mch_info_t> mch_info() const {
+      std::lock_guard<std::mutex> lock(_mcch_mutex);
+      return _mch_info;
+    }
 
     void set_dest_for_lcid(uint32_t mch_idx, int lcid, std::string dest) { _dests[mch_idx][lcid] = dest; }
 
@@ -718,10 +831,32 @@ class Phy {
 
     SubcarrierSpacing mbsfn_subcarrier_spacing() {
       if (_cell.mbms_dedicated) {
-        const auto& info = _sib13.mbsfn_area_info_list[0];
+        // _sib13 is guarded by _sib13_mutex -- snapshot by value under lock, not a bare
+        // reference into live, concurrently-writable state.
+        srsran::mbsfn_area_info_t info;
+        {
+          std::lock_guard<std::mutex> lock(_sib13_mutex);
+          info = _sib13.mbsfn_area_info_list[0];
+        }
         if (info.subcarrier_spacing == srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_0dot37) {
+          if (getenv("TIME_SEP_DIAG")) {
+            static int last_printed = -1;
+            int         cur         = (int)info.time_separation;
+            if (cur != last_printed) {
+              fprintf(stderr, "TIME_SEP_DIAG: time_separation=%d (0=sl2,1=sl4,2=nulltype/absent)\n", cur);
+              last_printed = cur;
+            }
+          }
           if (info.time_separation == srsran::mbsfn_area_info_t::time_separation_t::sl2) return SubcarrierSpacing::df_370Hz_sl2;
-          return SubcarrierSpacing::df_370Hz_sl4;  /* SL4 is default when absent (TS 36.211 §4.1) */
+          return SubcarrierSpacing::df_370Hz_sl4;  /* TS 36.331 field description: "E-UTRAN always
+                                                       configures this field when subcarrierSpacingMBMS
+                                                       indicates 0.37 kHz" - so falling through to sl4
+                                                       here should only happen for a genuine sl4
+                                                       signal, never for a legitimately-absent field.
+                                                       Previous comment ("SL4 default when absent, TS
+                                                       36.211 §4.1") was wrong on both counts: there is
+                                                       no real "absent" case for 0.37 kHz, and clause 4.1
+                                                       says nothing about this - corrected 2026-07-25. */
         }
         switch (info.subcarrier_spacing) {
           case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return SubcarrierSpacing::df_1kHz25;
@@ -734,9 +869,29 @@ class Phy {
       }
     }
 
+    /* srsran_scs_t equivalent of mbsfn_subcarrier_spacing(), for callers that need
+     * to pass the real MBSFN SCS into srsran_ue_dl_set_cell_scs() (e.g. set_cell()
+     * on the CAS/MBSFN frame processors) rather than the project's own enum. */
+    srsran_scs_t mbsfn_scs() {
+      switch (mbsfn_subcarrier_spacing()) {
+        case SubcarrierSpacing::df_7kHz5:     return SRSRAN_SCS_7KHZ5;
+        case SubcarrierSpacing::df_2kHz5:     return SRSRAN_SCS_2KHZ5;
+        case SubcarrierSpacing::df_1kHz25:    return SRSRAN_SCS_1KHZ25;
+        case SubcarrierSpacing::df_370Hz:     return SRSRAN_SCS_370HZ;
+        case SubcarrierSpacing::df_370Hz_sl4: return SRSRAN_SCS_370HZ_SL4;
+        case SubcarrierSpacing::df_370Hz_sl2: return SRSRAN_SCS_370HZ_SL2;
+        default:                              return SRSRAN_SCS_15KHZ;
+      }
+    }
+
     float mbsfn_subcarrier_spacing_khz() {
       if (_cell.mbms_dedicated) {
-        switch (_sib13.mbsfn_area_info_list[0].subcarrier_spacing) {
+        srsran::mbsfn_area_info_t::subcarrier_spacing_t scs;
+        {
+          std::lock_guard<std::mutex> lock(_sib13_mutex);
+          scs = _sib13.mbsfn_area_info_list[0].subcarrier_spacing;
+        }
+        switch (scs) {
           case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_1dot25: return 1.25;
           case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_2dot5:  return 2.5;
           case srsran::mbsfn_area_info_t::subcarrier_spacing_t::khz_7dot5:  return 7.5;
@@ -748,24 +903,69 @@ class Phy {
       }
     }
 
-    srsran::mcch_msg_t& mcch() { return _mcch; }
+    /* By-value (copy under lock), same as current_mcch() -- see _mcch_mutex's
+     * doc comment. This used to return a mutable reference; its one caller
+     * (RestHandler.cpp) only ever read through it, so the safer copy-out
+     * semantics are a strict improvement with no behavior change there. */
+    srsran::mcch_msg_t mcch() const {
+      std::lock_guard<std::mutex> lock(_mcch_mutex);
+      return _mcch;
+    }
 
-    /* Companion timestamp for _mcch, unprotected to match _mcch/_cell's own
-     * existing no-mutex precedent (single writer thread; REST reads a
-     * torn-read-tolerant snapshot). */
-    void set_mcch_received_at(uint64_t now_ms) { _mcch_last_received_at = now_ms; }
-    uint64_t mcch_last_received_at() { return _mcch_last_received_at; }
+    /* Companion timestamp for _mcch -- now guarded by _mcch_mutex, since it's
+     * set alongside _mcch in set_mbsfn_config() and was found to be part of
+     * the same real cross-thread race (see _mcch_mutex's doc comment). */
+    void set_mcch_received_at(uint64_t now_ms) {
+      std::lock_guard<std::mutex> lock(_mcch_mutex);
+      _mcch_last_received_at = now_ms;
+    }
+    uint64_t mcch_last_received_at() const {
+      std::lock_guard<std::mutex> lock(_mcch_mutex);
+      return _mcch_last_received_at;
+    }
 
     int _mcs = 0;
     get_samples_t _sample_cb;
 
  private:
     const libconfig::Config& _cfg;
+    // Guards _ue_sync against the main thread (get_next_frame(), every subframe) racing
+    // CasFrameProcessor's worker thread (set_cfo_from_channel_estimation(), every CAS
+    // occasion) -- see that function's own comment for the full story.
+    std::mutex _ue_sync_mutex;
     srsran_ue_sync_t _ue_sync = {};
     srsran_ue_cellsearch_t _cell_search = {};
     srsran_ue_mib_sync_t  _mib_sync = {};
     srsran_ue_mib_t  _mib = {};
     srsran_cell_t _cell = {};
+
+    /* 0.37 kHz support: ofdm.c's own MBSFN init comment admits "the 1 ms srsRAN
+     * subframe processing window covers 1/3 of one symbol; full 0.37 kHz support
+     * requires a wider processing frame" - confirmed live (WIDE_FFT_DIAG) that
+     * two-thirds of fft_mbsfn's input was hard zero, never written. This state
+     * accumulates the 3 consecutive 1 ms subframes a 370 kHz slot actually spans
+     * (see scs370_slot_position() - subframe 0 of each 40ms period is CAS's own
+     * subframe, TS 36.211 6.6.4.1, never a 4th MBSFN one) at the SOURCE (standard,
+     * CAS-native) sample rate, then resamples up to the rate srsran_symbol_sz_scs()/
+     * CR 0548 defines for this numerology (e.g. 11.52 MHz vs the native 7.68 MHz at
+     * 25 PRB - a 3:2 ratio, needing chained interpolate+decimate stages since the
+     * resampler only takes a single integer ratio) before the FFT ever runs.
+     * Guarded by its own mutex (not _ue_sync_mutex): scs370_accumulate_and_prepare()
+     * can be called from whichever MbsfnFrameProcessor instance main.cpp's mb_idx
+     * round-robin currently points at, potentially from different worker threads
+     * across calls, and must serialize against itself even though only one 370kHz
+     * occasion is ever realistically in flight at a time. */
+    std::mutex                 _scs370_mutex;
+    srsran_resampler_fft_t     _scs370_interp[SRSRAN_MAX_PORTS] = {};
+    srsran_resampler_fft_t     _scs370_decim[SRSRAN_MAX_PORTS]  = {};
+    uint32_t                   _scs370_interp_ratio = 0;
+    uint32_t                   _scs370_decim_ratio  = 0;
+    uint32_t                   _scs370_resamplers_for_nof_prb = 0;  // 0 = not yet configured
+    unsigned                   _scs370_resamplers_for_rx_channels = 0;
+    std::vector<cf_t>          _scs370_accum[SRSRAN_MAX_PORTS];           // source-rate, up to 3*sf_len
+    std::vector<cf_t>          _scs370_interp_scratch[SRSRAN_MAX_PORTS];  // source_len * interp_ratio
+    std::vector<cf_t>          _scs370_resampled[SRSRAN_MAX_PORTS];       // final, target-rate window
+    int                        _scs370_expected_pos = -1;  // -1 = no accumulation in progress
 
     std::atomic<bool> _decode_mcch{false};
 
@@ -788,8 +988,33 @@ class Phy {
     uint64_t _last_mib_decoded_at = 0;
 
     uint8_t  _mcch_table[10] = {};
-    bool _mcch_configured = false;
+    /* Confirmed real race (2026-07-24): plain bool written on the CAS worker-pool
+     * thread (set_mch_scheduling_info(), Phy.cpp) and read on the main thread
+     * (mcch_configured()/is_mbsfn_subframe()/mbsfn_config_for_tti()) with no lock or
+     * fence between them - the write sits after the _sib13_mutex critical section in
+     * the same function, so it gets none of that mutex's release-acquire visibility
+     * guarantee, unlike _cell.mbsfn_prb (written just before the lock in the same
+     * function, and so reliably visible as an accidental side effect). Manifested as
+     * SIB13/MCCH intermittently never being recognized as configured for the
+     * lifetime of a run, on an otherwise-identical file/config. Same bug class as
+     * _mch_configured/_mcch/_sib13/_ue_sync, already fixed elsewhere in this file;
+     * this one flag was missed in every prior pass, most likely due to its
+     * one-character name collision with _mch_configured. Matches this file's own
+     * established fix for the analogous _decode_mcch flag: std::atomic<bool>, no
+     * call-site changes needed. */
+    std::atomic<bool> _mcch_configured{false};
     srsran::sib13_t _sib13 = {};
+
+    /* Confirmed real race (2026-07-14, RACE_DIAG instrumentation): _mcch is
+     * written by whichever thread decodes a fresh MCCH (Rrc::write_pdu_mch ->
+     * set_mbsfn_config()) while mbsfn_config_for_tti() reads it from the
+     * MTCH-decoding thread pool (4 threads, round-robin). The previous
+     * "single writer thread; REST reads a torn-read-tolerant snapshot"
+     * assumption was wrong -- mbsfn_config_for_tti()'s read is decode-critical,
+     * not just a REST snapshot. Guards _mcch, _mch_configured, _mch_info,
+     * _mcch_last_received_at (all written together in set_mbsfn_config()).
+     * Mirrors the existing _sib13_mutex/_sib1_mutex pattern. */
+    mutable std::mutex _mcch_mutex;
     srsran::mcch_msg_t _mcch = {};
     uint64_t _mcch_last_received_at = 0;
 

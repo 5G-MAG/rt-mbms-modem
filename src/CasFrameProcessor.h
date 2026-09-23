@@ -73,10 +73,12 @@ class CasFrameProcessor {
 
    /**
     *  Set the parameters for the cell (Nof PRB, etc).
-    * 
+    *
     *  @param cell The cell we're camping on
+    *  @param mbsfn_scs Real MBSFN subcarrier spacing, for correctly sizing the FFT
+    *         when cell.mbsfn_prb != cell.nof_prb - see srsran_ue_dl_set_cell_scs().
     */
-   void set_cell(srsran_cell_t cell);
+   void set_cell(srsran_cell_t cell, srsran_scs_t mbsfn_scs = SRSRAN_SCS_15KHZ);
 
    /**
     *  Get a handle of the signal buffer to store samples for processing in
@@ -150,7 +152,7 @@ class CasFrameProcessor {
 
 
 
-   /********************** Getters and setters for chest_cfg params for rt-wui **********************************/
+   /********************** Getters and setters for chest_cfg params for rt-mbms-application **********************************/
 
    /**
     *  Set the filter order used to filter the channel estimates. 

@@ -377,6 +377,10 @@ void rlc::write_pdu_pcch(srsran::unique_byte_buffer_t pdu)
 
 void rlc::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, uint8_t* payload, uint32_t nof_bytes)
 {
+  if (getenv("RLC_MCH_DIAG")) {
+    fprintf(stderr, "RLC_MCH_DIAG write_pdu_mch called mch_idx=%u lcid=%u nof_bytes=%u valid=%d\n",
+            mch_idx, lcid, nof_bytes, (int)valid_lcid_mrb(mch_idx, lcid));
+  }
   if (valid_lcid_mrb(mch_idx, lcid)) {
     rlc_array_mrb.at(mch_idx).at(lcid)->write_pdu(payload, nof_bytes);
   }

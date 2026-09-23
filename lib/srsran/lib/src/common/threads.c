@@ -160,7 +160,9 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
       // without real-time scheduling privileges (e.g. unprivileged
       // containers), since that's exactly when pthread_create fails with
       // EPERM and this fallback path is reached.
-      perror("Warning: Failed to create thread with real-time priority. Creating it with normal priority");
+      fprintf(stderr,
+              "Warning: Failed to create thread with real-time priority (%s). Creating it with normal priority.\n",
+              strerror(err));
       err = pthread_create(thread, NULL, start_routine, arg);
       if (err) {
         perror("pthread_create");

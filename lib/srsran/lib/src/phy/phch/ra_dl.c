@@ -847,8 +847,21 @@ uint32_t srsran_ra_dl_grant_nof_re(const srsran_cell_t* cell, srsran_dl_sf_cfg_t
     return prb * nre - (n1 * rs1 + n2 * rs2);
   }
 
+  /* Bound must be max(cell->nof_prb, grant->nof_prb), not cell->nof_prb alone:
+   * srsran_configure_pmch() sets grant.nof_prb = mbsfn_prb when it's wider than
+   * the carrier (extended-coverage PMCH) and populates prb_idx[i][j]=true for
+   * the full grant.nof_prb width -- a loop bounded by cell->nof_prb alone would
+   * never visit those already-true entries beyond it. MbsfnFrameProcessor
+   * currently avoids tripping this by overwriting its own _cell.nof_prb to
+   * max(nof_prb, mbsfn_prb) before calling srsran_ra_dl_compute_nof_re() (see
+   * that file's set_cell()), which is why this side doesn't currently exhibit
+   * the bug the matching rt-mbms-tx fix describes live-testing (MCCH RE
+   * undercounted 3000/4800, near-zero tail on the wire) -- fixing it here too
+   * so this shared, generic RA function is correct on its own terms for any
+   * other/future caller that doesn't happen to apply that same workaround. */
+  uint32_t max_prb_ = SRSRAN_MAX(cell->nof_prb, grant->nof_prb);
   for (s = 0; s < nof_slots; s++) {
-    for (j = 0; j < cell->nof_prb; j++) {
+    for (j = 0; j < max_prb_; j++) {
       if (grant->prb_idx[s][j]) {
         nof_re += ra_re_x_prb(cell, sf, s, j);
       }

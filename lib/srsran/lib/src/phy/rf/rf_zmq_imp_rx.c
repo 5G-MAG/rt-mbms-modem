@@ -126,6 +126,19 @@ int rf_zmq_rx_open(rf_zmq_rx_t* q, rf_zmq_opts_t opts, void* zmq_ctx, char* sock
 
     if (opts.socket_type == ZMQ_SUB) {
       zmq_setsockopt(q->sock, ZMQ_SUBSCRIBE, "", 0);
+
+      /* ZMQ_SUB's default receive high-water-mark is 1000 messages: if this
+       * consumer momentarily falls behind the publisher (a scheduling hiccup,
+       * a slow decode), ZMQ silently DROPS the backlog rather than blocking -
+       * the same failure mode already fixed on the TX/PUB side this campaign
+       * (see rf_zmq_imp_tx.c's ZMQ_SNDHWM). Bounded, not unlimited, for the
+       * same reason: the ~91%-of-nominal throughput ceiling on this pipeline
+       * is a persistent deficit at ratio=1, not just a transient stall. */
+      int rcvhwm = 50000;
+      if (zmq_setsockopt(q->sock, ZMQ_RCVHWM, &rcvhwm, sizeof(rcvhwm)) == -1) {
+        fprintf(stderr, "Error: setting receive HWM on rx socket\n");
+        goto clean_exit;
+      }
     }
 
 #if ZMQ_MONITOR

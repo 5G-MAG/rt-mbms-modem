@@ -50,6 +50,29 @@ int rf_zmq_tx_open(rf_zmq_tx_t* q, rf_zmq_opts_t opts, void* zmq_ctx, char* sock
     q->frequency_mhz = opts.frequency_mhz;
     q->sample_offset = opts.sample_offset;
 
+    /* ZMQ_PUB's default send high-water-mark is 1000 messages: if a
+     * subscriber ever falls behind by more than that many queued messages -
+     * even briefly, e.g. a scheduling hiccup - ZMQ silently DROPS the
+     * backlog rather than blocking this publisher. A bounded-but-larger HWM
+     * absorbs that kind of transient stall without the silent drop.
+     *
+     * Deliberately NOT unlimited (0): see rt-mbms-tx's copy of this file for
+     * the full write-up - the live-measured ~91%-of-nominal raw throughput
+     * ceiling on the ZMQ loopback rig this library is used with turns out to
+     * be a PERSISTENT, chronic deficit, not just an occasional stall, so an
+     * unlimited HWM risks roughly unbounded queue growth for as long as the
+     * deficit persists (real at ratio=1, e.g. a signalled pmch-Bandwidth-r17
+     * wideband PMCH; not an issue at ratio>1, where decimation means the
+     * consumer's actual need is already below what's delivered). A large
+     * bounded value keeps the transient-stall protection without that risk. */
+    if (opts.socket_type == ZMQ_PUB) {
+      int sndhwm = 50000;
+      if (zmq_setsockopt(q->sock, ZMQ_SNDHWM, &sndhwm, sizeof(sndhwm)) == -1) {
+        fprintf(stderr, "Error: setting send HWM on tx socket\n");
+        goto clean_exit;
+      }
+    }
+
     rf_zmq_info(q->id, "Binding transmitter: %s\n", sock_args);
 
     ret = zmq_bind(q->sock, sock_args);

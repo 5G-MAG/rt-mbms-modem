@@ -38,6 +38,7 @@
 #include "srsran/phy/ch_estimation/chest_dl.h"
 #include "srsran/phy/common/phy_common.h"
 #include "srsran/phy/dft/ofdm.h"
+#include "srsran/phy/resampling/resampler.h"
 
 #include "srsran/phy/phch/dci.h"
 #include "srsran/phy/phch/pcfich.h"
@@ -97,6 +98,18 @@ typedef struct SRSRAN_API {
   srsran_chest_dl_res_t chest_res;
   srsran_ofdm_t         fft[SRSRAN_MAX_PORTS];
   srsran_ofdm_t         fft_mbsfn[SRSRAN_MAX_PORTS];
+
+  /* CAS/PBCH/PDCCH fft[] stays permanently at its own native, narrow symbol_sz
+   * (exactly like a standard, non-FeMBMS LTE UE) regardless of mbsfn_prb - it
+   * reads from its own cas_buffer[] here (decimated down from raw_buffer[],
+   * the caller's original wide-rate samples, by cas_decimator[] in
+   * srsran_ue_dl_decode_fft_estimate()), not from raw_buffer[] directly.
+   * Replaces an earlier approach that widened fft[]'s own symbol_sz directly;
+   * abandoned after a full day of unresolved corruption - see
+   * SIB13_MBSFN_TEST_RESULTS.md and this session's plan file. */
+  cf_t*                  raw_buffer[SRSRAN_MAX_PORTS];
+  cf_t*                  cas_buffer[SRSRAN_MAX_PORTS];
+  srsran_resampler_fft_t cas_decimator[SRSRAN_MAX_PORTS];
 
   // Buffers to store channel symbols after demodulation
   cf_t*              sf_symbols[SRSRAN_MAX_PORTS];
@@ -165,6 +178,13 @@ srsran_ue_dl_init(srsran_ue_dl_t* q, cf_t* input[SRSRAN_MAX_PORTS], uint32_t max
 SRSRAN_API void srsran_ue_dl_free(srsran_ue_dl_t* q);
 
 SRSRAN_API int srsran_ue_dl_set_cell(srsran_ue_dl_t* q, srsran_cell_t cell);
+
+/* Like srsran_ue_dl_set_cell(), but lets the caller specify the actual MBSFN
+ * subcarrier spacing when cell.mbsfn_prb != cell.nof_prb (FeMBMS extended
+ * coverage). srsran_ue_dl_set_cell() itself hardcodes SRSRAN_SCS_15KHZ for
+ * this, which silently mis-sizes the FFT for any reduced SCS - see the
+ * doc comment on this function's definition in ue_dl.c. */
+SRSRAN_API int srsran_ue_dl_set_cell_scs(srsran_ue_dl_t* q, srsran_cell_t cell, srsran_scs_t mbsfn_scs);
 
 SRSRAN_API int srsran_ue_dl_set_mbsfn_area_id(srsran_ue_dl_t* q, uint16_t mbsfn_area_id);
 

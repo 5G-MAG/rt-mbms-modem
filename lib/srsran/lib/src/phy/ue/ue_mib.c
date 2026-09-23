@@ -53,7 +53,18 @@ int srsran_ue_mib_init(srsran_ue_mib_t* q, cf_t* in_buffer, uint32_t max_prb)
       goto clean_exit;
     }
 
-    if (srsran_ofdm_rx_init(&q->fft, SRSRAN_CP_NORM, in_buffer, q->sf_symbols, max_prb)) {
+    /* raw_buffer: the caller's original wide-rate samples (was fft's own
+     * in_buffer). cas_buffer: fft's own permanently-narrow scratch, decimated
+     * down from raw_buffer by cas_decimator in srsran_ue_mib_decode() - see
+     * ue_mib.h doc comment. */
+    q->raw_buffer = in_buffer;
+    q->cas_buffer = srsran_vec_cf_malloc(SRSRAN_SF_LEN_PRB(max_prb));
+    if (!q->cas_buffer) {
+      perror("malloc");
+      goto clean_exit;
+    }
+
+    if (srsran_ofdm_rx_init(&q->fft, SRSRAN_CP_NORM, q->cas_buffer, q->sf_symbols, max_prb)) {
       ERROR("Error initializing FFT");
       goto clean_exit;
     }
@@ -82,6 +93,10 @@ void srsran_ue_mib_free(srsran_ue_mib_t* q)
   if (q->sf_symbols) {
     free(q->sf_symbols);
   }
+  if (q->cas_buffer) {
+    free(q->cas_buffer);
+  }
+  srsran_resampler_fft_free(&q->cas_decimator);
   srsran_sync_free(&q->sfind);
   srsran_chest_dl_res_free(&q->chest_res);
   srsran_chest_dl_free(&q->chest);
@@ -100,17 +115,53 @@ int srsran_ue_mib_set_cell(srsran_ue_mib_t* q, srsran_cell_t cell)
       ERROR("Error initiating PBCH");
       return SRSRAN_ERROR;
     }
-    if (cell.mbsfn_prb != 0 && cell.nof_prb != cell.mbsfn_prb) {
-      if (srsran_ofdm_rx_set_prb_symbol_sz(&q->fft, cell.cp, cell.nof_prb,
-            srsran_symbol_sz(cell.mbsfn_prb))) {
-        ERROR("Error resizing FFT\n");
+    /* fft stays permanently at the carrier's own native, narrow symbol_sz -
+     * exactly like a standard, non-FeMBMS LTE UE, regardless of mbsfn_prb.
+     * An earlier approach widened fft's own symbol_sz directly, mirroring
+     * ue_dl.c's fft[port]; abandoned alongside it for the same reason (see
+     * ue_dl.c/ue_dl_set_cell_scs()'s own comment and
+     * SIB13_MBSFN_TEST_RESULTS.md). MIB/PBCH's own raw samples are instead
+     * decimated down from the wide-rate raw_buffer into cas_buffer by
+     * cas_decimator, in srsran_ue_mib_decode(), just before fft runs. */
+    if (srsran_ofdm_rx_set_prb(&q->fft, cell.cp, cell.nof_prb)) {
+      ERROR("Error initializing FFT\n");
+      return SRSRAN_ERROR;
+    }
+    /* (Re)compute the wire <-> MIB sample-rate ratio and (re)init the
+     * decimator bridge - same sample-RATE (not symbol-size) ratio formula as
+     * ue_dl.c/enb_dl.c. wide_sf_len uses the plain, non-SCS SRSRAN_SF_LEN_PRB
+     * directly (no fft_mbsfn sibling here to borrow a value from, unlike
+     * ue_dl.c): correct because this project's FeMBMS numerologies preserve
+     * the same overall sample rate for a given PRB count regardless of SCS
+     * (verified via srsran_sampling_freq_hz_scs()'s own reduction to the
+     * plain 15kHz table for every non-370Hz SCS - see enb_dl.c's ratio-
+     * formula comment for the full reasoning), so the plain, standard-
+     * numerology sample count already equals the true wire-rate one for
+     * every SCS this project actually uses. */
+    /* KNOWN GAP: unlike ue_dl.c's srsran_ue_dl_set_cell_scs(), this function takes no
+     * SCS parameter (by design - see this function's own doc comment on "zero changes
+     * to callers"), so there's no way here to detect and reject the 370Hz-family case
+     * where srsran_sampling_freq_hz() below is not equivalent to the correct, SCS-aware
+     * formula. Not yet triggered (370Hz support is already a separately-scoped,
+     * incomplete architectural gap in this campaign), but a real latent bug if MIB is
+     * ever decoded with 370Hz + real mbsfn_prb widening - would need this function's
+     * signature extended (and its ~1 caller, Phy::cell_search()/synchronize_subframe(),
+     * updated) to close properly, not attempted here. */
+    {
+      uint32_t wide_prb  = (cell.mbsfn_prb != 0) ? SRSRAN_MAX(cell.nof_prb, cell.mbsfn_prb) : cell.nof_prb;
+      q->wide_sf_len     = (uint32_t)SRSRAN_SF_LEN_PRB(wide_prb);
+      int wide_hz        = srsran_sampling_freq_hz(wide_prb);
+      int narrow_hz      = srsran_sampling_freq_hz(cell.nof_prb);
+      if (wide_hz <= 0 || narrow_hz <= 0 || (wide_hz % narrow_hz) != 0) {
+        ERROR("CAS<->PMCH sample-rate ratio not integer (wide=%d narrow=%d Hz)", wide_hz, narrow_hz);
         return SRSRAN_ERROR;
       }
-    } else {
-      if (srsran_ofdm_rx_set_prb(&q->fft, cell.cp, cell.nof_prb)) {
-        ERROR("Error initializing FFT\n");
-        return SRSRAN_ERROR;
-      }
+      uint32_t ratio = (uint32_t)(wide_hz / narrow_hz);
+      /* Return value intentionally unchecked: ratio==1 (baseline, no PMCH
+       * widening) returns SRSRAN_ERROR_OUT_OF_BOUNDS by this function's own
+       * design (resampler.c) - expected/benign, mirrors radio.cc's own
+       * identical, unchecked usage of this same call. */
+      srsran_resampler_fft_init(&q->cas_decimator, SRSRAN_RESAMPLER_MODE_DECIMATE, ratio);
     }
 
     if (cell.nof_ports == 0) {
@@ -140,6 +191,17 @@ int srsran_ue_mib_decode(srsran_ue_mib_t* q,
                          int*             sfn_offset)
 {
   int ret = SRSRAN_SUCCESS;
+
+  /* Decimate this occasion's wide raw samples down into fft's own
+   * permanently-narrow cas_buffer before it runs - see ue_mib.h doc comment.
+   *
+   * REVERTED THE PER-OCCASION RESET (2026-07-19): see rt-mbms-tx's enb_dl.c and
+   * ue_dl.c for the full reasoning (identical here) - a per-occasion reset forces
+   * a cold start against phantom zero history, shifting the whole occasion's
+   * output by the filter's own srsran_resampler_fft_get_delay() instead of
+   * decaying within it. Not resetting lets this decimator carry the previous
+   * occasion's tail forward instead of zero. */
+  srsran_resampler_fft_run(&q->cas_decimator, q->raw_buffer, q->cas_buffer, q->wide_sf_len);
 
   /* Run FFT for the slot symbols */
   srsran_ofdm_rx_sf(&q->fft);

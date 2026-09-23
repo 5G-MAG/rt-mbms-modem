@@ -103,11 +103,24 @@ void RestHandler::get(http_request message) {
           break;
       }
 
-      if (_phy.cell().nof_prb == _phy.cell().mbsfn_prb) {
-        state["nof_prb"] = value(_phy.cell().nof_prb);
-      } else {
-        state["nof_prb"] = value(_phy.cell().mbsfn_prb);
-      }
+      /* This is the CAS (Common Access Subframes, i.e. every non-PMCH
+       * subframe) width - the carrier's own base cell PRB count, regardless
+       * of any narrower/wider pmch-Bandwidth-r17 PMCH allocation. An earlier
+       * version of this field resolved the mbsfn_prb sentinel in here
+       * (mbsfn_prb != 0 ? mbsfn_prb : nof_prb), which meant the dashboard's
+       * "PRB"/"Width" row silently showed the PMCH's width instead of the
+       * CAS's own whenever a wideband override was signalled - misleading,
+       * since the row is (now explicitly) labelled CAS PRB/CAS Bandwidth,
+       * and window.cas_nof_prb (fed by this same field, modem.js) also sizes
+       * the CAS resource-grid heatmap, which must use the CAS's own width. */
+      state["nof_prb"] = value(_phy.cell().nof_prb);
+      /* The true configured PMCH width (TS 36.331 pmch-Bandwidth-r17), unlike
+       * MbsfnFrameProcessor's own internal _cell.nof_prb which main.cpp
+       * deliberately overrides to max(nof_prb, mbsfn_prb) for its own FFT
+       * sizing - see the decoupled-FFT plan. Needed so the frontend can scale
+       * the CAS frequency/time waterfalls to the same physical axis as the
+       * MBSFN ones (window.mbsfn_prb, modem.js). */
+      state["mbsfn_prb"] = value(_phy.nof_mbsfn_prb());
       state["cell_id"] = value(_phy.cell().id);
       state["cfo"] = value(_phy.cfo());
       state["cinr_db"] = value(cinr_db());
@@ -117,7 +130,12 @@ void RestHandler::get(http_request message) {
       state["sss_detected"] = value(_phy.sss_detected());
       state["mib_decode_count"] = value(_phy.mib_decode_count());
       state["mib_nof_ports"] = value(_phy.mib_nof_ports());
-      state["subcarrier_spacing"] = value(_phy.mbsfn_subcarrier_spacing_khz());
+      /* CAS (Common Access Subframes) always use standard 15 kHz LTE
+       * numerology (TS 36.211): only the MBSFN/PMCH region can use a
+       * reduced FeMBMS subcarrier spacing (1.25/2.5/7.5 kHz). This is a
+       * fixed protocol constant, not read from _phy.mbsfn_subcarrier_
+       * spacing_khz() (which is the MBSFN-specific value, unrelated to CAS). */
+      state["subcarrier_spacing"] = value(15.0f);
 
       // CAS Chest params //
       state["filter_order"] = value(_cas_processor->get_filter_order());
@@ -181,10 +199,12 @@ void RestHandler::get(http_request message) {
       auto cestream = Concurrency::streams::bytestream::open_istream(_corr_values_mbsfn);
       message.reply(status_codes::OK, cestream);
     } else if (paths[0] == "subframe_log") {
-      // [sfn, sf, type, status] tuples, oldest first - see SubframeEventType/Status.
+      // [sfn, sf, type, status, pmch_idx] tuples, oldest first - see SubframeEventType/Status.
+      // pmch_idx is only meaningful for MCH events; always 0 for CAS/MCCH/GAP.
       std::vector<value> entries;
       for (const auto& e : subframe_log_snapshot()) {
-        entries.push_back(value::array({ value(e.sfn), value(e.sf), value(e.type), value(e.status) }));
+        entries.push_back(
+            value::array({ value(e.sfn), value(e.sf), value(e.type), value(e.status), value(e.pmch_idx) }));
       }
       message.reply(status_codes::OK, value::array(entries));
     } else if (paths[0] == "pdsch_status") {
@@ -245,6 +265,10 @@ void RestHandler::get(http_request message) {
       });
       message.reply(status_codes::OK, value::array(mi));
     } else if (paths[0] == "mch_status") {
+      if (paths.size() < 2) {
+        message.reply(status_codes::NotFound);
+        return;
+      }
       int idx = std::stoi(paths[1]);
       value sdr = value::object();
       sdr["bler"] = value(_mch[idx].total == 0 ? 0.0f
@@ -256,6 +280,10 @@ void RestHandler::get(http_request message) {
       sdr["present"] = value(_mch[idx].present);
       message.reply(status_codes::OK, sdr);
     } else if (paths[0] == "mch_data") {
+      if (paths.size() < 2) {
+        message.reply(status_codes::NotFound);
+        return;
+      }
       int idx = std::stoi(paths[1]);
       auto cestream = Concurrency::streams::bytestream::open_istream(_mch[idx].GetData());
       message.reply(status_codes::OK, cestream);
@@ -278,6 +306,7 @@ void RestHandler::get(http_request message) {
             value tv = value::object();
             tv["tmgi"] = value::string(t.tmgi);
             tv["usd"]  = value::string(t.usd);
+            tv["tsi"]  = value(t.tsi);
             out.push_back(tv);
           }
           return value::array(out);
@@ -515,6 +544,9 @@ void RestHandler::put(http_request message) {
             if (t.has_field("usd")) {
               tmgi.usd = t.at("usd").as_string();
             }
+            if (t.has_field("tsi")) {
+              tmgi.tsi = (uint32_t)t.at("tsi").as_integer();
+            }
             out.push_back(tmgi);
           }
         }
@@ -557,9 +589,9 @@ void RestHandler::add_cinr_value( float cinr) {
   _cinr_db.push_back(cinr);
 }
 
-void RestHandler::record_subframe_event(uint32_t tti, uint8_t type, uint8_t status) {
+void RestHandler::record_subframe_event(uint32_t tti, uint8_t type, uint8_t status, uint8_t pmch_idx) {
   std::lock_guard<std::mutex> lock(_subframe_log_mutex);
-  _subframe_log.push_back({tti / 10, static_cast<uint8_t>(tti % 10), type, status});
+  _subframe_log.push_back({tti / 10, static_cast<uint8_t>(tti % 10), type, status, pmch_idx});
   if (_subframe_log.size() > SUBFRAME_LOG_CAPACITY) {
     _subframe_log.pop_front();
   }

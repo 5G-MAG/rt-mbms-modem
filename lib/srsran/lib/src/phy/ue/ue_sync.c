@@ -696,6 +696,28 @@ static int track_peak_ok(srsran_ue_sync_t* q, uint32_t track_idx)
   q->frame_ok_cnt++;
   q->frame_no_cnt = 0;
 
+  /* SYNC_OFFSET_DIAG: track whether last_sample_offset/mean_sample_offset
+   * drift monotonically over consecutive subframes -- part of the n_prb=25
+   * 1.25kHz FeMBMS investigation into a perfectly deterministic ~1879-
+   * subframe sync-loss period (see fembms-mbsfn-cfo-investigation memory).
+   * If this generic (non-FeMBMS-aware) PSS/SSS timing loop has even a tiny
+   * constant-rate miscalibration once running on the decimated 7.68MHz MBSFN
+   * stream, it would show up here as last_sample_offset trending in one
+   * direction over time rather than oscillating around zero. Safe to leave
+   * (env-gated), remove once the investigation concludes. */
+  if (getenv("SYNC_OFFSET_DIAG")) {
+    static uint64_t call_count = 0;
+    call_count++;
+    fprintf(stderr,
+            "SYNC_OFFSET_DIAG call=%llu frame_ok_cnt=%llu last_sample_offset=%d mean_sample_offset=%.4f "
+            "next_rf_sample_offset=%d sf_len=%d fft_size=%d cfo_current_hz=%.4f strack_cfo_hz=%.4f "
+            "frame_number=%u sf_idx=%u peak=%.4f\n",
+            (unsigned long long)call_count, (unsigned long long)q->frame_ok_cnt, q->last_sample_offset,
+            q->mean_sample_offset, q->next_rf_sample_offset, q->sf_len, q->fft_size,
+            15000.0f * q->cfo_current_value, 15000.0f * srsran_sync_get_cfo(&q->strack), q->frame_number,
+            q->sf_idx, srsran_sync_get_peak_value(&q->strack));
+  }
+
   return 1;
 }
 
@@ -703,6 +725,17 @@ static int track_peak_no(srsran_ue_sync_t* q)
 {
   /* if we missed too many PSS go back to FIND and consider this frame unsynchronized */
   q->frame_no_cnt++;
+  /* SYNC_OFFSET_DIAG: log every missed PSS-peak detection (see the matching
+   * diagnostic in track_peak_ok()) -- part of the n_prb=25 1.25kHz FeMBMS
+   * cyclical-sync-loss investigation. Want to see whether the peak value is
+   * genuinely marginal/borderline right before a miss (pointing to reduced
+   * processing gain/SNR on the decimated path) and whether misses cluster at
+   * a recurring frame_number/sf_idx position. */
+  if (getenv("SYNC_OFFSET_DIAG")) {
+    fprintf(stderr, "SYNC_OFFSET_DIAG MISS peak=%.4f frame_no_cnt=%llu frame_number=%u sf_idx=%u\n",
+            srsran_sync_get_peak_value(&q->strack), (unsigned long long)q->frame_no_cnt, q->frame_number,
+            q->sf_idx);
+  }
   if (q->frame_no_cnt >= TRACK_MAX_LOST) {
     INFO("%d frames lost. Going back to FIND", (int)q->frame_no_cnt);
     q->state = SF_FIND;
@@ -921,7 +954,27 @@ int srsran_ue_sync_run_track_pss_mode(srsran_ue_sync_t* q, cf_t* input_buffer[SR
      */
 
     // Expected PSS position is different for FDD and TDD
-    uint32_t pss_idx = q->frame_len - PSS_OFFSET - q->fft_size - q->strack.max_offset / 2;
+    /* This subtraction underflows (wraps to a huge uint32_t) whenever
+     * frame_len - PSS_OFFSET - fft_size < max_offset/2 - confirmed live,
+     * 2026-07-24: at 15 PRB (3 MHz) specifically, frame_len=3840 and
+     * TRACK_FRAME_SIZE (a fixed 3840, used verbatim as max_offset via
+     * SRSRAN_MAX(TRACK_FRAME_SIZE, CP_LEN_EXT(fft_size)) a few lines up in
+     * this file's own set_cell()/resize logic - TRACK_FRAME_SIZE dominates
+     * at every bandwidth this codebase supports) makes the raw subtraction
+     * exactly -256, wrapping to ~4.29 billion. That huge "offset" then gets
+     * added to a pointer in srsran_sync_find()/srsran_pss_find_pss()
+     * (&input_ptr[find_offset]), reading from an essentially random address
+     * - a 100%-reproducible crash confirmed via AddressSanitizer, backtrace
+     * ending in srsran_pss_find_pss's memcpy. Wider bandwidths (25 PRB and up,
+     * all other 5G-MAG files) keep this subtraction positive by comfortable
+     * margin, which is why only the narrowest published bandwidth is affected.
+     * Clamping to 0 is safe: a negative raw result only ever meant "the
+     * tracking window is wider than the whole frame," in which case starting
+     * the search at the beginning of the buffer (offset 0) is the correct,
+     * conservative fallback, not a wild pointer. */
+    int32_t  pss_idx_signed = (int32_t)q->frame_len - (int32_t)PSS_OFFSET - (int32_t)q->fft_size -
+                              (int32_t)(q->strack.max_offset / 2);
+    uint32_t pss_idx        = (pss_idx_signed > 0) ? (uint32_t)pss_idx_signed : 0u;
 
     int n = srsran_sync_find(&q->strack, input_buffer[0], pss_idx, &track_idx);
     switch (n) {

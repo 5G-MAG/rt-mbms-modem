@@ -460,7 +460,7 @@ static void pmch_cp_sl4_prb(cf_t** in_ptr, cf_t** out_ptr, uint32_t stagger, boo
   }
 }
 
-static int pmch_cp(srsran_pmch_t* q, cf_t* input, cf_t* output, uint32_t lstart_grant, bool put, srsran_scs_t scs, uint32_t tti)
+static int pmch_cp(srsran_pmch_t* q, cf_t* input, cf_t* output, uint32_t lstart_grant, bool put, srsran_scs_t scs, uint32_t tti, uint32_t prb_count)
 {
   uint32_t s, n, l, lp, lstart, lend, nof_refs;
   cf_t *   in_ptr = input, *out_ptr = output;
@@ -475,7 +475,17 @@ static int pmch_cp(srsran_pmch_t* q, cf_t* input, cf_t* output, uint32_t lstart_
   }
 #endif
   nof_refs             = srsran_refsignal_mbsfn_rs_per_symbol(scs);
-  uint32_t act_prb_cp  = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
+  /* act_prb_cp is the caller's explicit prb_count (cfg->pdsch_cfg.grant.nof_prb), which
+   * srsran_configure_pmch() sets to mbsfn_prb (if set) for MCCH and MTCH alike -- MCCH is
+   * just another logical channel multiplexed onto the same MCH/PMCH (TS 36.300 §15.3.3),
+   * so it uses the same width as the rest of that PMCH, not a narrower one. Recomputing
+   * prb_count independently here (instead of using the value already agreed with the
+   * caller) risked drifting from cfg->pdsch_cfg.grant.nof_re, which is derived from that
+   * same caller-side value -- causing srsran_pmch_decode's own consistency check ("PMCH 1
+   * extract symbols error expecting %d symbols but got %d") to fail. Using the passed-in
+   * prb_count directly keeps this function and the caller's grant.nof_re computation
+   * intrinsically in sync. */
+  uint32_t act_prb_cp  = prb_count;
   for (s = 0; s < SRSRAN_MBSFN_NOF_SLOTS(scs); s++) {
     for (l = 0; l < SRSRAN_MBSFN_NOF_SYMBOLS(scs); l++) {
       for (n = 0; n < act_prb_cp; n++) {
@@ -487,13 +497,22 @@ static int pmch_cp(srsran_pmch_t* q, cf_t* input, cf_t* output, uint32_t lstart_
         }
         lend = SRSRAN_MBSFN_NOF_SYMBOLS(scs);
         lp   = l + s * SRSRAN_MBSFN_NOF_SYMBOLS(scs);
-        /* Symbol stride is nof_prb (full OFDM bandwidth), not act_prb_cp (PMCH bandwidth).
-         * sf_symbols has nof_prb*NRE_SCS samples per MBSFN symbol; using act_prb_cp as
-         * stride corrupts all symbols beyond the first when mbsfn_prb < nof_prb. */
+        /* Symbol stride is the actual MBSFN grid width, not act_prb_cp (PMCH's own
+         * populated bandwidth): the sf_symbols buffer/MBSFN IFFT are sized to
+         * max(nof_prb, mbsfn_prb) samples per symbol (mirrors enb_dl.c/cc_worker.cc on
+         * the TX side, and pmch_cp's identical fix in rt-mbms-tx's copy of this file),
+         * covering both a narrower PMCH (mbsfn_prb < nof_prb -- stride stays nof_prb,
+         * unchanged) and a wider one (mbsfn_prb > nof_prb -- stride must grow to match,
+         * or reads/writes here spill into the next symbol's row). This copy was missing
+         * that fix: using plain nof_prb as stride while act_prb_cp (the loop bound) grows
+         * past it corrupts every symbol beyond the first whenever mbsfn_prb > nof_prb --
+         * found live-testing pmch_bandwidth=30 at nof_prb=25 (BLER ~100%; TX-side transmit
+         * was already correct, only RX-side decode had this stride mismatch). */
+        uint32_t stride = SRSRAN_MAX(q->cell.nof_prb, q->cell.mbsfn_prb);
         if (put) {
-          out_ptr = &output[(lp * q->cell.nof_prb + n) * SRSRAN_NRE_SCS(scs)];
+          out_ptr = &output[(lp * stride + n) * SRSRAN_NRE_SCS(scs)];
         } else {
-          in_ptr = &input[(lp * q->cell.nof_prb + n) * SRSRAN_NRE_SCS(scs)];
+          in_ptr = &input[(lp * stride + n) * SRSRAN_NRE_SCS(scs)];
         }
         // This is a symbol in a normal PRB with or without references
         if (l >= lstart && l < lend) {
@@ -535,9 +554,9 @@ static int pmch_cp(srsran_pmch_t* q, cf_t* input, cf_t* output, uint32_t lstart_
  *
  * 36.211 10.3 section 6.3.5
  */
-static int pmch_put(srsran_pmch_t* q, cf_t* symbols, cf_t* sf_symbols, srsran_scs_t scs, uint32_t lstart, uint32_t tti)
+static int pmch_put(srsran_pmch_t* q, cf_t* symbols, cf_t* sf_symbols, srsran_scs_t scs, uint32_t lstart, uint32_t tti, uint32_t prb_count)
 {
-  return pmch_cp(q, symbols, sf_symbols, lstart, true, scs, tti);
+  return pmch_cp(q, symbols, sf_symbols, lstart, true, scs, tti, prb_count);
 }
 
 /**
@@ -547,9 +566,9 @@ static int pmch_put(srsran_pmch_t* q, cf_t* symbols, cf_t* sf_symbols, srsran_sc
  *
  * 36.211 10.3 section 6.3.5
  */
-static int pmch_get(srsran_pmch_t* q, cf_t* sf_symbols, cf_t* symbols, uint32_t lstart, srsran_scs_t scs, uint32_t tti)
+static int pmch_get(srsran_pmch_t* q, cf_t* sf_symbols, cf_t* symbols, uint32_t lstart, srsran_scs_t scs, uint32_t tti, uint32_t prb_count)
 {
-  return pmch_cp(q, sf_symbols, symbols, lstart, false, scs, tti);
+  return pmch_cp(q, sf_symbols, symbols, lstart, false, scs, tti, prb_count);
 }
 
 int srsran_pmch_init(srsran_pmch_t* q, uint32_t max_prb, uint32_t nof_rx_antennas)
@@ -598,6 +617,12 @@ int srsran_pmch_init(srsran_pmch_t* q, uint32_t max_prb, uint32_t nof_rx_antenna
       goto clean;
     }
 
+    // EVM buffer, sized for the worst-case bit count (max_re REs at 256QAM)
+    q->evm_buffer = srsran_evm_buffer_alloc(q->max_re * srsran_mod_bits_x_symbol(SRSRAN_MOD_256QAM));
+    if (!q->evm_buffer) {
+      goto clean;
+    }
+
     for (int i = 0; i < SRSRAN_MAX_PORTS; i++) {
       q->x[i] = srsran_vec_cf_malloc(q->max_re);
       if (!q->x[i]) {
@@ -639,6 +664,9 @@ void srsran_pmch_free(srsran_pmch_t* q)
   }
   if (q->d) {
     free(q->d);
+  }
+  if (q->evm_buffer) {
+    srsran_evm_free(q->evm_buffer);
   }
   if (q->ti_rx_buf) {
     free(q->ti_rx_buf);
@@ -760,9 +788,26 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
      * Standard 15 kHz MBSFN uses sf->cfi control symbols. */
     uint32_t lstart = (sf->subcarrier_spacing != SRSRAN_SCS_15KHZ) ? 0u
                                                                     : SRSRAN_NOF_CTRL_SYMBOLS(q->cell, sf->cfi);
+    /* DIAG (PMCH_RE_DUMP): dump the FULL, pre-extraction raw grid (before pmch_get
+     * compacts it to data-only REs), to check whether the flatness seen in the
+     * compacted data array is already present upstream (FFT/OFDM demod output) or
+     * introduced by pmch_get's own stride/offset logic. */
+    if (pmch_re_dump_enabled(sf->tti) && sf->subcarrier_spacing != SRSRAN_SCS_15KHZ) {
+      uint32_t stride    = SRSRAN_MAX(q->cell.nof_prb, q->cell.mbsfn_prb);
+      uint32_t dump_n_sf = stride * SRSRAN_NRE_SCS(sf->subcarrier_spacing) * SRSRAN_MBSFN_NOF_SYMBOLS(sf->subcarrier_spacing) * SRSRAN_MBSFN_NOF_SLOTS(sf->subcarrier_spacing);
+      char     fn[160];
+      snprintf(fn, sizeof(fn), "/tmp/pmch_rx_fullgrid_tti%u.bin", sf->tti);
+      FILE* ffg = fopen(fn, "wb");
+      if (ffg) {
+        fwrite(sf_symbols[0], sizeof(cf_t), dump_n_sf, ffg);
+        fclose(ffg);
+      }
+      fprintf(stderr, "[PMCH_RE_DUMP] DIAG fullgrid tti=%u stride=%u dump_n=%u\n", sf->tti, stride, dump_n_sf);
+    }
     for (int j = 0; j < q->nof_rx_antennas; j++) {
       /* extract symbols */
-      n = pmch_get(q, sf_symbols[j], q->symbols[j], lstart, sf->subcarrier_spacing, sf->tti);
+      n = pmch_get(q, sf_symbols[j], q->symbols[j], lstart, sf->subcarrier_spacing, sf->tti,
+                   cfg->pdsch_cfg.grant.nof_prb);
       if (n != cfg->pdsch_cfg.grant.nof_re) {
         ERROR("PMCH 1 extract symbols error expecting %d symbols but got %d, lstart %d",
               cfg->pdsch_cfg.grant.nof_re,
@@ -789,10 +834,28 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
           }
           fprintf(stderr, "[PMCH_RE_DUMP] DIAG fullce tti=%u dump_n=%u\n", sf->tti, dump_n);
         }
-        n = pmch_get(q, channel->ce[i][j], q->ce[i][j], lstart, sf->subcarrier_spacing, sf->tti);
+        n = pmch_get(q, channel->ce[i][j], q->ce[i][j], lstart, sf->subcarrier_spacing, sf->tti,
+                     cfg->pdsch_cfg.grant.nof_prb);
         if (n != cfg->pdsch_cfg.grant.nof_re) {
           ERROR("PMCH 2 extract chest error expecting %d symbols but got %d", cfg->pdsch_cfg.grant.nof_re, n);
           return SRSRAN_ERROR;
+        }
+        if (getenv("PMCH_CE_DIAG") && i == 0 && j == 0) {
+          uint32_t zero_cnt = 0, nan_cnt = 0;
+          float    sum_pw = 0.0f;
+          for (uint32_t re = 0; re < (uint32_t)n; re++) {
+            cf_t v = q->ce[i][j][re];
+            float p = crealf(v) * crealf(v) + cimagf(v) * cimagf(v);
+            if (isnan(p)) {
+              nan_cnt++;
+            } else if (p < 1e-12f) {
+              zero_cnt++;
+            } else {
+              sum_pw += p;
+            }
+          }
+          fprintf(stderr, "PMCH_CE_DIAG tti=%u n=%d zero_cnt=%u nan_cnt=%u mean_pw_nonzero=%.6e\n",
+                  sf->tti, n, zero_cnt, nan_cnt, (n - zero_cnt - nan_cnt) > 0 ? sum_pw / (n - zero_cnt - nan_cnt) : -1.0f);
         }
       }
     }
@@ -881,6 +944,16 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
      */
     srsran_demod_soft_demodulate_s(cfg->pdsch_cfg.grant.tb[0].mod, q->d, q->e, cfg->pdsch_cfg.grant.nof_re);
 
+    /* EVM: real channel-estimate/equalization-quality measurement, previously
+     * always NAN/0 for PMCH (see pmch.h's evm_buffer doc comment) - mirrors
+     * pdsch.c's own srsran_evm_run_s call (same buffer type, same convention:
+     * measured against q->d, the equalized symbols, and q->e, the just-computed
+     * soft bits, BEFORE descrambling touches q->e below). */
+    if (out) {
+      out->evm = srsran_evm_run_s(
+          q->evm_buffer, &q->mod[cfg->pdsch_cfg.grant.tb[0].mod], q->d, (int16_t*)q->e, cfg->pdsch_cfg.grant.tb[0].nof_bits);
+    }
+
     uint32_t Mbit_sf_rx = cfg->pdsch_cfg.grant.tb[0].nof_bits;
     uint8_t  N_rx       = cfg->time_interleaving_n;
 
@@ -963,6 +1036,14 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
       uint32_t n_cb_cap = srsran_pmch_n_cb_cap(
           cfg->n_soft_ref_category, cfg->scaling_factor_beta_num, cfg->scaling_factor_beta_den, M, ti_cb_segm.C);
 
+      if (getenv("TI_RM_DIAG")) {
+        fprintf(stderr,
+                "TI_RM_DIAG_RX subframe_idx=%u N=%u M=%u slot_m=%u slot_n=%u tbs=%d C=%u K1=%u K2=%u "
+                "Mbit_sf=%u Qm=%u Gp=%u e_min=%u n_cb_cap=%u\n",
+                cfg->subframe_idx, (unsigned)N_rx, (unsigned)M, slot_m, slot_n, cfg->pdsch_cfg.grant.tb[0].tbs,
+                ti_cb_segm.C, ti_cb_segm.K1, ti_cb_segm.K2, Mbit_sf_rx, Qm_ti, Gp_ti, e_min, n_cb_cap);
+      }
+
       if (slot_n == 0) {
         q->ti_decoded[slot_m] = false;
       }
@@ -993,12 +1074,15 @@ int srsran_pmch_decode(srsran_pmch_t*         q,
       out[0].crc                  = (srsran_dlsch_decode(&q->dl_sch, &cfg->pdsch_cfg, q->e, out[0].payload) == 0);
       out[0].avg_iterations_block = srsran_sch_last_noi(&q->dl_sch);
 
-      /* Failure-triggered LLR dump: the sporadic sf5 CRC failures drift in tti
-       * even within a run, so a fixed-tti filter can never catch one. This
-       * fires exactly WHEN a failure happens (env-gated; rare - ~1 per 1-3s -
-       * and 24kB each, so bounded), capturing the descrambled LLRs that failed
-       * to decode, for bit-diff against the TX's continuously-refreshed
-       * per-sf5 scrambled-bit dumps of the same tti. */
+      /* Failure-triggered LLR dump: CRC failures can drift in tti even within
+       * a run, so a fixed-tti filter can't reliably catch one. Fires exactly
+       * WHEN a failure happens (env-gated; bounded by rarity), capturing the
+       * descrambled LLRs that failed to decode, for bit-diff against a
+       * matching TX-side scrambled-bit dump of the same tti. Not specific to
+       * any one subframe position - originally written while chasing a
+       * subframe-5-specific bug (long since fixed, see MbsfnFrameProcessor's
+       * DTX/validity gate history), reused since for the 2026-07 CAS-muting
+       * sf=0 investigation. */
       if (!out[0].crc && getenv("PMCH_RE_DUMP")) {
         char fn[128];
         snprintf(fn, sizeof(fn), "/tmp/pmch_rx_llrFAIL_tti%u.bin", sf->tti);
@@ -1272,7 +1356,8 @@ int srsran_pmch_encode(srsran_pmch_t*      q,
                          ? 0u
                          : SRSRAN_NOF_CTRL_SYMBOLS(q->cell, sf->cfi);
     for (i = 0; i < q->cell.nof_ports; i++) {
-      pmch_put(q, q->symbols[i], sf_symbols[i], sf->subcarrier_spacing, lstart, sf->tti);
+      pmch_put(q, q->symbols[i], sf_symbols[i], sf->subcarrier_spacing, lstart, sf->tti,
+               cfg->pdsch_cfg.grant.nof_prb);
     }
 
     /* PMCH_RE_DUMP: scratch instrumentation, see the matching comment in

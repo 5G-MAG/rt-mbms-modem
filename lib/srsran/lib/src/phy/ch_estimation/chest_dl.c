@@ -332,8 +332,12 @@ int srsran_chest_dl_set_mbsfn_area_id(srsran_chest_dl_t* q, uint16_t mbsfn_area_
       return SRSRAN_ERROR;
     }
   } else {
+    /* act_prb_sm (mbsfn_prb-aware, computed above): consistent with the
+     * SL4/SL2 branches above and the other two act_prb_sm fixes in this
+     * function (2026-07-18) - this general-SCS branch (covers 15kHz, 7.5kHz,
+     * 1.25kHz) was the one remaining nof_prb-only interpolator resize. */
     if (srsran_interp_linear_resize(&q->srsran_interp_lin_mbsfn,
-          srsran_refsignal_mbsfn_rs_per_symbol(subcarrier_spacing) * q->cell.nof_prb,
+          srsran_refsignal_mbsfn_rs_per_symbol(subcarrier_spacing) * act_prb_sm,
           SRSRAN_NRE_SCS(subcarrier_spacing) / srsran_refsignal_mbsfn_rs_per_symbol(subcarrier_spacing))) {
       fprintf(stderr, "Error initializing interpolator\n");
       return SRSRAN_ERROR;
@@ -360,7 +364,11 @@ int srsran_chest_dl_set_mbsfn_area_id(srsran_chest_dl_t* q, uint16_t mbsfn_area_
     } else {
       srsran_refsignal_free(q->mbsfn_refs[mbsfn_area_id]);
     }
-    if (srsran_refsignal_mbsfn_init(q->mbsfn_refs[mbsfn_area_id], q->cell.nof_prb, subcarrier_spacing)) {
+    /* act_prb_sm, not q->cell.nof_prb: the MBSFN reference SEQUENCE itself
+     * must be generated across the true MBSFN width, or it's under-sized for
+     * wideband pmch_bandwidth (mbsfn_prb > nof_prb) - confirmed live as part
+     * of the wideband-PMCH NaN root cause (2026-07-18). */
+    if (srsran_refsignal_mbsfn_init(q->mbsfn_refs[mbsfn_area_id], act_prb_sm, subcarrier_spacing)) {
       return SRSRAN_ERROR;
     }
     if (srsran_refsignal_mbsfn_set_cell(q->mbsfn_refs[mbsfn_area_id], q->cell, mbsfn_area_id, subcarrier_spacing)) {
@@ -375,9 +383,22 @@ int srsran_chest_dl_set_cell(srsran_chest_dl_t* q, srsran_cell_t cell)
 {
   int ret = SRSRAN_ERROR_INVALID_INPUTS;
   if (q != NULL && srsran_cell_isvalid(&cell)) {
-    if (q->cell.id != cell.id || q->cell.nof_prb == 0) {
-      q->cell = cell;
-      ret     = srsran_refsignal_cs_set_cell(&q->csr_refs, cell);
+    /* Regenerating the reference signals/interpolators below is only needed when id or
+     * nof_prb actually change (both fully determine them); but q->cell itself must be
+     * kept current unconditionally, or every mbsfn_prb-aware computation elsewhere in
+     * this file (act_prb_se/act_prb_content/act_prb_scale/act_prb_n/etc, all reading
+     * q->cell.mbsfn_prb) silently keeps using a STALE value frozen at whatever it was on
+     * the very first call, forever - since a wideband pmch_bandwidth retune changes
+     * mbsfn_prb but not id/nof_prb, the guard below used to skip the `q->cell = cell`
+     * assignment entirely on every such retune. Confirmed live as the actual root cause
+     * of the wideband pmch_bandwidth CAS sync_error/noise_estimate anomaly: every
+     * mbsfn_prb-conditional fix elsewhere in this file was evaluating against a
+     * q->cell.mbsfn_prb that never left its initial (narrow) value. See
+     * SIB13_MBSFN_TEST_RESULTS.md. */
+    bool need_regen = (q->cell.id != cell.id || q->cell.nof_prb == 0);
+    q->cell         = cell;
+    if (need_regen) {
+      ret = srsran_refsignal_cs_set_cell(&q->csr_refs, cell);
       if (ret != SRSRAN_SUCCESS) {
         ERROR("Error initializing CSR signal (%d)", ret);
         return SRSRAN_ERROR;
@@ -622,9 +643,18 @@ static void interpolate_pilots(srsran_chest_dl_t*     q,
          * actual pilot subcarriers on every other subframe. */
         uint32_t frame_parity = sf->tti % 2u;
         fidx_offset = (frame_parity == 0u) ? 0 : 3;
+        /* act_prb (mbsfn_prb when set, wideband PMCH): matches the act_prb_ip
+         * pattern already used in the SL4/SL2 branch above. A first attempt at
+         * this alone (2026-07-18) did not resolve the wideband-pmch_bandwidth
+         * NaN failure; combined this time with the chest_dl.c:363 fix (the
+         * MBSFN-RS pilot buffer itself was under-allocated for act_prb, using
+         * q->cell.nof_prb instead of the act_prb_sm already computed there) -
+         * both together are needed since a correctly-strided read into an
+         * under-allocated buffer still reads garbage. */
+        uint32_t act_prb_125k = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
         srsran_interp_linear_offset(&q->srsran_interp_lin_mbsfn,
-            &pilot_estimates[srsran_refsignal_mbsfn_rs_per_symbol(scs) * q->cell.nof_prb * l],
-            &ce[srsran_refsignal_mbsfn_nsymbol(l, scs) * q->cell.nof_prb * SRSRAN_NRE_SCS(scs)],
+            &pilot_estimates[srsran_refsignal_mbsfn_rs_per_symbol(scs) * act_prb_125k * l],
+            &ce[srsran_refsignal_mbsfn_nsymbol(l, scs) * act_prb_125k * SRSRAN_NRE_SCS(scs)],
             fidx_offset,
             (frame_parity == 0u) ? 6 : 3 );
       }
@@ -793,6 +823,21 @@ static float chest_dl_rssi(srsran_chest_dl_t* q, srsran_dl_sf_cfg_t* sf, cf_t* i
 // Downlink of 3GPP LTE", Qi Wang, C. Mehlfuhrer, M. Rupp
 static float chest_estimate_cfo(srsran_chest_dl_t* q, srsran_dl_sf_cfg_t* sf)
 {
+  /* n/ng are the REAL transform-size/CP-length basis the slot-to-slot phase
+   * comparison below is measured against. This function is only ever called
+   * for the CAS (non-MBSFN) case (see the cfo_estimate_enable guard in
+   * chest_interpolate_noise_est() above) - CAS's q->fft[port] now stays
+   * PERMANENTLY at its own native nof_prb-based size regardless of mbsfn_prb
+   * (the shared/widened-FFT architecture this file's act_prb pattern used to
+   * mirror was abandoned; see ue_dl.c's srsran_ue_dl_set_cell_scs() and
+   * SIB13_MBSFN_TEST_RESULTS.md), so nof_prb alone is now always the correct
+   * basis here - unlike chest_dl_estimate_correct_sync_error()'s sz_se/sz_scs,
+   * which still need mbsfn_prb-awareness because they're about the CORRECTION
+   * loop's own indexing into potentially-MBSFN content, not this CAS-only CFO
+   * estimate. An earlier pass (same day) had this using
+   * q->cell.mbsfn_prb-if-nonzero instead, correct for the widened-FFT
+   * architecture at the time but stale now that fft[port] no longer widens -
+   * reverted back to nof_prb alone. */
   float n  = (float)srsran_symbol_sz(q->cell.nof_prb);
   float ns = (float)SRSRAN_CP_NSYMB(q->cell.cp);
   float ng = SRSRAN_CP_ISNORM(q->cell.cp) ? (float)SRSRAN_CP_LEN_NORM(1, n) : (float)SRSRAN_CP_LEN_EXT(n);
@@ -927,6 +972,42 @@ chest_dl_estimate_correct_sync_error(srsran_chest_dl_t*    q,
                                           cf_t*                  input,
                                           uint32_t               rxant_id)
 {
+  /* CORRECTED FINDING (2026-07-19): the comment this replaces (written during the
+   * pre-redesign architecture, when CAS's own fft[port] genuinely widened to
+   * mbsfn_prb) concluded this function was "RULED OUT" as a cause, based on
+   * SYNC_CORRECT_DISABLE showing no change to pdcch_status at the time. That
+   * conclusion does NOT hold under the current (decoupled CAS/PMCH FFT +
+   * resampler bridge) architecture: live A/B test with SYNC_CORRECT_DISABLE=1
+   * took pdcch_status from ~2% found to 490/490 (100%) found, with
+   * noise_estimate_dbm/snr_db simultaneously returning to physically-sensible
+   * values. This function's CAS-branch correction is not just unhelpful, it is
+   * the active cause of the CAS decode failure that persisted through this
+   * whole day's investigation (the "resampler delay" hypothesis tested
+   * alongside this turned out to be a real, separate, and far smaller effect -
+   * removing the per-occasion resampler state reset made no measurable
+   * difference on its own). Root cause: CAS's own fft[port] is now PERMANENTLY
+   * narrow (see ue_dl.c's srsran_ue_dl_set_cell_scs()) - a completely standard,
+   * unwidened LTE transform that has no more need of a "sync error" correction
+   * than any ordinary non-FeMBMS cell would. This function's CAS-branch
+   * act_prb/nre/nsymb formulas (below) still reflect the abandoned widened-FFT
+   * architecture and now measure/correct against the WRONG transform size,
+   * actively corrupting otherwise-clean CAS content. Fix: skip the CAS branch
+   * entirely (measurement AND correction) - it has nothing left to do under
+   * this architecture. Leave the MBSFN branch untouched: fft_mbsfn is
+   * unchanged by the redesign and may still have a genuine timing/CFO
+   * correction need there. See SIB13_MBSFN_TEST_RESULTS.md. */
+  if (sf->sf_type != SRSRAN_SF_MBSFN) {
+    return;
+  }
+  if (getenv("SYNC_CORRECT_DISABLE")) {
+    return;
+  }
+  /* ch_mode is always SRSRAN_SF_MBSFN here (the early return above already
+   * filtered out every other sf->sf_type) - every "ch_mode != SRSRAN_SF_MBSFN"
+   * / CAS-mode branch below this point is therefore unreachable dead code,
+   * left in place rather than restructured: this function has regressed live
+   * BLER twice already from refactors that looked safe (see the two REVERTED
+   * notes below), so a cosmetic-only cleanup isn't worth the risk here. */
   srsran_sf_t   ch_mode   = sf->sf_type;
   float         pwr_sum  = 0.0f;
   float         sync_err = 0.0f;
@@ -942,12 +1023,23 @@ chest_dl_estimate_correct_sync_error(srsran_chest_dl_t*    q,
   }
   uint16_t      mbsfn_area_id = cfg->mbsfn_area_id;
   uint8_t       symbol_offset = 0;
+  /* act_prb (mbsfn_prb-aware): hoisted to function scope so the LS-estimate
+   * computation below (originally using q->cell.nof_prb for its
+   * symbol_offset-based indexing into pilot_recv_signal/pilot_estimates,
+   * inconsistent with npilots two lines below already using this same
+   * width) can use it too. Confirmed live, 2026-07-18: this was the actual
+   * remaining root cause of the wideband-pmch_bandwidth channel-estimate
+   * gap - PMCH_CE_DIAG showed the extracted ce array had exactly (mbsfn_prb
+   * - nof_prb)/mbsfn_prb of its REs at zero (never estimated), matching the
+   * "extra" bandwidth beyond the carrier exactly, while chest_dl.c's other
+   * three act_prb fixes (interpolator sizing/stride, reference-sequence
+   * generation) were necessary but not sufficient on their own. */
+  uint32_t act_prb = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
 
   // For each cell port...
   for (uint32_t cell_port_id = 0; cell_port_id < q->cell.nof_ports; cell_port_id++) {
     uint32_t    npilots;
     if (ch_mode == SRSRAN_SF_MBSFN) {
-      uint32_t act_prb = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
       if (sf->subcarrier_spacing == SRSRAN_SCS_370HZ_SL4) {
         npilots = (SRSRAN_NRE_SCS_370HZ * act_prb) / 12u;
       } else {
@@ -970,13 +1062,24 @@ chest_dl_estimate_correct_sync_error(srsran_chest_dl_t*    q,
       // Use the known CSR signal to compute Least-squares estimates
       srsran_refsignal_mbsfn_get_sf(q->cell, cell_port_id, input, q->pilot_recv_signal, sf->subcarrier_spacing, sf->tti);
 
-      srsran_vec_prod_conj_ccc(&q->pilot_recv_signal[(symbol_offset * q->cell.nof_prb)],
+      srsran_vec_prod_conj_ccc(&q->pilot_recv_signal[(symbol_offset * act_prb)],
           q->mbsfn_refs[mbsfn_area_id]->pilots[cell_port_id / 2][sf_idx],
-          &q->pilot_estimates[(symbol_offset * q->cell.nof_prb)],
-          npilots - (symbol_offset * q->cell.nof_prb));
+          &q->pilot_estimates[(symbol_offset * act_prb)],
+          npilots - (symbol_offset * act_prb));
     }
 
-    // Estimate synchronization error from the phase shift
+    // Estimate synchronization error from the phase shift.
+    // REVERTED 2026-07-19: a same-day attempt to make act_prb_se is_mbsfn-gated
+    // (nof_prb alone for CAS, matching fft[port]'s now-permanently-narrow size)
+    // looked more internally consistent but LIVE-REGRESSED MCH BLER from 0.0 to
+    // 1.0 (pdcch_status stayed 100% - CAS/PDCCH unaffected, only PMCH/MTCH data
+    // decode broke). Mechanism not fully traced before reverting; leaving this
+    // unconditional (unchanged since before the redesign) since it's the
+    // confirmed-working form. sync_error will keep reading ~7-14 instead of
+    // baseline's ~-0.25 under wideband pmch_bandwidth - cosmetic only, does not
+    // block pdcch_status/BLER. Do not re-attempt this gating without bisecting
+    // which of act_prb_se vs the correction block's nre/nsymb (below) is the
+    // actual load-bearing one for MBSFN decode.
     uint32_t act_prb_se = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
     int      sz_se      = (ch_mode == SRSRAN_SF_MBSFN) ? srsran_symbol_sz_scs(act_prb_se, sf->subcarrier_spacing)
                                                        : (int)srsran_symbol_sz(q->cell.nof_prb);
@@ -1002,9 +1105,19 @@ chest_dl_estimate_correct_sync_error(srsran_chest_dl_t*    q,
     sync_err /= pwr_sum;
   }
 
+  // TEMPORARY (SYNC_ERR_DIAG): dump the raw estimate regardless of the
+  // threshold below, to see its actual magnitude for MBSFN/1.25kHz subframes.
+  if (getenv("SYNC_ERR_DIAG") && sf->sf_type == SRSRAN_SF_MBSFN) {
+    fprintf(stderr, "SYNC_ERR_DIAG tti=%u scs=%d sync_err=%.6f isnormal=%d\n",
+            sf->tti, (int)sf->subcarrier_spacing, sync_err, isnormal(sync_err));
+  }
   // Correct time synchronization error if estimated is not NAN, not INF and greater than 0.05 samples
-  if (isnormal(sync_err) && fabsf(sync_err) > 0.0f) {
+  if (isnormal(sync_err) && fabsf(sync_err) > 0.05f) {
     // Use act_prb so nre matches the sf_symbols buffer allocation (act_prb*NRE_SCS for 0.37 kHz).
+    // REVERTED 2026-07-19: see act_prb_se's revert note above - the is_mbsfn-gated
+    // version of this block (act_prb_content/act_prb_scale, nre/nsymb split by
+    // ch_mode) live-regressed MCH BLER 0.0 -> 1.0. Reverted to the unconditional
+    // form, confirmed-working.
     uint32_t act_prb_sc = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
     int      sz_scs     = srsran_symbol_sz_scs(act_prb_sc, sf->subcarrier_spacing);
     float    cfo        = (sz_scs > 0) ? sync_err / (float)sz_scs : 0.0f;
@@ -1036,6 +1149,7 @@ static int estimate_port(srsran_chest_dl_t*     q,
   /* Use the known CSR signal to compute Least-squares estimates */
   srsran_vec_prod_conj_ccc(
       q->pilot_recv_signal, q->csr_refs.pilots[port_id / 2][sf->tti % 10], q->pilot_estimates, npilots);
+
 
   /* Compute RSRP for the channel estimates in this port */
   if (cfg->rsrp_neighbour) {
@@ -1093,12 +1207,18 @@ static int estimate_port_mbsfn(srsran_chest_dl_t*     q,
     } else if (sf->subcarrier_spacing == SRSRAN_SCS_370HZ_SL2) {
       nref_mbsfn = SRSRAN_REFSIGNAL_NUM_SF_MBSFN(act_prb, sf->subcarrier_spacing);
     } else {
-      nref_mbsfn = SRSRAN_REFSIGNAL_NUM_SF_MBSFN(q->cell.nof_prb, sf->subcarrier_spacing);
+      /* act_prb, not q->cell.nof_prb: this is the count of LS estimates
+       * actually computed, bounded to the carrier's own width instead of the
+       * true (wider) MBSFN width for wideband pmch_bandwidth - confirmed
+       * live, 2026-07-18, as the real remaining cause of the channel-estimate
+       * gap (PMCH_CE_DIAG showed exactly (mbsfn_prb-nof_prb)/mbsfn_prb of the
+       * extracted ce array's REs at zero, matching this exact shortfall). */
+      nref_mbsfn = SRSRAN_REFSIGNAL_NUM_SF_MBSFN(act_prb, sf->subcarrier_spacing);
     }
-    srsran_vec_prod_conj_ccc(&q->pilot_recv_signal[(symbol_offset * q->cell.nof_prb)],
+    srsran_vec_prod_conj_ccc(&q->pilot_recv_signal[(symbol_offset * act_prb)],
         q->mbsfn_refs[mbsfn_area_id]->pilots[port_id / 2][sf_idx],
-        &q->pilot_estimates[(symbol_offset * q->cell.nof_prb)],
-        nref_mbsfn - (symbol_offset * q->cell.nof_prb));
+        &q->pilot_estimates[(symbol_offset * act_prb)],
+        nref_mbsfn - (symbol_offset * act_prb));
 
     /* DIAG (PMCH_RE_DUMP): dump the raw LS product at pilot positions BEFORE
      * interpolation, plus the received pilots and the known reference sequence
@@ -1222,7 +1342,17 @@ static float get_snr(srsran_chest_dl_t* q)
   int nref = SRSRAN_REFSIGNAL_NUM_SF(q->cell.nof_prb, 0);
   return srsran_vec_acc_ff(q->snr_vector, nref) / nref;
 #else
-  return get_rsrp(q) / get_noise(q);
+  float noise = get_noise(q);
+  // Floor the denominator: q->noise_estimate only refreshes on PSS/SSS-bearing
+  // subframes (chest_interpolate_noise_est(), sf_idx==0||5) so a transient
+  // near-silent reading there (e.g. around an MCCH-triggered resync) persists
+  // and can otherwise inflate this ratio to physically-implausible values
+  // (live-observed: ~80-90dB against this rig's normal ~30-46dB range). Also
+  // covers the pre-existing 0/0 NaN case noted above get_rsrp()'s MBSFN path.
+  if (!isnormal(noise) || noise < 1e-9f) {
+    noise = 1e-9f;
+  }
+  return get_rsrp(q) / noise;
 #endif
 }
 
@@ -1283,8 +1413,10 @@ int srsran_chest_dl_estimate_cfg(srsran_chest_dl_t*     q,
 {
   for (uint32_t rxant_id = 0; rxant_id < q->nof_rx_antennas; rxant_id++) {
     // Estimate and correct synchronization error if enabled
-    chest_dl_estimate_correct_sync_error(q, sf, cfg, input[rxant_id], rxant_id);
-    
+    if (cfg->sync_error_enable) {
+      chest_dl_estimate_correct_sync_error(q, sf, cfg, input[rxant_id], rxant_id);
+    }
+
     for (uint32_t port_id = 0; port_id < q->cell.nof_ports; port_id++) {
       if (sf->sf_type == SRSRAN_SF_MBSFN) {
         if (estimate_port_mbsfn(q, sf, cfg, input[rxant_id], res->ce[port_id][rxant_id], port_id, rxant_id)) {

@@ -73,12 +73,16 @@ class RestHandler {
       uint8_t  sf;
       uint8_t  type;
       uint8_t  status;
+      uint8_t  pmch_idx; // Meaningful only for MCH events (multi-PMCH); 0 for CAS/MCCH/GAP.
     };
 
     /**
      *  Record one subframe's scheduling outcome for the CAS/MCCH/MCH activity matrix.
+     *  pmch_idx is the PMCH-InfoList index this subframe resolved to (see
+     *  Phy::mbsfn_config_for_tti()'s "area" out-param) - always 0 for
+     *  CAS/MCCH/GAP events, since only MCH varies by PMCH.
      */
-    void record_subframe_event(uint32_t tti, uint8_t type, uint8_t status);
+    void record_subframe_event(uint32_t tti, uint8_t type, uint8_t status, uint8_t pmch_idx = 0);
 
     /**
      *  Snapshot of the recent subframe event log, oldest first.
@@ -121,7 +125,10 @@ class RestHandler {
         };
         bool present = false;
         int mcs = 0;
-        double ber;
+        // No real BER estimator is wired up yet (only BLER, from `errors`/`total`,
+        // is actually measured) -- kept at a deterministic placeholder rather than
+        // left uninitialized so the REST API never serves garbage stack memory.
+        double ber = 0.0;
         float evm_rms = 0.0f;
         unsigned total = 0;
         unsigned errors = 0;
@@ -223,13 +230,13 @@ class RestHandler {
 
 
   private:
-    // We need access to the processors to get the values to be displayed in the rt-wui.
+    // We need access to the processors to get the values to be displayed in the rt-mbms-application.
     CasFrameProcessor* _cas_processor;
     std::vector<MbsfnFrameProcessor*> _mbsfn_processors; 
     
     std::vector<float>  _cinr_db;
 
-    /* ~5s of history at 1ms/TTI, matching rt-wui's SUBFRAME_MATRIX_WINDOW_SECONDS -
+    /* ~5s of history at 1ms/TTI, matching rt-mbms-application's SUBFRAME_MATRIX_WINDOW_SECONDS -
      * the matrix's column width is derived from its canvas width divided by this
      * many frames, so buffering more than the display window ever uses is waste. */
     static constexpr size_t SUBFRAME_LOG_CAPACITY = 5000;

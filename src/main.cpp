@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <argp.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <libconfig.h++>
 
@@ -87,11 +88,15 @@ static struct argp_option options[] = {  // NOLINT
      "raw received I/Q data.",
      0},
     {"file-bandwidth", 'b', "BANDWIDTH (MHz)", 0,
-     "If decoding data from a file, specify the channel bandwidth of the "
-     "recorded data in MHz here (e.g. 5)",
+     "Required if decoding data from a file, to specify the channel bandwidth of the "
+     "recorded data in MHz here (e.g. 5). Optional in live-SDR mode, where bandwidth is "
+     "otherwise detected automatically via blind cell search; pass this to force the "
+     "cell-search width instead (e.g. to match a fixed-rate simulated RF bridge).",
      0},
     {"override_nof_prb", 'p', "# PRB", 0,
-     "Override the number of PRB received in the MIB", 0},
+     "Override the number of PRB received in the MIB, regardless of what was actually "
+     "broadcast. Does not affect cell-search width (see --file-bandwidth/-b for that).",
+     0},
     {"sdr_devices", 'd', nullptr, 0,
      "Prints a list of all available SDR devices", 0},
     {"repeat", 'r', nullptr, 0,
@@ -173,8 +178,8 @@ void print_version(FILE *stream, struct argp_state * /*state*/) {
 
 static Config cfg;  /**< Global configuration object. */
 
-static unsigned sample_rate = 7680000;  /**< Sample rate of the SDR */
-static unsigned search_sample_rate = 7680000;  /**< Sample rate of the SDR */
+static unsigned sample_rate = 1920000;  /**< Sample rate of the SDR (6 PRB narrowband search default) */
+static unsigned search_sample_rate = 1920000;  /**< Sample rate of the SDR during blind cell search */
 static unsigned frequency = 667000000;  /**< Center freqeuncy the SDR is tuned to */
 static uint32_t bandwidth = 10000000;   /**< Low pass filter bandwidth for the SDR */
 static double gain = 0.9;               /**< Overall system gain for the SDR */
@@ -238,6 +243,9 @@ std::vector<Phy::TvConfigPlmn> load_tv_config_from_cfg(const Config& cfg) {
       Phy::TvConfigTmgi tmgi;
       s[k].lookupValue("tmgi", tmgi.tmgi);
       s[k].lookupValue("usd", tmgi.usd);
+      int tsi_val = 0;
+      s[k].lookupValue("tsi", tsi_val);
+      tmgi.tsi = static_cast<uint32_t>(tsi_val);
       out.push_back(tmgi);
     }
     return out;
@@ -385,6 +393,19 @@ auto main(int argc, char **argv) -> int {
   set_srsran_verbose_level(arguments.log_level <= 1 ? SRSRAN_VERBOSE_DEBUG : SRSRAN_VERBOSE_NONE);
   srsran_use_standard_symbol_size(true);
 
+  // TEST-ONLY (2026-07-19): seeds the MBSFN retune logic below (~line 612) with a
+  // target PRB width directly, bypassing the normal "learn it by decoding SIB13"
+  // path. Exists because this ZMQ-simulation test harness has no rate negotiation
+  // between the eNB's TX and this modem's RX: once the eNB genuinely widens its own
+  // TX rate for a wider pmch_bandwidth, this modem's CAS/PDCCH decode - and by
+  // extension its ability to ever decode the real SIB13 value - breaks immediately
+  // (confirmed via a clean A/B test, see SIB13_MBSFN_TEST_RESULTS.md), a real
+  // chicken-and-egg deadlock this override exists purely to sidestep for testing.
+  // Default 0 = no override, existing dynamic-discovery behavior unchanged. A real
+  // UE has no equivalent shortcut; this has no bearing on real deployment.
+  unsigned mbsfn_prb_test_override = 0;
+  cfg.lookupValue("modem.phy.mbsfn_prb_test_override", mbsfn_prb_test_override);
+
   // Create a thread pool for the frame processors
   unsigned thread_cnt = 4;
   cfg.lookupValue("modem.phy.threads", thread_cnt);
@@ -392,29 +413,23 @@ auto main(int argc, char **argv) -> int {
   cfg.lookupValue("modem.phy.thread_priority_rt", phy_prio);
   thread_pool pool{ thread_cnt + 1, phy_prio };
 
-  // Elevate execution to real time scheduling
-  struct sched_param thread_param = {};
-  thread_param.sched_priority = 20;
-  cfg.lookupValue("modem.phy.main_thread_priority_rt", thread_param.sched_priority);
-
-  if (thread_param.sched_priority > 0) {
-  spdlog::info("Raising main thread to realtime scheduling priority {}", thread_param.sched_priority);
-
-  int error = pthread_setschedparam(pthread_self(), SCHED_RR, &thread_param);
-  if (error != 0) {
-    spdlog::error("Cannot set main thread priority to realtime: {}. Thread will run at default priority.", strerror(error));
-  }
-  } else {
-    spdlog::info("main_thread_priority_rt=0, skipping realtime scheduling for main thread");
-  }
-
   bool enable_measurement_file = false;
   cfg.lookupValue("modem.measurement_file.enabled", enable_measurement_file);
   MeasurementFileWriter measurement_file(cfg);
 
   // Create the layer components: Phy, RLC, RRC and GW
-  uint8_t cs_nof_prb = arguments.file_bw ? arguments.file_bw * 5
-                       : (arguments.override_nof_prb >= 0 ? (uint8_t)arguments.override_nof_prb : 25);
+  //
+  // cs_nof_prb sizes the initial cell-search/MIB-decode engine. Blind by default: when no
+  // --file-bandwidth/-b is given, it's fixed at the library's own narrowband cell-search/MIB-decode
+  // default (SRSRAN_CS_NOF_PRB == SRSRAN_UE_MIB_NOF_PRB == 6), since PSS/SSS/PBCH always live in the
+  // central 6 PRB regardless of the true system bandwidth; MIB's own bw_idx field then reveals the
+  // real bandwidth (see the searching-state handling below, which already reconfigures everything
+  // off phy.nr_prb() rather than off this guess). File-source mode still requires -b (raw capture
+  // files carry no embedded rate metadata). -b remains available in live-SDR mode too, as an
+  // explicit override for setups that need a specific, fixed cell-search width -- e.g. a simulated
+  // RF bridge whose sample-rate decimation ratio must stay integral and known in advance.
+  constexpr uint8_t kLiveCellSearchNofPrb = 6;
+  uint8_t cs_nof_prb = arguments.file_bw ? arguments.file_bw * 5 : kLiveCellSearchNofPrb;
   Phy phy(
       cfg,
       std::bind(&SdrReader::get_samples, &sdr, _1, _2, _3),  // NOLINT
@@ -471,7 +486,7 @@ auto main(int argc, char **argv) -> int {
     exit(1);
   }
   
-  // We need the cas processor to be accesible within the rest_handler object to gather all the values display in the rt-wui
+  // We need the cas processor to be accesible within the rest_handler object to gather all the values display in the rt-mbms-application
   rest_handler.set_cas_processor(&cas_processor);
   
   std::vector<MbsfnFrameProcessor*> mbsfn_processors;
@@ -483,6 +498,23 @@ auto main(int argc, char **argv) -> int {
     }
     mbsfn_processors.push_back(p);
   }
+
+  /* set_cell() (main thread) reallocates rx/FFT buffers inside the processor
+   * (srsran_ue_dl_set_cell() -> ofdm.c's srsran_ofdm_rx_set_prb_symbol_sz(),
+   * plus the CIR FFTW plan) that an already-dispatched, fire-and-forget
+   * process() call (running on a pool worker thread) may still be reading/
+   * writing - a genuine, confirmed double-free/heap-corruption race
+   * (2026-07-18: "double free or corruption" crashes on both the
+   * cas_processor and mbsfn retune paths). A mutex was tried first and
+   * caused a guaranteed deadlock instead (get_rx_buffer_and_lock() locks the
+   * same non-recursive mutex synchronously on the main thread before
+   * pool.push() even runs, so a second lock attempt in set_cell() on that
+   * same thread self-deadlocks). Waiting on the std::future returned by
+   * pool.push() has no such risk: it just blocks the main thread until that
+   * specific worker task's function body has returned, which is exactly the
+   * point at which it's done touching the processor's buffers. */
+  std::future<void> cas_future;
+  std::vector<std::future<void>> mbsfn_futures(thread_cnt);
 
   rest_handler.start(); // Start the listener, we need to do it after storing the cas into the rest_handler, otherwise we will get segfault.
   // Start receiving sample data
@@ -512,6 +544,46 @@ auto main(int argc, char **argv) -> int {
   state = searching;
 
   uint8_t mb_idx = 0;
+  /* Last (N, M) this dispatch loop saw on the active MCH's own PMCH entry (not PMCH0's -- see
+   * the mb_idx-advance block's own comment on why mcch_for_ti.pmch_info_list[0] there needs the
+   * same per-mch_idx lookup as here), so a LIVE change (embms.pmch1.time_interleaving_n/m via the
+   * control socket) can force mb_idx back to a known-good realignment point immediately, rather
+   * than waiting for mch_subframe_idx to naturally satisfy the NEW block_len's own boundary
+   * condition -- which, mid-block, can take up to a full extra block's worth of subframes,
+   * during which mb_idx stays frozen on whatever instance the OLD cadence last pinned, handing
+   * it subframes that no longer correspond to a clean block start under the new N*M. Sentinel
+   * 0xFF so the very first tti forces a (harmless, mb_idx already 0) realignment too. */
+  uint8_t main_last_ti_n = 0xFF, main_last_ti_m = 0xFF;
+
+  // Elevate execution to real time scheduling. Moved here (2026-07-26), as the LAST setup
+  // step before the main loop -- not before phy.init(), and not right after it either (both
+  // tried and still too early). ALL one-time setup work that can legitimately take a while
+  // happens above this point: phy.init() (FFTW planning, cell-search/MIB-sync engine
+  // allocation), plus CasFrameProcessor::init() and 4x MbsfnFrameProcessor::init() (each
+  // doing their own FFTW planning and buffer allocation). Elevating to SCHED_FIFO before ANY
+  // of that finishes risks the kernel's RLIMIT_RTTIME safety limit (confirmed 200ms on this
+  // host via `ulimit -a`): any SCHED_FIFO thread that runs that long without a blocking
+  // syscall gets SIGKILLed unconditionally, with no log output and no core dump. Confirmed
+  // live, 2026-07-26: moving this past phy.init() alone fixed the first crash point but
+  // exposed an identical crash later, right after CasFrameProcessor/MbsfnFrameProcessor
+  // setup -- moving it past ALL one-time setup, not just phy.init(), is the actual fix.
+  // Real-time priority is only needed for the ongoing per-subframe loop below.
+  struct sched_param thread_param = {};
+  thread_param.sched_priority = 20;
+  cfg.lookupValue("modem.phy.main_thread_priority_rt", thread_param.sched_priority);
+
+  if (thread_param.sched_priority > 0) {
+  spdlog::info("Raising main thread to realtime scheduling priority {}", thread_param.sched_priority);
+
+  // SCHED_FIFO, not SCHED_RR -- see SdrReader.cpp's reader-thread priority elevation for why.
+  int error = pthread_setschedparam(pthread_self(), SCHED_FIFO, &thread_param);
+  if (error != 0) {
+    spdlog::error("Cannot set main thread priority to realtime: {}. Thread will run at default priority.", strerror(error));
+  }
+  } else {
+    spdlog::info("main_thread_priority_rt=0, skipping realtime scheduling for main thread");
+  }
+
   // Start the main processing loop
   for (;;) { // Only one main loop, any time therè's a change of state we force next iteration with continue. This way there's no need of nested loops within the cases.
     switch (state) {
@@ -560,9 +632,25 @@ auto main(int argc, char **argv) -> int {
         if (phy.is_cas_subframe(tti)) {
           // Get the samples from the SDR interface, hand them to a CAS processor, and start it
           // on a thread from the pool.
-          if (!restart && phy.get_next_frame(cas_processor.get_rx_buffer_and_lock(), cas_processor.rx_buffer_size())) {
+          // TEMPORARY DIAGNOSTIC (CAS_TIMING_DIAG=1, 2026-07-22): times how long this specific
+          // call blocks acquiring cas_processor's lock -- tests whether the main thread stalls
+          // here waiting for the previous occasion's still-in-flight (queued or executing)
+          // process() call to release it, which get_next_frame()'s own polling-wait for fresh
+          // samples (already ruled out as decimation-related) would misattribute to sample
+          // unavailability rather than lock contention.
+          bool cas_timing_diag = getenv("CAS_TIMING_DIAG") != nullptr;
+          std::chrono::steady_clock::time_point lock_wait_start;
+          if (cas_timing_diag) lock_wait_start = std::chrono::steady_clock::now();
+          cf_t** cas_rx_buffer = cas_processor.get_rx_buffer_and_lock();
+          if (cas_timing_diag) {
+            auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - lock_wait_start).count();
+            if (us > 1000) {
+              fprintf(stderr, "CAS_TIMING_DIAG tti=%u lock_wait_us=%lld\n", tti, (long long)us);
+            }
+          }
+          if (!restart && phy.get_next_frame(cas_rx_buffer, cas_processor.rx_buffer_size())) {
             spdlog::debug("sending tti {} to regular processor", tti);
-            pool.push([ObjectPtr = &cas_processor, tti, &rest_handler] {
+            cas_future = pool.push([ObjectPtr = &cas_processor, tti, &rest_handler] {
                 if (ObjectPtr->process(tti)) {
                 // Set constellation diagram data and rx params for CAS in the REST API handler
                 rest_handler.add_cinr_value(ObjectPtr->cinr_db());
@@ -570,46 +658,102 @@ auto main(int argc, char **argv) -> int {
             });
 
 
-            if (phy.nof_mbsfn_prb() != mbsfn_nof_prb)
+            // Re-tune whenever the EFFECTIVE MBSFN width (max(actual PMCH width, carrier))
+            // has changed from what the SDR is currently tuned for - this covers both
+            // directions: widening when the PMCH grows past the carrier (Rel-19
+            // extended-bandwidth case), and narrowing back down when it later shrinks
+            // to fit inside the carrier again (e.g. a live pmch_bandwidth SET back to 0
+            // after a wideband test). A PMCH that fits inside the carrier (Rel-17
+            // pmch_bandwidth sub-allocation, e.g. 40 PRB inside a 50-PRB / 10 MHz
+            // carrier) must NOT shrink the SDR below the carrier's own width: keep the
+            // CAS sampling at the carrier and decode the PMCH as a sub-band of that same
+            // grid, since the eNB encodes with symbol stride = carrier nof_prb.
+            /* Guard against re-triggering on every CAS occasion: mbsfn_nof_prb tracks
+             * "which effective width am I already retuned for", so this only re-enters
+             * when that width actually changes (2026-07-18). Confirmed live,
+             * 2026-07-18: without the narrow-back branch below, reverting
+             * pmch_bandwidth to 0 after a wideband test left the SDR/CAS FFT
+             * permanently stuck at the wider grid (wrong RE-per-symbol count, visibly
+             * broken CAS composition) until a full process restart - the widen-only
+             * condition never re-enters once already retuned wide, even though the
+             * eNB is signalling a narrower width again. */
+            unsigned target_mbsfn_prb = std::max<unsigned>({phy.nof_mbsfn_prb(), cas_nof_prb, mbsfn_prb_test_override});
+            if (target_mbsfn_prb != mbsfn_nof_prb)
             {
-              // Handle the non-LTE bandwidths (6, 7 and 8 MHz). In these cases, CAS stays at the original bandwidth, but the MBSFN
-              // portion of the frames can be wider. We need to...
+              mbsfn_nof_prb = target_mbsfn_prb;
 
-              mbsfn_nof_prb = phy.nof_mbsfn_prb();
-
-              // ...adjust the SDR's sample rate to fit the wider MBSFN bandwidth...
-              srsran_scs_t mbsfn_scs = SRSRAN_SCS_15KHZ;
-              switch (phy.mbsfn_subcarrier_spacing()) {
-                case Phy::SubcarrierSpacing::df_7kHz5:     mbsfn_scs = SRSRAN_SCS_7KHZ5;      break;
-                case Phy::SubcarrierSpacing::df_2kHz5:     mbsfn_scs = SRSRAN_SCS_2KHZ5;      break;
-                case Phy::SubcarrierSpacing::df_1kHz25:    mbsfn_scs = SRSRAN_SCS_1KHZ25;     break;
-                case Phy::SubcarrierSpacing::df_370Hz:     mbsfn_scs = SRSRAN_SCS_370HZ;      break;
-                case Phy::SubcarrierSpacing::df_370Hz_sl4: mbsfn_scs = SRSRAN_SCS_370HZ_SL4;  break;
-                case Phy::SubcarrierSpacing::df_370Hz_sl2: mbsfn_scs = SRSRAN_SCS_370HZ_SL2;  break;
-                default: break;
+              unsigned new_srate;
+              if (mbsfn_nof_prb > cas_nof_prb) {
+                // Wider than the carrier: adjust the SDR's sample rate to fit the
+                // wider MBSFN bandwidth, using its own (possibly reduced) SCS.
+                srsran_scs_t mbsfn_scs = SRSRAN_SCS_15KHZ;
+                switch (phy.mbsfn_subcarrier_spacing()) {
+                  case Phy::SubcarrierSpacing::df_7kHz5:     mbsfn_scs = SRSRAN_SCS_7KHZ5;      break;
+                  case Phy::SubcarrierSpacing::df_2kHz5:     mbsfn_scs = SRSRAN_SCS_2KHZ5;      break;
+                  case Phy::SubcarrierSpacing::df_1kHz25:    mbsfn_scs = SRSRAN_SCS_1KHZ25;     break;
+                  case Phy::SubcarrierSpacing::df_370Hz:     mbsfn_scs = SRSRAN_SCS_370HZ;      break;
+                  case Phy::SubcarrierSpacing::df_370Hz_sl4: mbsfn_scs = SRSRAN_SCS_370HZ_SL4;  break;
+                  case Phy::SubcarrierSpacing::df_370Hz_sl2: mbsfn_scs = SRSRAN_SCS_370HZ_SL2;  break;
+                  default: break;
+                }
+                new_srate = (unsigned)srsran_sampling_freq_hz_scs(mbsfn_nof_prb, mbsfn_scs);
+              } else {
+                // Back down to (at most) the carrier's own width - same rate cell
+                // search originally tuned to, standard 15kHz-numerology CAS.
+                new_srate = srsran_sampling_freq_hz(mbsfn_nof_prb);
               }
-              unsigned new_srate = (unsigned)srsran_sampling_freq_hz_scs(mbsfn_nof_prb, mbsfn_scs);
-              spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
-                  mbsfn_nof_prb * 0.2);
-              sdr.stop();
-
-              bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
-              sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
+              // Only touch the SDR hardware (stop/tune/start) and force a full
+              // resync when the actual sample rate needs to change. The gating
+              // condition above (target_mbsfn_prb != mbsfn_nof_prb) is about the
+              // logical PRB width, not the rate - a widened mbsfn_prb can easily
+              // map to the SAME rate the initial cell search already tuned to
+              // (e.g. both bucket to 15.36 MHz), in which case doing a full
+              // stop/tune/start anyway was destroying an already-good sample-level
+              // timing/phase reference for no hardware-level reason, forcing an
+              // unnecessary resync. Confirmed live 2026-07-19: this was corrupting
+              // CAS/PDCCH decode (~28x worse sync_error, 0% PDCCH success) even
+              // though every FFT/width-sizing candidate checked out correct - see
+              // SIB13_MBSFN_TEST_RESULTS.md.
+              bool rate_change_needed = (new_srate != sample_rate);
+              if (rate_change_needed) {
+                spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
+                    mbsfn_nof_prb * 0.2);
+                sdr.stop();
+                bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
+                sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
+              } else {
+                spdlog::info("MBSFN width changed to {} PRB but sample rate ({} Mhz) is unchanged - reconfiguring PHY/CAS only, no SDR retune", mbsfn_nof_prb, new_srate/1000000.0);
+              }
 
               // ... configure the PHY and CAS processor to decode a narrow CAS and wider MBSFN, and move back to syncing state
               // after reconfiguring and restarting the SDR.
+              // Wait for the CAS process() just dispatched above (line ~568) to actually
+              // finish before resizing its buffers here - see the cas_future/mbsfn_futures
+              // doc comment near their declaration for why this, not a mutex.
+              if (cas_future.valid()) {
+                cas_future.wait();
+              }
               phy.set_cell();
-              cas_processor.set_cell(phy.cell());
+              cas_processor.set_cell(phy.cell(), phy.mbsfn_scs());
 
-              sdr.start();
-              spdlog::info("Synchronizing subframe after PRB extension");
-              state = syncing;
+              if (rate_change_needed) {
+                sdr.start();
+                sample_rate = new_srate;
+                spdlog::info("Synchronizing subframe after PRB extension");
+                state = syncing;
+              }
             }
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
             sync_losses++;
             state = syncing;
+            // get_rx_buffer_and_lock() above locked cas_processor for this tti, but
+            // process() was never dispatched to release it - unlock it here instead of
+            // deferring to the blanket unlock that used to live in case syncing, which
+            // couldn't tell a genuinely dangling lock from one a worker thread already
+            // released (confirmed via ThreadSanitizer, 2026-07-22).
+            cas_processor.unlock();
           }
         } else {
           // All other frames in FeMBMS dedicated mode are MBSFN frames.
@@ -653,8 +797,37 @@ auto main(int argc, char **argv) -> int {
            * (must not advance - see the fuller rationale in "Round 19"/finding #3 of the
            * project roadmap). */
           const srsran::mcch_msg_t& mcch_for_ti = phy.current_mcch();
+          /* pmch_info_list[peek_cfg.pmch_idx], NOT pmch_info_list[0] -- this gap-detection check
+           * exists specifically for a TI-active MCH other than PMCH0 (PMCH0 always carries MCCH,
+           * and TS 36.300 SS15.3.3 forbids TI there once a second PMCH exists -- rrc.cc's
+           * reconfigure_embms() enforces that on the TX side, so PMCH0's own time_interleaving_n
+           * is always <=1 in any config where this matters at all). Hardcoding index 0 here meant
+           * this check could only ever fire for PMCH0's own (always-disabled) TI, silently never
+           * protecting PMCH1+'s real gap subframes -- confirmed live 2026-08-05: exactly the
+           * "spurious rotation" this whole mechanism exists to prevent, just unprotected for every
+           * PMCH but the one that structurally can never need it. */
+          uint8_t active_pmch_idx = (peek_cfg.pmch_idx < mcch_for_ti.nof_pmch_info) ? peek_cfg.pmch_idx : 0;
+          /* Live TI reconfiguration (embms.pmch1.time_interleaving_n/m via the control socket,
+           * confirmed possible while running -- rrc::reconfigure_embms()): force an immediate
+           * mb_idx realignment rather than letting the OLD-cadence pinning free-run until
+           * mch_subframe_idx happens to satisfy the NEW block_len's own boundary, which mid-block
+           * can take up to a full extra block's worth of subframes of misrouted work first (see
+           * this variable's own declaration for the fuller rationale). Read from the stable
+           * broadcast MCCH content, not the per-tti peek_cfg (only valid on real, non-gap
+           * subframes), so a change is caught on the very next tti regardless of whether it lands
+           * on a gap or a real data subframe. */
+          if (mcch_for_ti.nof_pmch_info > 0) {
+            const auto& active_pmch_info = mcch_for_ti.pmch_info_list[active_pmch_idx];
+            if (active_pmch_info.time_interleaving_n != main_last_ti_n ||
+                active_pmch_info.time_interleaving_m != main_last_ti_m) {
+              mb_idx          = 0;
+              main_last_ti_n = active_pmch_info.time_interleaving_n;
+              main_last_ti_m = active_pmch_info.time_interleaving_m;
+            }
+          }
           bool ti_configured_for_active_mch =
-              !peek_cfg.is_mcch && mcch_for_ti.nof_pmch_info > 0 && mcch_for_ti.pmch_info_list[0].time_interleaving_n > 1;
+              !peek_cfg.is_mcch && mcch_for_ti.nof_pmch_info > 0 &&
+              mcch_for_ti.pmch_info_list[active_pmch_idx].time_interleaving_n > 1;
           if (ti_configured_for_active_mch && !(peek_cfg.enable && peek_cfg.time_interleaving_n > 1)) {
             ti_last_of_block = false;
           } else if (peek_cfg.enable && !peek_cfg.is_mcch && peek_cfg.time_interleaving_n > 1) {
@@ -672,12 +845,54 @@ auto main(int argc, char **argv) -> int {
             ti_last_of_block = (peek_cfg.mch_subframe_idx % block_len) == (block_len - 1);
           }
 
+          /* TEMPORARY (RACE_DIAG2, 2026-07-17): is_mbsfn_subframe(tti) below is an
+           * INDEPENDENT classification from mbsfn_config_for_tti(tti,...) (already
+           * computed above as peek_cfg) - both must agree for a muted-CAS sf=0 to be
+           * both dispatched and correctly configured. Log any live disagreement to
+           * test whether this is the source of the CAS-muting sf=0 equalization
+           * anomaly (see SIB13_MBSFN_TEST_RESULTS.md's Finding 3 for context) - the
+           * anomaly is now masked by MbsfnFrameProcessor's validity gate, but the
+           * root cause is still open. */
+          if (getenv("RACE_DIAG2") && (tti % 10) == 0) {
+            bool is_mbsfn_now = phy.is_mbsfn_subframe(tti);
+            if (is_mbsfn_now != peek_cfg.enable) {
+              fprintf(stderr, "RACE_DIAG2_MISMATCH tti=%u is_mbsfn_subframe=%d peek_cfg.enable=%d peek_cfg.is_mcch=%d mb_idx=%u\n",
+                      tti, (int)is_mbsfn_now, (int)peek_cfg.enable, (int)peek_cfg.is_mcch, mb_idx);
+            }
+          }
           // Get the samples from the SDR interface, hand them to an MNSFN processor, and start it
           // on a thread from the pool. Getting the buffer pointer from the pool also locks this processor.
           if (!restart && phy.get_next_frame(mbsfn_processors[mb_idx]->get_rx_buffer_and_lock(), mbsfn_processors[mb_idx]->rx_buffer_size())) {
+            if (getenv("MCCH_SCHED_DIAG")) {
+              static uint64_t dispatch_call_count = 0;
+              dispatch_call_count++;
+              bool mc = phy.mcch_configured();
+              bool imf = phy.is_mbsfn_subframe(tti);
+              if (dispatch_call_count % 2000 == 1 || (mc && imf)) {
+                fprintf(stderr, "MCCH_SCHED_DIAG4 tti=%u mcch_configured=%d is_mbsfn_subframe=%d call=%llu\n",
+                        tti, (int)mc, (int)imf, (unsigned long long)dispatch_call_count);
+              }
+            }
             if (phy.mcch_configured() && phy.is_mbsfn_subframe(tti)) {
               // If data frm SIB1/SIB13 has been received in CAS, configure the processors accordingly
-              if (!mbsfn_processors[mb_idx]->mbsfn_configured()) {
+              auto cell = phy.cell();
+              // MBSFN processor grid width = the WIDER of carrier and PMCH. For a
+              // pmch_bandwidth sub-allocation (PMCH < carrier) this keeps the grid at
+              // the carrier, so pmch.c's symbol stride (= cell.nof_prb) matches the
+              // eNB's while mbsfn_prb stays the narrower PMCH RE-allocation width; for
+              // the extended-BW case (PMCH > carrier) it grows the grid to the PMCH.
+              cell.nof_prb = (cell.nof_prb > cell.mbsfn_prb) ? cell.nof_prb : cell.mbsfn_prb;
+              /* Reconfigure not just on first-ever use but whenever the effective
+               * width has changed since this instance's last configuration -
+               * pmch_bandwidth (hence mbsfn_prb, hence this computed width) can
+               * legitimately change value mid-session (e.g. a live SET). Each of
+               * the thread_cnt worker instances used to latch "configured" once
+               * and never again, silently keeping a stale FFT/buffer width and
+               * corrupting every subsequent decode with NaN post-equalization
+               * power once the actual width diverged (confirmed live 2026-07-17,
+               * see MbsfnFrameProcessor::configured_nof_prb()'s doc comment). */
+              if (!mbsfn_processors[mb_idx]->mbsfn_configured() ||
+                  mbsfn_processors[mb_idx]->configured_nof_prb() != cell.nof_prb) {
                 srsran_scs_t scs = SRSRAN_SCS_15KHZ;
                 switch (phy.mbsfn_subcarrier_spacing()) {
                   case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ;  break;
@@ -688,12 +903,25 @@ auto main(int argc, char **argv) -> int {
                   case Phy::SubcarrierSpacing::df_370Hz_sl4: scs = SRSRAN_SCS_370HZ_SL4;  break;
                   case Phy::SubcarrierSpacing::df_370Hz_sl2: scs = SRSRAN_SCS_370HZ_SL2;  break;
                 }
-                auto cell = phy.cell();
-                cell.nof_prb = cell.mbsfn_prb;
-                mbsfn_processors[mb_idx]->set_cell(cell);
+                if (getenv("RACE_DIAG2")) {
+                  fprintf(stderr, "RECONFIG tti=%u mb_idx=%u nof_prb=%u mbsfn_prb=%u was_configured=%d\n",
+                          tti, mb_idx, cell.nof_prb, cell.mbsfn_prb,
+                          (int)mbsfn_processors[mb_idx]->mbsfn_configured());
+                }
+                // Wait for this instance's last dispatched process() (if any) to
+                // finish before resizing its buffers - same race/fix as cas_future,
+                // see the doc comment near mbsfn_futures' declaration.
+                if (mbsfn_futures[mb_idx].valid()) {
+                  mbsfn_futures[mb_idx].wait();
+                }
+                mbsfn_processors[mb_idx]->set_cell(cell, scs);
                 mbsfn_processors[mb_idx]->configure_mbsfn(phy.mbsfn_area_id(), scs);
               }
-              pool.push([ObjectPtr = mbsfn_processors[mb_idx], tti] {
+              if (getenv("RACE_DIAG2")) {
+                fprintf(stderr, "DISPATCH tti=%u mb_idx=%u is_mcch=%d nof_prb=%u mbsfn_prb=%u\n",
+                        tti, mb_idx, (int)peek_cfg.is_mcch, cell.nof_prb, cell.mbsfn_prb);
+              }
+              mbsfn_futures[mb_idx] = pool.push([ObjectPtr = mbsfn_processors[mb_idx], tti] {
                 ObjectPtr->process(tti);
               });
             } else {
@@ -705,8 +933,12 @@ auto main(int argc, char **argv) -> int {
           } else {
             // Failed to receive data, or sync lost. Go back to searching state.
             spdlog::warn("Synchronization lost while processing. Going back to searching state.");
-            sync_losses++; 
+            sync_losses++;
             state = syncing;
+            // get_rx_buffer_and_lock() above locked mbsfn_processors[mb_idx] for this
+            // tti, but process() was never dispatched to release it - unlock it here,
+            // same reasoning as the cas_processor case above.
+            mbsfn_processors[mb_idx]->unlock();
           }
           /* Only advance the round-robin worker index when this tti was the
            * last subframe of its N*M-subframe time-interleaving block (or
@@ -739,7 +971,21 @@ auto main(int argc, char **argv) -> int {
       break;
       
       case searching: {
-        if (restart) { // Triggered from the rt-wui
+        /* TEMPORARY (2026-07-26): drop to normal scheduling for the ENTIRE searching state,
+         * not just the post-cell-search reconfiguration block. Confirmed live: dropping
+         * priority only around the reconfiguration in main.cpp (below) was NOT enough --
+         * phy.cell_search() itself calls srsran_ue_sync_set_cell()/srsran_ue_mib_set_cell()
+         * internally, right after a successful MIB decode and before returning here, which
+         * is exactly the same class of one-time FFTW-replanning work already fixed twice
+         * today elsewhere, and it was still running at already-elevated SCHED_FIFO. Simplest
+         * correct fix: real-time priority isn't actually needed until a cell is found and
+         * locked (case processing), not while searching or reconfiguring at all. Idempotent
+         * to call every time this case is entered (already-SCHED_OTHER stays SCHED_OTHER).*/
+        struct sched_param normal_param = {};
+        normal_param.sched_priority = 0;
+        pthread_setschedparam(pthread_self(), SCHED_OTHER, &normal_param);
+
+        if (restart) { // Triggered from the rt-mbms-application
           sdr.stop();
           sample_rate = search_sample_rate;  // sample rate for searching
           sdr.tune(frequency, sample_rate, bandwidth, gain, antenna, use_agc);
@@ -756,7 +1002,16 @@ auto main(int argc, char **argv) -> int {
         if (cell_found) {
           // A cell has been found. We now know the required number of PRB = bandwidth of the carrier. Set the approproiate
           // sample rate...
-          cas_nof_prb = mbsfn_nof_prb = phy.nr_prb();
+          cas_nof_prb = phy.nr_prb();
+          // TEST-ONLY: if mbsfn_prb_test_override is set, go straight to the wide
+          // rate here instead of narrowing to cas_nof_prb first and letting the
+          // in-flight retune logic (below, ~line 612) widen it a second time -
+          // that two-step narrow-then-rewiden dance was observed to leave the
+          // modem stuck re-syncing indefinitely (dispatch loop never resumes,
+          // CAS/PDCCH total count frozen) after a live retune, whereas tuning
+          // directly to the target width from a cold cell-search does not hit
+          // this problem. See SIB13_MBSFN_TEST_RESULTS.md.
+          mbsfn_nof_prb = std::max<unsigned>(cas_nof_prb, mbsfn_prb_test_override);
 
           if (arguments.sample_file && arguments.file_bw) {
             // Samples files are recorded at a fixed sample rate that can be determined from the bandwidth command line argument.
@@ -771,17 +1026,65 @@ auto main(int argc, char **argv) -> int {
             phy.set_nof_mbsfn_prb(mbsfn_nof_prb);
             phy.set_cell();
           } else {
-            // When decoding from the air, configure the SDR accordingly
-            unsigned new_srate = srsran_sampling_freq_hz(cas_nof_prb);
-            spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, phy.nr_prb(),
-                phy.nr_prb() * 0.2);
-            sdr.stop();
-            sdr.clear_buffer();
-            bandwidth = (cas_nof_prb * 200000) * 1.2;
-            sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
-            //sleep(1);
+            // When decoding from the air, configure the SDR accordingly. RF
+            // backends that can't actually retune (the ZMQ test bridge,
+            // soapy-zmq-bridge/ZmqRxDevice) now decimate down to whatever
+            // rate is requested here when it's narrower than the wire's
+            // native rate (see that bridge's `native_srate` device arg /
+            // Decimator), so it's safe to genuinely retune down again.
+            //
+            // mbsfn_nof_prb, not cas_nof_prb: normally equal at this point, but
+            // TEST-ONLY mbsfn_prb_test_override (see above) can make it wider -
+            // mirrors the wide/narrow branching in the in-flight retune logic
+            // below (~line 618) so this initial tune lands directly on the
+            // target rate instead of narrowing first and widening again later.
+            unsigned new_srate;
+            if (mbsfn_nof_prb > cas_nof_prb) {
+              new_srate = (unsigned)srsran_sampling_freq_hz_scs(mbsfn_nof_prb, phy.mbsfn_scs());
+            } else {
+              new_srate = srsran_sampling_freq_hz(cas_nof_prb);
+            }
+            // Skip the stop/tune/start cycle entirely when cell search already
+            // landed on the right rate (e.g. modem.sdr.search_sample_rate_hz was
+            // configured to match the wide target directly). A retune at an
+            // unchanged rate still tears down and rebuilds the SDR's internal
+            // timing/phase state, which was found to corrupt the channel
+            // estimate used by CAS/PDCCH for the remainder of the session even
+            // though PBCH/MIB (more error-tolerant) kept decoding fine. See
+            // SIB13_MBSFN_TEST_RESULTS.md.
+            if (new_srate != sample_rate) {
+              spdlog::info("Setting sample rate {} Mhz for {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
+                  mbsfn_nof_prb * 0.2);
+              sdr.stop();
+              sdr.clear_buffer();
+              bandwidth = (mbsfn_nof_prb * 200000) * 1.2;
+              sdr.tune(frequency, new_srate, bandwidth, gain, antenna, use_agc);
+              //sleep(1);
 
-            sdr.start();
+              sdr.start();
+              sample_rate = new_srate;
+            } else {
+              spdlog::info("Cell search already at the target sample rate ({} Mhz) for {} PRB - reconfiguring PHY/CAS only, no SDR retune",
+                  new_srate/1000000.0, mbsfn_nof_prb);
+            }
+            // Mirrors the sample_file branch above and the in-flight retune logic
+            // below: the SDR's raw rate alone doesn't configure the PHY/CAS FFT
+            // grid width. Since this initial tune now lands directly on the wide
+            // target (see mbsfn_nof_prb computation above), the in-flight retune
+            // check further below will see no change and never fire, so this call
+            // has to happen here instead, or the CAS/PBCH FFT stays sized for the
+            // narrow carrier while the SDR itself is already sampling wide.
+            phy.set_nof_mbsfn_prb(mbsfn_nof_prb);
+            phy.set_cell();
+            cas_processor.set_cell(phy.cell(), phy.mbsfn_scs());
+          }
+          // Restore real-time priority now that searching (cell_search() itself, plus the
+          // retune/reconfiguration above) is done and we're about to move to syncing/
+          // processing -- see the drop at the top of this case for why it was dropped.
+          if (thread_param.sched_priority > 0) {
+            if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &thread_param) != 0) {
+              spdlog::error("Cannot restore main thread to realtime priority after cell search.");
+            }
           }
           spdlog::debug("Synchronizing subframe");
           // ... and move to syncing state.
@@ -808,13 +1111,22 @@ auto main(int argc, char **argv) -> int {
           lost_subframes += (((phy.tti() < tti) * 10240 +  phy.tti())-tti) * cas_processor.is_started() ; // cas_processor has started when it has a valid cell set. 
           spdlog::info("Decoded MIB at target sample rate, TTI is {}. Subframe synchronized, sync lost in TTI {}, {} subframes lost, {} total subframe lost, sync losses {}.", phy.tti(), tti, (((phy.tti() < tti) * 10240 +  phy.tti())-tti) * cas_processor.is_started(), lost_subframes, sync_losses);
 
-          // Set the cell parameters in the CAS processor, and set started to true
-          cas_processor.set_cell(phy.cell());
-
-          for (int i = 0; i < thread_cnt; i++) {
-            mbsfn_processors[i]->unlock();
+          // Set the cell parameters in the CAS processor, and set started to true.
+          // A sync-loss-triggered re-sync (not just first-ever startup) can reach
+          // here with a previous process() dispatch still in flight - wait for it
+          // first, same reasoning as the other set_cell() call sites above.
+          if (cas_future.valid()) {
+            cas_future.wait();
           }
-          cas_processor.unlock(); // We need to unlock because we felt here from processing after calling get_rx_buffer_and_lock()
+          cas_processor.set_cell(phy.cell(), phy.mbsfn_scs());
+
+          // No blanket unlock needed here: cas_processor and mbsfn_processors[mb_idx] each
+          // unlock themselves immediately at their own sync-loss detection site (in case
+          // processing above) whenever get_rx_buffer_and_lock() wasn't followed by a
+          // dispatched process() call. Unconditionally unlocking every processor here was
+          // undefined behaviour - unlock of an already-unlocked mutex, or worse, of one
+          // still held by an in-flight worker thread - confirmed via ThreadSanitizer,
+          // 2026-07-22 (5 "unlock of an unlocked mutex" reports, all this call site).
 
           // Get the initial TTI / subframe ID (= system frame number * 10 + subframe number)
           tti = phy.tti();
@@ -847,7 +1159,7 @@ auto main(int argc, char **argv) -> int {
 
         // Wait to finish and lock, we don't want to update total and errors independently. Yes, it's a blocking solution, but, what other way is possible?
         cas_processor.lock();
-        
+
         spdlog::info("PDSCH: MCS {}, BLER {}",
             rest_handler._pdsch.mcs,
             ((rest_handler._pdsch.errors > 0 && rest_handler._pdsch.total > 0) ? (rest_handler._pdsch.errors * 1.0) / (rest_handler._pdsch.total * 1.0) : 0));

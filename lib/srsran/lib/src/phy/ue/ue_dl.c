@@ -22,6 +22,10 @@
 #include "srsran/phy/ue/ue_dl.h"
 
 #include "srsran/srsran.h"
+#include <complex.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CURRENT_FFTSIZE srsran_symbol_sz(q->cell.nof_prb)
@@ -125,7 +129,18 @@ int srsran_ue_dl_init(srsran_ue_dl_t* q, cf_t* in_buffer[SRSRAN_MAX_PORTS], uint
     ofdm_cfg.rx_window_offset  = 0.0f;
     ofdm_cfg.normalize         = false;
     for (int i = 0; i < nof_rx_antennas; i++) {
-      ofdm_cfg.in_buffer  = in_buffer[i];
+      /* raw_buffer[i]: the caller's original wide-rate samples (was fft[i]'s own
+       * in_buffer). cas_buffer[i]: fft[i]'s own permanently-narrow scratch,
+       * decimated down from raw_buffer[i] by cas_decimator[i] in
+       * srsran_ue_dl_decode_fft_estimate() - see ue_dl.h doc comment. */
+      q->raw_buffer[i] = in_buffer[i];
+      q->cas_buffer[i] = srsran_vec_cf_malloc(SRSRAN_SF_LEN_PRB(max_prb));
+      if (!q->cas_buffer[i]) {
+        perror("malloc");
+        goto clean_exit;
+      }
+
+      ofdm_cfg.in_buffer  = q->cas_buffer[i];
       ofdm_cfg.out_buffer = q->sf_symbols[i];
       ofdm_cfg.sf_type    = SRSRAN_SF_NORM;
 
@@ -143,6 +158,20 @@ int srsran_ue_dl_init(srsran_ue_dl_t* q, cf_t* in_buffer[SRSRAN_MAX_PORTS], uint
         int      sz_370   = srsran_symbol_sz_scs(sl4_prb, SRSRAN_SCS_370HZ);
         int      sz_norm  = srsran_symbol_sz(max_prb);
         ofdm_cfg.symbol_sz = (sz_370 > sz_norm && sz_370 > 0) ? (uint32_t)sz_370 : (uint32_t)sz_norm;
+      }
+      /* EXPERIMENTAL (2026-07-20, kept as a regression-check/future-investigation
+       * tool - the underlying ripple is still open, see SIB13_MBSFN_TEST_RESULTS.md):
+       * env-gated override of fft_mbsfn's rx_window_offset, to test whether a fixed
+       * sub-sample FFT-window shift explains the residual ~2.5% deterministic
+       * per-subcarrier ripple/EVM on the wideband PMCH path (fft[port]/CAS's own
+       * window_offset is untouched - stays at the shared 0.0f default set above).
+       * Tested at 0.01 (~31 samples, 1% of the 3072-sample extended CP): confirmed
+       * via ue_dl.c's own window_offset_n/window_offset_buffer that the mechanism
+       * genuinely applies (not dead code), but the CIR sidelobe shape and EVM were
+       * unchanged/slightly worse - ruled out as the (sole) cause at this value.
+       * Inert (0.0f, unchanged behavior) unless the env var is set. */
+      if (getenv("FFT_MBSFN_WINDOW_OFFSET")) {
+        ofdm_cfg.rx_window_offset = (float)atof(getenv("FFT_MBSFN_WINDOW_OFFSET"));
       }
       if (srsran_ofdm_rx_init_cfg(&q->fft_mbsfn[i], &ofdm_cfg)) {
         ERROR("Error initiating FFT for MBSFN subframes ");
@@ -215,6 +244,10 @@ void srsran_ue_dl_free(srsran_ue_dl_t* q)
       if (q->sf_symbols[j]) {
         free(q->sf_symbols[j]);
       }
+      if (q->cas_buffer[j]) {
+        free(q->cas_buffer[j]);
+      }
+      srsran_resampler_fft_free(&q->cas_decimator[j]);
     }
     bzero(q, sizeof(srsran_ue_dl_t));
   }
@@ -222,7 +255,29 @@ void srsran_ue_dl_free(srsran_ue_dl_t* q)
 
 int srsran_ue_dl_set_cell(srsran_ue_dl_t* q, srsran_cell_t cell)
 {
+  return srsran_ue_dl_set_cell_scs(q, cell, SRSRAN_SCS_15KHZ);
+}
+
+/* mbsfn_scs is the MBSFN/PMCH content's subcarrier spacing - q->fft[port] (CAS's
+ * own FFT) stays permanently narrow regardless of it (see the CAS/PMCH FFT
+ * decoupling in this file: fft[port] is never widened, fft_mbsfn[port] is the
+ * wide one, bridged only by the explicit cas_decimator resampler below). This
+ * parameter is used for: the CAS_CE_DIAG trace print, and rejecting the 370Hz-
+ * family-SCS-plus-real-widening combination the ratio formula below doesn't yet
+ * support correctly (see that check's own comment). srsran_ue_dl_set_cell()
+ * (SCS_15KHZ default) keeps every other caller's existing behavior unchanged -
+ * only FeMBMS-aware callers (CasFrameProcessor.cpp, MbsfnFrameProcessor.cpp,
+ * main.cpp) need this variant. */
+int srsran_ue_dl_set_cell_scs(srsran_ue_dl_t* q, srsran_cell_t cell, srsran_scs_t mbsfn_scs)
+{
   int ret = SRSRAN_ERROR_INVALID_INPUTS;
+
+  if (getenv("CAS_CE_DIAG")) {
+    fprintf(stderr, "SET_CELL_SCS_TRACE q_nof_prb=%u q_mbsfn_prb=%u cell_nof_prb=%u cell_mbsfn_prb=%u "
+            "mbsfn_scs=%d will_reinit=%d\n",
+            q ? q->cell.nof_prb : 0, q ? q->cell.mbsfn_prb : 0, cell.nof_prb, cell.mbsfn_prb, (int)mbsfn_scs,
+            q ? (q->cell.id != cell.id || q->cell.nof_prb == 0 || q->cell.mbsfn_prb != cell.mbsfn_prb) : -1);
+  }
 
   if (q != NULL && srsran_cell_isvalid(&cell)) {
     q->pending_ul_dci_count = 0;
@@ -241,24 +296,59 @@ int srsran_ue_dl_set_cell(srsran_ue_dl_t* q, srsran_cell_t cell)
         }
       }
       for (int port = 0; port < q->nof_rx_antennas; port++) {
-        if (q->cell.mbsfn_prb != 0 && q->cell.mbsfn_prb != q->cell.nof_prb) {
-          if (srsran_ofdm_rx_set_prb_symbol_sz(&q->fft[port], q->cell.cp, q->cell.nof_prb,
-                srsran_symbol_sz(q->cell.mbsfn_prb))) {
-            ERROR("Error resizing FFT\n");
-            return SRSRAN_ERROR;
-          }
-
-        } else {
-          if (srsran_ofdm_rx_set_prb(&q->fft[port], q->cell.cp, q->cell.nof_prb)) {
-            ERROR("Error resizing FFT\n");
-            return SRSRAN_ERROR;
-          }
+        /* q->fft[port] (CAS/PBCH/PDCCH) stays permanently at the carrier's own
+         * native, narrow symbol_sz - exactly like a standard, non-FeMBMS LTE
+         * UE, regardless of mbsfn_prb. An earlier approach widened fft[port]'s
+         * own symbol_sz directly to match the TX side's own (then-widened)
+         * ifft[i]; abandoned after a full day of unresolved, live-process-only
+         * corruption (see SIB13_MBSFN_TEST_RESULTS.md). CAS's own raw samples
+         * are instead decimated down from the wide-rate raw_buffer[port] into
+         * cas_buffer[port] by cas_decimator[port], in
+         * srsran_ue_dl_decode_fft_estimate(), just before fft[port] runs. */
+        if (srsran_ofdm_rx_set_prb(&q->fft[port], q->cell.cp, q->cell.nof_prb)) {
+          ERROR("Error resizing FFT\n");
+          return SRSRAN_ERROR;
         }
-        
+
         uint32_t mbsfn_fft_prb = q->cell.mbsfn_prb != 0 ? q->cell.mbsfn_prb : q->cell.nof_prb;
         if (srsran_ofdm_rx_set_prb(&q->fft_mbsfn[port], SRSRAN_CP_EXT, mbsfn_fft_prb)) {
           ERROR("Error resizing MBSFN FFT");
           return SRSRAN_ERROR;
+        }
+      }
+      /* (Re)compute the wire <-> CAS sample-rate ratio and (re)init the
+       * decimator bridge - mirrors rt-mbms-tx's enb_dl.c exactly (sample-RATE
+       * ratio via srsran_sampling_freq_hz(), not a symbol-size ratio - see
+       * that file's own comment for the full reasoning). This guard
+       * (q->cell.mbsfn_prb != cell.mbsfn_prb, above) already re-enters on a
+       * live SIB13 pmch_bandwidth change alone, so recomputing here naturally
+       * covers that case too. */
+      {
+        uint32_t wide_prb  = SRSRAN_MAX(q->cell.nof_prb, q->cell.mbsfn_prb);
+        /* srsran_sampling_freq_hz() (not the _scs variant) is deliberately used below -
+         * it reduces to the same plain 15kHz-table formula _scs() would give for every
+         * SCS this campaign actually tests, so using the simpler call is equivalent
+         * there. It is NOT equivalent for the 370Hz family (SL2/SL4 use the CR 0548
+         * formula in _scs() instead) - 370Hz support is already a known, separately-
+         * scoped architectural gap in this campaign, so fail loudly here rather than
+         * silently computing a wrong ratio if it's ever combined with real widening. */
+        if (SRSRAN_SCS_IS_370HZ(mbsfn_scs) && wide_prb != q->cell.nof_prb) {
+          ERROR("CAS<->PMCH resampler bridge does not support 370Hz-family SCS with mbsfn_prb widening yet");
+          return SRSRAN_ERROR;
+        }
+        int      wide_hz   = srsran_sampling_freq_hz(wide_prb);
+        int      narrow_hz = srsran_sampling_freq_hz(q->cell.nof_prb);
+        if (wide_hz <= 0 || narrow_hz <= 0 || (wide_hz % narrow_hz) != 0) {
+          ERROR("CAS<->PMCH sample-rate ratio not integer (wide=%d narrow=%d Hz)", wide_hz, narrow_hz);
+          return SRSRAN_ERROR;
+        }
+        uint32_t ratio = (uint32_t)(wide_hz / narrow_hz);
+        for (int port = 0; port < q->nof_rx_antennas; port++) {
+          /* Return value intentionally unchecked: ratio==1 (baseline, no PMCH
+           * widening) returns SRSRAN_ERROR_OUT_OF_BOUNDS by this function's own
+           * design (resampler.c) - expected/benign, mirrors radio.cc's own
+           * identical, unchecked usage of this same call. */
+          srsran_resampler_fft_init(&q->cas_decimator[port], SRSRAN_RESAMPLER_MODE_DECIMATE, ratio);
         }
       }
 
@@ -354,8 +444,26 @@ int srsran_ue_dl_set_mbsfn_subcarrier_spacing(srsran_ue_dl_t* q, srsran_scs_t su
   int ret = SRSRAN_ERROR_INVALID_INPUTS;
   if (q != NULL) {
     ret = SRSRAN_ERROR;
+    /* mbsfn_prb==0 is the sentinel for "no pmch-Bandwidth-r17 override, use the
+     * carrier width" used consistently everywhere else in this codebase (pmch.c,
+     * main.cpp, etc: SRSRAN_MAX(nof_prb, mbsfn_prb) or the equivalent ternary).
+     * Passing q->cell.mbsfn_prb straight through here sent a literal 0 into
+     * srsran_ofdm_rx_set_prb_scs -> ofdm_init_mbsfn_ -> srsran_symbol_sz_scs,
+     * which rejects nof_prb=0 as invalid and returns an error - causing this
+     * function to return early WITHOUT ever reaching q->subcarrier_spacing =
+     * subcarrier_spacing below. q->subcarrier_spacing then stayed at its
+     * zero-initialized default (SRSRAN_SCS_15KHZ) for the rest of the session,
+     * which srsran_ue_dl_set_mbsfn_area_id (called right after this by every
+     * caller, without checking this function's return value) then used to
+     * generate the MBSFN reference sequence: 15 kHz's numerology only fills
+     * 3 symbols x 150 REs = 450 of the 600 REs 1.25 kHz's own per-subframe
+     * pilot extraction (correctly SCS-aware) actually needs, leaving the
+     * upper 150 reference values at zero forever and corrupting the channel
+     * estimate for every MBSFN subframe (confirmed live 2026-07-17: known-
+     * reference magnitude exactly 1.0 for index<450, exactly 0.0 above). */
+    uint32_t act_mbsfn_prb = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
     for (int j = 0; j < q->nof_rx_antennas; j++) {
-      if (srsran_ofdm_rx_set_prb_scs(&q->fft_mbsfn[j], SRSRAN_CP_EXT, q->cell.mbsfn_prb, subcarrier_spacing)) {
+      if (srsran_ofdm_rx_set_prb_scs(&q->fft_mbsfn[j], SRSRAN_CP_EXT, act_mbsfn_prb, subcarrier_spacing)) {
         ERROR("Error setting MBSFN subcarrier spacing\n");
         return ret;
       }
@@ -429,6 +537,25 @@ static int estimate_pdcch_pcfich(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, srsr
   }
 }
 
+/* The real per-subframe sample count for fft_mbsfn[j]'s current numerology - this
+ * repo's own copy of ofdm.c/.h does not have rt-mbms-tx's mbsfn_sf_len field
+ * (confirmed divergence between the two repos' vendored srsRAN trees), so it's
+ * computed locally here, mirroring that field's formula in rt-mbms-tx's ofdm.c
+ * exactly: sf_sz alone is wrong for reduced FeMBMS SCS (it assumes the standard
+ * 15kHz/14-symbols-per-subframe structure), so a genuine wide-rate one-subframe
+ * sample count must be derived from the actual numerology instead. */
+static uint32_t ue_dl_wide_sf_len(const srsran_ofdm_t* fft_mbsfn)
+{
+  if (fft_mbsfn->cfg.subcarrier_spacing != SRSRAN_SCS_15KHZ) {
+    uint32_t total_syms = fft_mbsfn->nof_symbols_mbsfn * SRSRAN_MBSFN_NOF_SLOTS(fft_mbsfn->cfg.subcarrier_spacing);
+    uint32_t cp_len      = SRSRAN_SCS_IS_370HZ(fft_mbsfn->cfg.subcarrier_spacing)
+                               ? (fft_mbsfn->cfg.symbol_sz / 9U)
+                               : (uint32_t)SRSRAN_CP_LEN_EXT(fft_mbsfn->cfg.symbol_sz);
+    return total_syms * (fft_mbsfn->cfg.symbol_sz + cp_len);
+  }
+  return fft_mbsfn->sf_sz;
+}
+
 int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, srsran_ue_dl_cfg_t* cfg)
 {
   if (q) {
@@ -456,6 +583,28 @@ int srsran_ue_dl_decode_fft_estimate(srsran_ue_dl_t* q, srsran_dl_sf_cfg_t* sf, 
       if (sf->sf_type == SRSRAN_SF_MBSFN) {
         srsran_ofdm_rx_sf(&q->fft_mbsfn[j]);
       } else {
+        /* Decimate this occasion's wide raw samples down into fft[j]'s own
+         * permanently-narrow cas_buffer[j] before it runs - see ue_dl.h doc
+         * comment.
+         *
+         * REVERTED THE PER-OCCASION RESET (2026-07-19): see rt-mbms-tx's enb_dl.c
+         * for the full reasoning (identical here) - resetting state every occasion
+         * forces a cold start against phantom zero history instead of a real
+         * signal tail, which isn't a decaying transient but a structural,
+         * per-call shift by the filter's own srsran_resampler_fft_get_delay().
+         * Confirmed live: this is why CAS_CE_DIAG's sync_error sat rock-stable at
+         * ~7 samples every single occasion, and why a corrected (extended-CP-aware)
+         * re-FFT of a captured post-decimation buffer showed a clean, near-linear
+         * phase ramp across CRS/PSS subcarriers - the signature of an uncompensated
+         * constant sample delay, not the "chaotic, no smooth trend" corruption the
+         * original (pre-redesign) investigation reported (that finding traced to a
+         * test-tool CP mismatch, not a real signal defect - see
+         * SIB13_MBSFN_TEST_RESULTS.md). Not resetting lets cas_decimator carry the
+         * previous CAS occasion's tail forward instead of zero - stale but
+         * deterministic, letting the filter settle into a stable, repeatable
+         * operating point instead of re-taking a cold-start hit every time. */
+        srsran_resampler_fft_run(
+            &q->cas_decimator[j], q->raw_buffer[j], q->cas_buffer[j], ue_dl_wide_sf_len(&q->fft_mbsfn[j]));
         srsran_ofdm_rx_sf(&q->fft[j]);
       }
     }

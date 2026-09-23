@@ -2897,12 +2897,17 @@ std::string mbsfn_area_info_r16_s::subcarrier_spacing_mbms_r16_opts::to_number_s
 
 std::string mbsfn_area_info_r16_s::time_separation_r16_opts::to_string() const
 {
-  static const char* options[] = {"s12", "s14"};
+  static const char* options[] = {"sl2", "sl4"};
   return convert_enum_idx(options, 2, value, "mbsfn_area_info_r16_s::time_separation_r16_opts");
 }
 uint8_t mbsfn_area_info_r16_s::time_separation_r16_opts::to_number() const
 {
-  static const uint8_t options[] = {12, 14};
+  /* TS 36.331 field description: "sl2 refers to staggering length of 2 slots
+   * ... sl4 refers to staggering length of 4 slots" -- the real numbers are
+   * 2 and 4, not 12/14 (an artifact of the same s12/s14 mistranscription
+   * fixed in the enum declaration above). Not called anywhere in this
+   * codebase today (confirmed by grep), so this had no live effect. */
+  static const uint8_t options[] = {2, 4};
   return map_enum_number(options, 2, value, "mbsfn_area_info_r16_s::time_separation_r16_opts");
 }
 

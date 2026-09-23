@@ -10,8 +10,10 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <sched.h>
 #include <thread>
 #include <type_traits>
+#include <unistd.h>
 #include <vector>
 
 class thread_pool
@@ -28,11 +30,33 @@ public:
 		for (std::size_t i{ 0 }; i < thread_count; ++i) {
 			spdlog::info("Launching phy thread with realtime scheduling priority {}", thread_param.sched_priority );
 			m_workers.emplace_back(std::bind(&thread_pool::thread_loop, this));
-			
-			int error = pthread_setschedparam( m_workers.back().native_handle(), SCHED_RR, &thread_param );
+
+			// SCHED_FIFO, not SCHED_RR -- see SdrReader.cpp's reader-thread priority elevation for why.
+			int error = pthread_setschedparam( m_workers.back().native_handle(), SCHED_FIFO, &thread_param );
 			if( error )
 			{
 				spdlog::error("Cannot set phy thread priority to realtime: {}. Thread will run at default priority.", strerror(error));
+			}
+
+			// Pin each PHY worker to its own dedicated core, in addition to the SCHED_FIFO
+			// elevation above -- same reasoning as SdrReader.cpp/soapy-zmq-bridge's own pins
+			// (priority governs who runs first when threads share a core, not whether a burst
+			// of unrelated work on another thread evicts this thread mid-quantum). Investigated
+			// 2026-07-22: CasFrameProcessor::process() (dispatched to these workers) was
+			// measured spending 10-166ms in srsran_ue_dl_find_dl_dci() with no single candidate
+			// or sub-step accounting for more than ~90us -- consistent with the worker being
+			// descheduled mid-search rather than the search itself being slow. Cores 0/1 are
+			// already reserved for the ZMQ bridge decimator and SdrReader's own reader thread;
+			// start from core 2 so this doesn't recreate that same contention. Skip if there
+			// aren't enough cores to give every worker (plus those other two) its own.
+			if (sysconf(_SC_NPROCESSORS_ONLN) >= (long)(thread_count + 2)) {
+				cpu_set_t cpuset;
+				CPU_ZERO(&cpuset);
+				CPU_SET(2 + i, &cpuset);
+				int rc = pthread_setaffinity_np(m_workers.back().native_handle(), sizeof(cpuset), &cpuset);
+				if (rc != 0) {
+					spdlog::warn("Cannot pin PHY worker {} to a dedicated core: {}", i, strerror(rc));
+				}
 			}
 		}
 	}

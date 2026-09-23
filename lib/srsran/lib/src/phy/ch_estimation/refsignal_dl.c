@@ -336,10 +336,17 @@ SRSRAN_API int srsran_refsignal_mbsfn_put_sf(srsran_cell_t cell,
       }
     }
 
-    /* For extended BW (mbsfn_prb < nof_prb), RS covers only the MBSFN allocation.
+    /* For extended BW (mbsfn_prb != nof_prb), RS covers only the MBSFN allocation.
      * pmch_cp writes data linearly from subcarrier 0, so RS must also be left-aligned
      * (starting at subcarrier 0, not centered) to stay consistent with data placement. */
     uint32_t act_prb_put = cell.mbsfn_prb ? cell.mbsfn_prb : cell.nof_prb;
+    /* Symbol stride (see SRSRAN_RE_IDX_MBSFN below) must match the actual MBSFN
+     * grid width the sf_symbols buffer/MBSFN IFFT are sized to -- max(nof_prb,
+     * mbsfn_prb), mirroring pmch_cp's identical fix in pmch.c (and the eNB-side
+     * rt-mbms-tx fix). Using act_prb_put (the narrower populated-RE count) as
+     * the stride would corrupt adjacent symbols whenever mbsfn_prb > nof_prb
+     * (a wider PMCH than the carrier, FeMBMS extended coverage). */
+    uint32_t mbsfn_stride = SRSRAN_MAX(cell.nof_prb, cell.mbsfn_prb);
     /* ns must match the slot index used to select mbsfn_pilots (q->mbsfnr_signal.pilots[0][ns]
      * in the caller, e.g. enb_dl.c's put_refs): 40 ms period, 13 slots of 3 ms, with the first
      * slot (ns=0) absorbing the extra TTI (0..3) so that 4 + 3*12 = 40. A plain tti/3 does not
@@ -361,7 +368,7 @@ SRSRAN_API int srsran_refsignal_mbsfn_put_sf(srsran_cell_t cell,
       uint32_t total_pilots = (SRSRAN_NRE_SCS_370HZ * act_prb_put) / 12;
       for (i = 0; i < total_pilots; i++) {
         uint32_t k = 12 * i + stagger;
-        sf_symbols[SRSRAN_RE_IDX_MBSFN(cell.nof_prb, 0, k, SRSRAN_SCS_370HZ)] =
+        sf_symbols[SRSRAN_RE_IDX_MBSFN(mbsfn_stride, 0, k, SRSRAN_SCS_370HZ)] =
           mbsfn_pilots[SRSRAN_REFSIGNAL_PILOT_IDX_MBSFN(i, 0, cell, scs)];
       }
     } else {
@@ -387,7 +394,7 @@ SRSRAN_API int srsran_refsignal_mbsfn_put_sf(srsran_cell_t cell,
           fidx = srsran_refsignal_mbsfn_fidx(l, scs);
         }
         for (i = 0; i < srsran_refsignal_mbsfn_rs_per_symbol(scs) * act_prb_put; i++) {
-          sf_symbols[SRSRAN_RE_IDX_MBSFN(cell.nof_prb, nsymbol, fidx, scs)] =
+          sf_symbols[SRSRAN_RE_IDX_MBSFN(mbsfn_stride, nsymbol, fidx, scs)] =
             mbsfn_pilots[SRSRAN_REFSIGNAL_PILOT_IDX_MBSFN(i, l, cell, scs)];
           fidx += SRSRAN_NRE_SCS(scs) / srsran_refsignal_mbsfn_rs_per_symbol(scs);
         }
@@ -607,26 +614,49 @@ int srsran_refsignal_mbsfn_gen_seq(srsran_refsignal_t* q, srsran_cell_t cell, ui
         if (scs == SRSRAN_SCS_2KHZ5 || scs == SRSRAN_SCS_370HZ_SL2 || scs == SRSRAN_SCS_370HZ_SL4) {
           /* TS 36.211 clauses 6.10.2.1.3 (2.5 kHz) and 6.10.2.1.4 (0.37 kHz):
            *   cinit = 512*(7*(n+1) + l + 1)*(2*N_ID^MBSFN + 1) + N_ID^MBSFN
-           * Same structure as 7.5 kHz (clause 6.10.2.1.2); only the time index differs.
+           * Same structure as 15/7.5 kHz's shared clause 6.10.2.1.1 (citation
+           * corrected 2026-07-25 -- this comment previously said "6.10.2.1.2",
+           * which is actually 1.25 kHz's own separate clause; see the
+           * SRSRAN_SCS_7KHZ5 branch below for that same correction, made
+           * 2026-07-24); only the time index differs.
            * For 2.5 kHz: n = n_sf (0..9, subframe index within 10 ms frame).
            * For 0.37 kHz: n = n_s (0..12, 3 ms slot index within 40 ms period).
+           * 0.37 kHz's formula independently verified 2026-07-25 against the
+           * user's local Rel-19 archive (36211-j30_s06-s08.pdf, page 58,
+           * clause 6.10.2.1.4 rendered and read directly, not just this
+           * comment's own claim): matches exactly, including n_s being the
+           * PERIOD-LOCAL slot index here (0..12) as opposed to the ABSOLUTE
+           * slot index ñ_s used for the stagger term in 6.10.2.2.4 below --
+           * two different time indices in two different formulas, both
+           * confirmed correctly threaded through this codebase.
            * Note: prior code used 297*(n+1)+l+12N(N+1)+N which is a misread of the OOXML
            * math (2^9 superscript adjacent to the factor 7 renders as "297" in text). */
           c_init = 512u * (7u * (ns + 1u) + lp + 1u) * (2u * N_mbsfn_id + 1u) + N_mbsfn_id;
         } else if (scs == SRSRAN_SCS_7KHZ5) {
-          /* TS 36.211 clause 6.10.2.1.2 (7.5 kHz MBSFN RS):
+          /* Citation corrected 2026-07-24 against Rel-19 (TS 36.211 V19.3.0):
+           * clause 6.10.2.1.1 is "Sequence generation for 15 kHz AND 7.5 kHz"
+           * (one shared clause, not 6.10.2.1.2 as previously written here -
+           * 6.10.2.1.2 is actually 1.25 kHz's own separate clause). Formula
+           * itself not re-derived in this pass, only the citation:
            *   cinit = 512*(7*(ns+1) + lp + 1)*(2*N_ID^MBSFN + 1) + N_ID^MBSFN
            * where ns is the subframe index (0..9) and lp = nsymbol mod 3.
            * At 7.5 kHz there is one slot per 1 ms subframe, so ns (not slot) is
            * the correct time index; using slot (= ns*2 or ns*2+1) would produce
-           * the wrong cinit and broken pilot values. */
+           * the wrong cinit and broken pilot values. NOT independently re-checked
+           * this pass: whether the spec's own n_s (clause 6.10.2.1.1 defines it as
+           * "the slot number within a radio frame", used for BOTH 15kHz and 7.5kHz)
+           * numerically reduces to this subframe-indexed ns for 7.5 kHz's redefined
+           * slot/subframe relationship - flagged for anyone chasing 7.5 kHz further. */
           c_init = 512 * (7 * (ns + 1) + lp + 1) * (2 * N_mbsfn_id + 1) + N_mbsfn_id;
         } else if (scs == SRSRAN_SCS_1KHZ25) {
-          /* TS 36.211 clause 6.10.2.1.1 (15 kHz / 1.25 kHz form, shared):
+          /* Citation corrected 2026-07-24 against Rel-19: this is clause
+           * 6.10.2.1.2 ("Sequence generation for 1.25 kHz"), its own separate
+           * clause - not 6.10.2.1.1, which covers 15/7.5 kHz instead. Formula:
            *   cinit = 512*(7*(ns+1) + l + 1)*(2*N+1) + N */
           c_init = 512 * (7 * (ns + 1) + l + 1) * (2 * N_mbsfn_id + 1) + N_mbsfn_id;
         } else {
-          /* SRSRAN_SCS_15KHZ: TS 36.211 clause 6.10.2.1.1:
+          /* SRSRAN_SCS_15KHZ: TS 36.211 clause 6.10.2.1.1 (confirmed against
+           * Rel-19; shared with 7.5 kHz, see above), cinit:
            *   cinit = 512*(7*(slot+1) + lp + 1)*(2*N+1) + N */
           c_init = 512 * (7 * (slot + 1) + lp + 1) * (2 * N_mbsfn_id + 1) + N_mbsfn_id;
         }
@@ -637,7 +667,12 @@ int srsran_refsignal_mbsfn_gen_seq(srsran_refsignal_t* q, srsran_cell_t cell, ui
            * shift = NscRB/12 * (N_RB^max,DL - N_RB^DL) — same centering idea as the other
            * numerologies below, applied here since guard bands (N_RB^DL < N_RB^max,DL)
            * are the common case for a real deployment, not just NRBmax,DL. NscRB/12 =
-           * 40.5 is non-integer; use floor for both the pilot count and the shift. */
+           * 40.5 is non-integer; use floor for both the pilot count and the shift.
+           * Independently re-derived 2026-07-25 against the actual clause text (page 61
+           * of the rendered PDF, not just this comment): spec gives Delta = (N_RB^max,DL
+           * - N_RB^DL)/2 in PRBs; converting to this clause's own m'-index units means
+           * multiplying by (NscRB/12) m'-values-per-PRB, giving Delta*(NscRB/12) =
+           * (NscRB*(MAX_PRB-act_prb))/24 -- exactly this center_offset. Confirmed match. */
           uint32_t act_prb       = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
           uint32_t total_pilots  = (SRSRAN_NRE_SCS_370HZ * act_prb) / 12;
           uint32_t center_offset = (SRSRAN_NRE_SCS_370HZ * (SRSRAN_MAX_PRB - act_prb)) / 24;
@@ -649,7 +684,10 @@ int srsran_refsignal_mbsfn_gen_seq(srsran_refsignal_t* q, srsran_cell_t cell, ui
         } else if (scs == SRSRAN_SCS_370HZ_SL2) {
           /* TS 36.211 clause 6.10.2.2.4 type2: m'=0..(NscRB/6 * prb)-1 = 81*prb-1,
            * shift = NscRB/6 * (N_RB^max,DL - N_RB^DL) / 2 = NscRB/12 * (...) — same
-           * centering as SL4 above, halved pilot density. */
+           * centering as SL4 above, halved pilot density.
+           * Independently re-derived 2026-07-25 the same way as SL4 above: Delta*(NscRB/6)
+           * = ((N_RB^max,DL-N_RB^DL)/2)*(NscRB/6) = (NscRB*(MAX_PRB-act_prb))/12 -- exactly
+           * this center_offset. Confirmed match against the actual clause text. */
           uint32_t act_prb       = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
           uint32_t total_pilots  = SRSRAN_NRE_SCS_370HZ / 6 * act_prb;  /* 81 * act_prb */
           uint32_t center_offset = (SRSRAN_NRE_SCS_370HZ * (SRSRAN_MAX_PRB - act_prb)) / 12;
@@ -673,8 +711,12 @@ int srsran_refsignal_mbsfn_gen_seq(srsran_refsignal_t* q, srsran_cell_t cell, ui
            * table: finite, well-formed-looking numbers that are nevertheless wrong,
            * rather than an obviously-broken value - hence why it survived every
            * previous internal-consistency check in this investigation. 7.5 kHz and
-           * 15 kHz's coefficients have NOT been independently re-verified against
-           * their own clause (6.10.2.2.1) and are left as rs_per_symbol/2 for now. */
+           * 15 kHz: verified 2026-07-24 against 3GPP TS 36.211 V19.3.0 (2026-03),
+           * clause 6.10.2.2.1, which gives m' = m + 3*(N_RB^max,DL - N_RB^DL) for
+           * BOTH spacings (one shared formula, not split by SCS). rs_per_symbol(scs)/2
+           * equals 6/2=3 for both 7.5 kHz and 15 kHz (srsran_refsignal_mbsfn_rs_per_symbol()
+           * returns 6 for both), so the heuristic is confirmed numerically correct here too -
+           * this is not the cause of the 7.5 kHz MCCH decode failure. */
           uint32_t act_prb          = q->cell.mbsfn_prb ? q->cell.mbsfn_prb : q->cell.nof_prb;
           uint32_t centering_factor = (scs == SRSRAN_SCS_1KHZ25) ? 3u : (srsran_refsignal_mbsfn_rs_per_symbol(scs) / 2u);
           uint32_t center_offset = centering_factor * (SRSRAN_MAX_PRB - act_prb);
@@ -798,15 +840,19 @@ int srsran_refsignal_mbsfn_get_sf(srsran_cell_t cell, uint32_t port_id, cf_t* sf
        * Pilot spacing 12 does not divide NscRB=486, so per-RB framework is not used.
        * Use act_prb (mbsfn_prb or nof_prb) to match put_sf; k must stay within sf_symbols. */
       uint32_t act_prb_get  = cell.mbsfn_prb ? cell.mbsfn_prb : cell.nof_prb;
+      // Stride must match put_sf's mbsfn_stride -- see that function's doc comment.
+      uint32_t mbsfn_stride = SRSRAN_MAX(cell.nof_prb, cell.mbsfn_prb);
       uint32_t stagger      = 3 * (ns_37 % 4);
       uint32_t total_pilots = (SRSRAN_NRE_SCS_370HZ * act_prb_get) / 12;
       for (i = 0; i < total_pilots; i++) {
         uint32_t k = 12 * i + stagger;
-        pilots[i + nonmbsfn_offset] = sf_symbols[SRSRAN_RE_IDX_MBSFN(cell.nof_prb, 0, k, SRSRAN_SCS_370HZ)];
+        pilots[i + nonmbsfn_offset] = sf_symbols[SRSRAN_RE_IDX_MBSFN(mbsfn_stride, 0, k, SRSRAN_SCS_370HZ)];
       }
     } else {
-      /* For extended BW (mbsfn_prb < nof_prb), RS covers only the MBSFN allocation. */
+      /* For extended BW (mbsfn_prb != nof_prb), RS covers only the MBSFN allocation. */
       uint32_t act_prb_get = cell.mbsfn_prb ? cell.mbsfn_prb : cell.nof_prb;
+      // Stride must match put_sf's mbsfn_stride -- see that function's doc comment.
+      uint32_t mbsfn_stride = SRSRAN_MAX(cell.nof_prb, cell.mbsfn_prb);
       for (l = 0; l < srsran_refsignal_mbsfn_nof_symbols(scs); l++) {
         nsymbol = srsran_refsignal_mbsfn_nsymbol(l, scs);
         if (scs == SRSRAN_SCS_1KHZ25) {
@@ -825,7 +871,7 @@ int srsran_refsignal_mbsfn_get_sf(srsran_cell_t cell, uint32_t port_id, cf_t* sf
         }
         for (i = 0; i < srsran_refsignal_mbsfn_rs_per_symbol(scs) * act_prb_get; i++) {
           pilots[SRSRAN_REFSIGNAL_PILOT_IDX_MBSFN(i, l, cell, scs) + nonmbsfn_offset] =
-            sf_symbols[SRSRAN_RE_IDX_MBSFN(cell.nof_prb, nsymbol, fidx, scs)];
+            sf_symbols[SRSRAN_RE_IDX_MBSFN(mbsfn_stride, nsymbol, fidx, scs)];
           fidx += SRSRAN_NRE_SCS(scs) / srsran_refsignal_mbsfn_rs_per_symbol(scs);
         }
       }

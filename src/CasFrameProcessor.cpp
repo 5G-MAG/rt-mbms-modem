@@ -19,6 +19,11 @@
 
 #include "CasFrameProcessor.h"
 #include "spdlog/spdlog.h"
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <cmath>
+#include <complex.h>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -87,16 +92,34 @@ CasFrameProcessor::~CasFrameProcessor() {
   }
 }
 
-void CasFrameProcessor::set_cell(srsran_cell_t cell) {
+void CasFrameProcessor::set_cell(srsran_cell_t cell, srsran_scs_t mbsfn_scs) {
+  /* See MbsfnFrameProcessor::set_cell()'s identical guard for the full reasoning --
+   * _ue_dl's buffers here are likewise fixed-allocated from MAX_PRB, and
+   * srsran_ue_dl_set_cell_scs() has no awareness of that outer sizing. */
+  if (cell.mbsfn_prb > MAX_PRB || cell.nof_prb > MAX_PRB) {
+    spdlog::error("CasFrameProcessor::set_cell: requested nof_prb={} mbsfn_prb={} exceeds MAX_PRB={} -- "
+                  "clamping both to avoid overflowing buffers sized for MAX_PRB",
+                  cell.nof_prb, cell.mbsfn_prb, MAX_PRB);
+    cell.nof_prb   = std::min<uint32_t>(cell.nof_prb, MAX_PRB);
+    cell.mbsfn_prb = std::min<uint32_t>(cell.mbsfn_prb, MAX_PRB);
+  }
   _cell = cell;
   spdlog::debug("CAS processor setting cell ({} PRB / {} MBSFN PRB).", cell.nof_prb, cell.mbsfn_prb);
-  srsran_ue_dl_set_cell(&_ue_dl, cell);
+  srsran_ue_dl_set_cell_scs(&_ue_dl, cell, mbsfn_scs);
   _started = true;
 
   /* (Re)plan the CIR IFFT and size its scratch buffers here -- called only
    * from the single main thread on cell (re)configuration, never from
    * process()'s worker-pool thread, so there's no risk of concurrent
    * fftwf_plan_ / fftwf_destroy_plan calls racing across processor instances. */
+  /* Sized from nof_prb alone: _ue_dl's fft[port] (CAS/PBCH/PSS/SSS) now stays
+   * permanently at the carrier's own native, narrow symbol_sz regardless of
+   * mbsfn_prb (decimated samples are bridged in via cas_decimator in
+   * ue_dl.c, not by widening fft[port] itself - see SIB13_MBSFN_TEST_RESULTS.md).
+   * An earlier version of this sizing used max(nof_prb, mbsfn_prb) to match
+   * fft[port]'s own (then-widened) size; using that stale max() now would
+   * reintroduce the exact "diagnostic out of sync with the real decode path"
+   * mismatch this comment used to warn against, just inverted. */
   auto sz = (uint32_t)srsran_symbol_sz(_cell.nof_prb);
   if (!_cir_plan_ready || _cir_plan_size != sz) {
     if (_cir_plan_ready) {
@@ -114,6 +137,26 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell) {
 }
 
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
+  // TEMPORARY DIAGNOSTIC (CAS_TIMING_DIAG=1, 2026-07-22): measures this call's own wall-clock
+  // duration regardless of which of process()'s several early-return points is hit, to test
+  // whether a single CAS/PDSCH decode occasionally takes close to or longer than the 5ms
+  // budget an MBMS/Unicast-mixed cell's CAS period (subframe 0 and 5 of every radio frame)
+  // allows before the next occasion's get_rx_buffer_and_lock() would block on this call's
+  // still-held _mutex -- a candidate explanation for the periodic "Synchronization lost while
+  // processing" seen only in that mode, never in MBMS-dedicated mode's much longer (40/80ms)
+  // CAS period, and only when this call still holds the lock into the next occasion.
+  struct ScopeTimer {
+    uint32_t tti_;
+    bool enabled = getenv("CAS_TIMING_DIAG") != nullptr;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ~ScopeTimer() {
+      if (!enabled) return;
+      auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+      if (us > 2000) {
+        fprintf(stderr, "CAS_TIMING_DIAG tti=%u process()_us=%lld\n", tti_, (long long)us);
+      }
+    }
+  } scope_timer{tti};
   _sf_cfg.tti = tti;
   _last_pdcch_locations.clear();
 
@@ -132,7 +175,29 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
   }
 
   // Feedback the CFO from CE to the Phy
-  _phy.set_cfo_from_channel_estimation(_ue_dl.chest_res.cfo);
+  // DIAGNOSTIC KILL-SWITCH (kept as a regression-check tool): env-gated skip, so a
+  // future investigation into CFO-loop-related drift can isolate whether this
+  // feedback path (chest_res.cfo -> Phy's/ue_sync's srsran_cfo_correct(), applied to
+  // raw samples before the next occasion's FFT) is a contributing factor, without
+  // needing to re-derive the wiring from scratch.
+  if (!getenv("CFO_FEEDBACK_DISABLE")) {
+    _phy.set_cfo_from_channel_estimation(_ue_dl.chest_res.cfo);
+  }
+
+  // Per-occasion channel-estimate/sync diagnostic - unconditional (every occasion,
+  // not just successful decodes) so failing occasions show up too. General-purpose;
+  // reused across multiple investigations, not tied to any single one.
+  if (getenv("CAS_CE_DIAG")) {
+    fprintf(stderr,
+            "CAS_CE_DIAG tti=%u snr_db=%.2f noise_est=%.4f noise_est_dbm=%.2f rsrp_dbm=%.2f "
+            "cfo=%.4f sync_error=%.4f nof_prb=%u mbsfn_prb=%u ue_sync_mean_off=%.6f "
+            "ue_sync_next_rf_off=%d ue_sync_peak=%.4f\n",
+            tti, _ue_dl.chest_res.snr_db, _ue_dl.chest_res.noise_estimate,
+            _ue_dl.chest_res.noise_estimate_dbm, _ue_dl.chest_res.rsrp_dbm,
+            _ue_dl.chest_res.cfo, _ue_dl.chest_res.sync_error, _cell.nof_prb, _cell.mbsfn_prb,
+            _phy.ue_sync_mean_sample_offset(), _phy.ue_sync_next_rf_sample_offset(),
+            _phy.ue_sync_track_peak_value());
+  }
 
   // Try to decode DCIs from PDCCH.
   // TS 36.321 §7.1 Table 7.1-1 NOTE 2: "SI-RNTI value FFFF may be used for
@@ -350,9 +415,15 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
 }
 
 auto CasFrameProcessor::ce_values() -> std::vector<uint8_t> {
+  // Same nof_prb-alone sizing as cir_values() above -- fft[port]'s FFT stays
+  // permanently narrow regardless of mbsfn_prb, see that function's comment.
   auto sz = (uint32_t)srsran_symbol_sz(_cell.nof_prb);
-  std::vector<float> ce_abs;
-  ce_abs.resize(sz, 0);
+  // Floor with -80, not a raw 0-fill: this padding region never goes through
+  // srsran_vec_abs_dB_cf()'s own floor below, so a bare 0.0f reads as a
+  // strong, wrong signal (waterfall_color()'s -20..25dB ramp maps db=0 to
+  // solid green) instead of background/no-signal. Same bug and fix as
+  // MbsfnFrameProcessor::ce_values() (2026-07-18).
+  std::vector<float> ce_abs(sz, -80.0f);
   uint32_t g = (sz - 12 * _cell.nof_prb) / 2;
   srsran_vec_abs_dB_cf(_ue_dl.chest_res.ce[0][0], -80, &ce_abs[g], SRSRAN_NRE * _cell.nof_prb);
   const uint8_t* data = reinterpret_cast<uint8_t*>(ce_abs.data());
@@ -409,6 +480,15 @@ auto CasFrameProcessor::cas_grid() -> std::vector<uint8_t> {
 
 auto CasFrameProcessor::composition_grid() -> std::vector<uint8_t> {
   const uint32_t nsymb      = SRSRAN_CP_NSYMB(_cell.cp); // 6 (ECP) or 7 (NCP) per slot
+  // NOT max(nof_prb, mbsfn_prb) - unlike cir_values()/ce_values() (which do need the
+  // wider canvas, since they represent the actual MBSFN-adjacent sample stream), every
+  // element this function marks (PBCH/PSS/SSS/CRS/PCFICH/PDCCH) is CAS-domain content
+  // that only ever occupies the carrier's own nof_prb width, never the wider PMCH
+  // allocation. Widening this canvas to mbsfn_prb left PBCH/PSS/SSS (computed centred
+  // in `subcarriers`) misaligned against CRS/PCFICH/PDCCH (computed from narrow,
+  // uncentred nof_prb-relative indices below) - confirmed live, 2026-07-18, this is
+  // exactly the "CAS composition looks wrong"/"CAS is misplaced" symptom re-appearing
+  // whenever mbsfn_prb > nof_prb, even though CAS's own content never changes.
   const uint32_t subcarriers = _cell.nof_prb * SRSRAN_NRE;
   const uint32_t symbols     = 2 * nsymb;
   std::vector<uint8_t> comp(subcarriers * symbols, COMP_OTHER);

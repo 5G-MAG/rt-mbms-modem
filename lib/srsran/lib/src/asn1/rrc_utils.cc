@@ -1229,8 +1229,8 @@ mbsfn_area_info_t::time_separation_t from_time_separation_r16(
   using ASN1 = mbsfn_area_info_r16_s::time_separation_r16_opts;
   using RET  = mbsfn_area_info_t::time_separation_t;
   switch (val) {
-    case ASN1::s12: return RET::sl2;
-    case ASN1::s14: return RET::sl4;
+    case ASN1::sl2: return RET::sl2;
+    case ASN1::sl4: return RET::sl4;
     default:        return RET::nulltype;
   };
 }
@@ -1249,6 +1249,21 @@ mbsfn_area_info_t make_mbsfn_area_info(const asn1::rrc::mbsfn_area_info_r16_s& a
   ret.subcarrier_spacing = from_subcarrier_spacing_mbms_r16_opts(asn1_type.subcarrier_spacing_mbms_r16.value);
   if (asn1_type.time_separation_r16_present) {
     ret.time_separation = from_time_separation_r16(asn1_type.time_separation_r16.value);
+  }
+  if (getenv("TIME_SEP_DIAG")) {
+    static int last_scs = -1, last_present = -1, last_val = -1;
+    int        scs      = (int)asn1_type.subcarrier_spacing_mbms_r16.value;
+    int        present  = asn1_type.time_separation_r16_present ? 1 : 0;
+    int        val      = present ? (int)asn1_type.time_separation_r16.value : -1;
+    if (scs != last_scs || present != last_present || val != last_val) {
+      fprintf(stderr,
+              "TIME_SEP_RAW_DIAG: raw asn1_type -- area_id=%u subcarrier_spacing_mbms_r16.value=%d "
+              "(3=khz0dot37) time_separation_r16_present=%d time_separation_r16.value=%d (0=sl2,1=sl4,-1=n/a)\n",
+              asn1_type.mbsfn_area_id_r16, scs, present, val);
+      last_scs = scs;
+      last_present = present;
+      last_val = val;
+    }
   }
   // No pmch-Bandwidth-r17 here -- MBSFN-AreaInfo-r16 doesn't carry it (see the wrapper
   // overload below); this overload only ever sees a bare r16 entry.
@@ -1622,18 +1637,26 @@ static_assert(ASN1_RRC_MAX_SESSION_PER_PMCH == pmch_info_t::max_session_per_pmch
 sib13_t make_sib13(const asn1::rrc::sib_type13_r9_s& asn1_type)
 {
   sib13_t sib13{};
-  if (asn1_type.mbsfn_area_info_list_r16_present) {
+  // mbsfn-AreaInfoList-r16 and -r17 are INDEPENDENT non-critical extension groups
+  // (bcch_msg.h) - r17's own presence condition is "Ded15or25PRB" (MBMS-dedicated
+  // cell, dl-Bandwidth-MBMS n15 or n25), with no dependency on r16 being present
+  // too. r17 entries embed a full copy of their r16 counterpart plus
+  // pmch-Bandwidth-r17 (TS 36.331 S6.3.7), so they're self-sufficient on their
+  // own. The previous logic only ever consulted r17 when r16 was ALSO present,
+  // silently discarding the entire wideband PMCH bandwidth declaration whenever
+  // a transmitter legally sent r17-only for a 15/25-PRB dedicated cell -
+  // confirmed live 2026-07-24 against 5G-MAG reference captures using exactly
+  // this encoding. Check r17 first (most complete), then r16, then the r9
+  // baseline, independently rather than nesting r17 inside r16's branch.
+  if (asn1_type.mbsfn_area_info_list_r17_present) {
+    sib13.nof_mbsfn_area_info = asn1_type.mbsfn_area_info_list_r17.size();
+    for (uint32_t i = 0; i < sib13.nof_mbsfn_area_info; i++) {
+      sib13.mbsfn_area_info_list[i] = make_mbsfn_area_info(asn1_type.mbsfn_area_info_list_r17[i]);
+    }
+  } else if (asn1_type.mbsfn_area_info_list_r16_present) {
     sib13.nof_mbsfn_area_info = asn1_type.mbsfn_area_info_list_r16.size();
     for (uint32_t i = 0; i < sib13.nof_mbsfn_area_info; i++) {
       sib13.mbsfn_area_info_list[i] = make_mbsfn_area_info(asn1_type.mbsfn_area_info_list_r16[i]);
-    }
-    // mbsfn-AreaInfoList-r17 entries embed a full copy of their r16 counterpart plus
-    // pmch-Bandwidth-r17 (TS 36.331 §6.3.7); correlate by list position with r16 and prefer
-    // the r17-derived result (adds the bandwidth field) wherever an entry exists.
-    if (asn1_type.mbsfn_area_info_list_r17_present) {
-      for (uint32_t i = 0; i < asn1_type.mbsfn_area_info_list_r17.size() && i < sib13.nof_mbsfn_area_info; i++) {
-        sib13.mbsfn_area_info_list[i] = make_mbsfn_area_info(asn1_type.mbsfn_area_info_list_r17[i]);
-      }
     }
   } else {
     sib13.nof_mbsfn_area_info = asn1_type.mbsfn_area_info_list_r9.size();

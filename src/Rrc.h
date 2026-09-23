@@ -78,6 +78,14 @@ class Rrc : public srsue::rrc_interface_rlc, public srsue::rrc_interface_pdcp {
 
  private:
     void handle_sib1(const asn1::rrc::sib_type1_mbms_r14_s& sib1, uint64_t now_ms);
+    // Legacy (non-MBMS-r14) SIB1 -- received on an MBMS/Unicast-mixed cell (TS 36.300 §15.2.2),
+    // where cell.mbms_dedicated is false (TS 36.331 ordinary SystemInformationBlockType1).
+    // Unlike the MBMS-r14 variant, this one carries no embedded SIB13; MBSFN-AreaInfo arrives
+    // later via handle_sib_list()'s sib13_v920 case, same as any other scheduled SIB.
+    void handle_sib1(const asn1::rrc::sib_type1_s& sib1, uint64_t now_ms);
+    // SIB2/13/15/16/10/11/12 handling shared verbatim between the MBMS-r14 and legacy SI
+    // message containers -- sib_info_item_c and its contents don't differ between the two.
+    void handle_sib_list(const asn1::rrc::sys_info_r8_ies_s::sib_type_and_info_l_& sib_list, uint64_t now_ms);
     rrc_state_t _state = ACQUIRE_SIB;
 
     static constexpr uint8_t kValueTagUnset = 0xFF;

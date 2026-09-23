@@ -47,6 +47,7 @@
 #include "srsran/phy/ch_estimation/chest_dl.h"
 #include "srsran/phy/dft/ofdm.h"
 #include "srsran/phy/phch/pbch.h"
+#include "srsran/phy/resampling/resampler.h"
 #include "srsran/phy/sync/cfo.h"
 #include "srsran/phy/ue/ue_sync.h"
 
@@ -62,6 +63,20 @@ typedef struct SRSRAN_API {
 
   srsran_ofdm_t fft;
   srsran_pbch_t pbch;
+
+  /* MIB/PBCH's fft stays permanently at its own native, narrow symbol_sz
+   * (exactly like a standard, non-FeMBMS LTE UE) regardless of mbsfn_prb - a
+   * second, independent site with the identical widening pattern as ue_dl.c's
+   * fft[port], found and fixed alongside it. raw_buffer: the caller's
+   * original wide-rate samples (was fft's own in_buffer). cas_buffer: fft's
+   * own narrow scratch, decimated down from raw_buffer by cas_decimator in
+   * srsran_ue_mib_decode(). wide_sf_len: the wide-rate one-subframe sample
+   * count, refreshed in srsran_ue_mib_set_cell() - unlike ue_dl.c there's no
+   * fft_mbsfn sibling here to borrow one from. */
+  cf_t*                  raw_buffer;
+  cf_t*                  cas_buffer;
+  srsran_resampler_fft_t cas_decimator;
+  uint32_t               wide_sf_len;
 
   srsran_chest_dl_t     chest;
   srsran_chest_dl_res_t chest_res;

@@ -1102,7 +1102,13 @@ struct mbsfn_area_info_r16_s {
   typedef enumerated<subcarrier_spacing_mbms_r16_opts> subcarrier_spacing_mbms_r16_e_;
 
   struct time_separation_r16_opts {
-    enum options { s12, s14, nulltype } value;
+    /* TS 36.331 V19.3.0 ASN1: "timeSeparation-r16 ENUMERATED {sl2, sl4}" -- these
+     * are the real enumerated value names (staggering length in slots), corrected
+     * 2026-07-25 from a previous "s12, s14" transcription (likely an sl/s1 misread).
+     * Purely a naming fix: the enumerated<> wrapper below encodes by ordinal
+     * position, so this had no effect on wire decode -- confirmed live, BLER
+     * unchanged before/after. */
+    enum options { sl2, sl4, nulltype } value;
     typedef uint8_t number_type;
 
     std::string to_string() const;

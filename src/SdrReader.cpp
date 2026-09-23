@@ -26,6 +26,8 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <sched.h>
+#include <unistd.h>
 
 #include "spdlog/spdlog.h"
 
@@ -236,19 +238,40 @@ void SdrReader::start() {
   _readerThread = std::thread{&SdrReader::read, this};
   struct sched_param thread_param = {};
   thread_param.sched_priority = 50;
-  int min_prio = sched_get_priority_min(SCHED_RR);
-  int max_prio = sched_get_priority_max(SCHED_RR);
-  
-  if (min_prio == -1 or max_prio == -1) 
+  int min_prio = sched_get_priority_min(SCHED_FIFO);
+  int max_prio = sched_get_priority_max(SCHED_FIFO);
+
+  if (min_prio == -1 or max_prio == -1)
       spdlog::error("Something went wrong, error in sched_get_priority_min/max");
 
   _cfg.lookupValue("modem.sdr.reader_thread_priority_rt", thread_param.sched_priority);
 
   spdlog::debug("Launching sample reader thread with realtime scheduling priority {}, available priorities, max: {}, min: {}", thread_param.sched_priority, max_prio, min_prio);
 
-  int error = pthread_setschedparam(_readerThread.native_handle(), SCHED_RR, &thread_param);
+  // SCHED_FIFO, not SCHED_RR: matches the shared srsRAN threads.c utility (see rt-mbms-tx's
+  // threads.c, used successfully there for the eNB's own real-time PHY threads under the same
+  // CAP_SYS_NICE grant). SCHED_RR round-robins equal-priority threads on its own timeslice,
+  // which this single-reader-thread use has no need for, and empirically triggers a kill in
+  // some sandboxed/restricted environments where SCHED_FIFO does not.
+  int error = pthread_setschedparam(_readerThread.native_handle(), SCHED_FIFO, &thread_param);
   if (error != 0) {
     spdlog::warn("Cannot set reader thread priority to realtime: {}. Thread will run at default priority with a high probability of dropped samples and loss of synchronisation.", strerror(error));
+  }
+  // Pin to a dedicated core, in addition to the SCHED_FIFO elevation above -- same reasoning
+  // as soapy-zmq-bridge's rxThreadLoop (see that file's own comment): priority governs who
+  // runs first when threads share a core, not whether a burst of real DSP work on another
+  // thread evicts this thread's cache state between quanta. A different core than the
+  // decimator's own pin (core 0) so the two producer-side threads don't recreate the same
+  // contention between each other. Skip below 4 cores so a resource-constrained deployment
+  // isn't starved of a whole core it can't spare.
+  if (sysconf(_SC_NPROCESSORS_ONLN) >= 4) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(1, &cpuset);
+    int rc = pthread_setaffinity_np(_readerThread.native_handle(), sizeof(cpuset), &cpuset);
+    if (rc != 0) {
+      spdlog::warn("Cannot pin reader thread to a dedicated core: {}", strerror(rc));
+    }
   }
 }
 
@@ -354,15 +377,30 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
   int64_t required_time_us = (1000000.0/_sampleRate) * nsamples;
   size_t cnt = nsamples * sizeof(cf_t);
 
-  if (_high_watermark_reached &&  _buffer->used_size() < (_sampleRate / 1000.0) * 10 * sizeof(cf_t)) {
+  if (_high_watermark_reached &&  _buffer->used_size() < (_sampleRate / 1000.0) * 1 * sizeof(cf_t)) {
     _high_watermark_reached = false;
   }
 
   if (!_high_watermark_reached) {
-    while (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms / 2.0) * sizeof(cf_t)) {
+    /* Low-water/refill-target tightened again 2026-07-22: the 10ms/20ms pair
+     * below (already reduced once from 100ms, see git history/
+     * fembms-mbsfn-cfo-investigation memory) still assumed MBMS-dedicated
+     * mode's 40/80ms CAS period, where a ~10ms refill-driven stall is cheap.
+     * An MBMS/Unicast-mixed cell's CAS period is subframe 0 and 5 of EVERY
+     * radio frame -- a 5ms budget. Confirmed live: even after fixing the
+     * modem's build to compile with optimization (CasFrameProcessor::process()
+     * dropped from ~37ms to ~11ms), an 11ms low-water-to-target refill still
+     * exceeded that 5ms budget every time, still forcing TRACK_MAX_LOST=3 and
+     * a full resync (SYNC_OFFSET_DIAG SLOWCALL total_us~11000,
+     * required_us=1000). 1ms low-water / 2ms target keeps a small but
+     * non-zero hysteresis gap (still won't flap right at the boundary) while
+     * keeping the worst-case refill wait under the 5ms mixed-mode budget --
+     * dedicated mode's much larger 40/80ms budget has ample headroom either
+     * way, so this is safe for both modes, not a mixed-mode-only special case. */
+    while (_buffer->used_size() < (_sampleRate / 1000.0) * 2 * sizeof(cf_t)) {
       std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
-    spdlog::debug("Filled ringbuffer to half capacity");
+    spdlog::debug("Filled ringbuffer above low-water mark");
     _high_watermark_reached = true;
   }
 
@@ -370,15 +408,75 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
   for (auto ch = 0; ch < _rx_channels; ch++) {
     buffers[ch] = (char*)data[ch];
   }
+  /* MultichannelRingbuffer::read() only asserts size <= used_size() -- a
+   * no-op in a release build (NDEBUG) -- and otherwise reads unconditionally,
+   * silently returning stale bytes from a previous wrap if called too early.
+   * The wall-clock _sleep_adjustment pacing above (see its comment) aims to
+   * keep this call arriving right as fresh data becomes available, but
+   * nothing enforces that invariant on every call, only at the initial
+   * high-watermark fill. Decimation (n_prb=25, ratio=2 in ZmqRxDevice.cpp)
+   * adds real, variable producer-side latency (FIR filtering + extra
+   * copies) that the wall-clock model doesn't account for -- when the
+   * pacing drifts enough to call read() before the producer has actually
+   * caught up, this silently substitutes stale (already-consumed) samples
+   * for the current subframe's real content, which is indistinguishable
+   * from a genuine signal outage to anything downstream (matches the live
+   * capture in the fembms-mbsfn-cfo-investigation memory: PSS/SSS tracking
+   * peak collapsing from a healthy ~8 down to ~1.0-1.1, noise-floor-like,
+   * in bursts recurring roughly every ~400ms once decimation is active).
+   * Enforce the invariant directly, on every call, not just at startup. */
+  if (getenv("SYNC_OFFSET_DIAG") && _buffer->used_size() < cnt) {
+    auto wait_start = std::chrono::steady_clock::now();
+    while (_buffer->used_size() < cnt) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    auto wait_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - wait_start).count();
+    fprintf(stderr, "SYNC_OFFSET_DIAG BUFWAIT waited_us=%lld cnt=%zu\n", (long long)wait_us, cnt);
+  } else if (getenv("HANG_DIAG")) {
+    int spins = 0;
+    size_t last_used = SIZE_MAX;
+    while (_buffer->used_size() < cnt) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+      spins++;
+      if (spins % 10000 == 0) {  // every ~1s
+        size_t used = _buffer->used_size();
+        fprintf(stderr, "HANG_DIAG stuck cnt=%zu used=%zu free=%zu running=%d growing=%d spins=%d\n",
+                cnt, used, _buffer->free_size(), (int)_running, (int)(used != last_used), spins);
+        last_used = used;
+      }
+    }
+  } else {
+    while (_buffer->used_size() < cnt) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+  }
   _buffer->read(buffers, cnt); // Copy from the ringbuffer to the data array. This also decreases _used.
 
-  if (_buffer->used_size() < (_sampleRate / 1000.0) * (_buffer_ms / 4.0) * sizeof(cf_t)) {
-    required_time_us += 500;
-  } else {
-    required_time_us -= 500;
+  if (getenv("SYNC_OFFSET_DIAG")) {
+    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - entered).count();
+    if (total_us > (int64_t)(required_time_us * 2)) {
+      fprintf(stderr, "SYNC_OFFSET_DIAG SLOWCALL total_us=%lld required_us=%lld nsamples=%u\n",
+              (long long)total_us, (long long)required_time_us, nsamples);
+    }
   }
 
-  spdlog::debug("took {}, read {} samples, adjusted required {} us, delta {} us, sleep adj {},  sleeping for {} us",
+  // NOTE: this used to nudge required_time_us by +-500us based on buffer
+  // fill level (slow down when low, speed up when high), meant as a
+  // self-correcting flow control. It wasn't: LTE frame/PSS timing is paced
+  // by the eNB's real wall-clock transmission, not by how many subframes
+  // this loop has consumed, so deliberately varying how long a "subframe"
+  // takes here can't make the producer produce faster or slower -- it only
+  // pushes this thread's own elapsed-time bookkeeping away from the true
+  // 1ms/subframe cadence, which the PSS/frame tracking loop above this
+  // then has to (and eventually can't) absorb. A live capture at n_prb=25
+  // caught this directly: the "+500us" branch firing repeatedly right
+  // before "SYNC ret=0 ... peak=1.10 threshold=1.50" / "3 frames lost.
+  // Going back to FIND". True buffer underrun protection is the
+  // high-watermark wait above, which actually blocks until real data
+  // exists instead of just changing how long the caller waits for it.
+  spdlog::debug("took {}, read {} samples, required {} us, delta {} us, sleep adj {},  sleeping for {} us",
       std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - entered).count(),
       nsamples,
       std::chrono::microseconds(required_time_us).count(),

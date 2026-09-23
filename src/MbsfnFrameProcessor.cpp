@@ -19,7 +19,11 @@
 
 #include "MbsfnFrameProcessor.h"
 #include "spdlog/spdlog.h"
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <sched.h>
 
 std::map<std::pair<uint8_t,uint8_t>, uint16_t> MbsfnFrameProcessor::_sched_stops;
 
@@ -45,8 +49,21 @@ auto MbsfnFrameProcessor::init() -> bool {
   /* Slot 0 is the only slot used when time interleaving isn't configured
    * (by far the common case) - init it eagerly so behavior/cost for that
    * case is unchanged. Slots 1..M-1 (time-interleaving pipelining) are
-   * lazily init'd in process() the first time they're actually used. */
-  srsran_softbuffer_rx_init(&_softbuffer[0], 100);
+   * lazily init'd in process() the first time they're actually used.
+   *
+   * PMCH_MAX_CB_TI (83), not the plain srsran_softbuffer_rx_init(q, 100)
+   * sizing: that sizes max_cb from a single subframe's max TBS at 100 PRB
+   * (21 CBs), but a TI'd MCH's per-TB code-block count is inflated by the TI
+   * factor before srsran_ra_tbs_round_pmch_ti() rounds it against
+   * pmch_ti_tbs.h's fixed tables, which saturate at 502624 bits regardless
+   * of mbsfn_prb - a hard worst case of 502624/(SRSRAN_TCOD_MAX_LEN_CB-24)+1
+   * = 83 CBs, about 4x the untuned sizing. sch.c hard-rejects any decode
+   * where cb_segm->C > softbuffer->max_cb, so an undersized buffer here
+   * silently blocks exactly the TI+wideband-MTCH combination this whole
+   * investigation has been trying to get working. A fixed constant, not
+   * dynamic per-mbsfn_prb sizing: the saturation behavior makes 83 a provable
+   * worst case regardless of configured bandwidth/TI factor. */
+  srsran_softbuffer_rx_init_guru(&_softbuffer[0], PMCH_MAX_CB_TI, SOFTBUFFER_SIZE);
   _softbuffer_init[0] = true;
 
   _ue_dl_cfg.snr_to_cqi_offset = 0;
@@ -57,6 +74,22 @@ auto MbsfnFrameProcessor::init() -> bool {
   chest_cfg->filter_type = SRSRAN_CHEST_FILTER_NONE;
   chest_cfg->noise_alg = SRSRAN_NOISE_ALG_EMPTY;
   chest_cfg->rsrp_neighbour       = false;
+  /* RE-ENABLED 2026-07-19 (was force-disabled 2026-07-14 - see git history for
+   * the original comment/reasoning). That decision was correct for its time:
+   * the sync-error estimator's measured values ran into the hundreds (e.g.
+   * -427, 311, -348) and its "correction" corrupted data/pilot REs alike,
+   * root-caused as the primary cause of a ~99.6-99.75% CRC failure back then.
+   * Confirmed live today that the underlying conditions have changed (this
+   * session's enb_dl.c root-cause fix plus the CAS/PMCH FFT decoupling
+   * redesign): SYNC_ERR_DIAG now shows a rock-stable, physically sane
+   * measurement (~-14.00, std-dev <0.02 across many subframes) at the current
+   * wideband pmch_bandwidth config, not the wild pre-fix values. Enabling the
+   * correction moves the MBSFN CIR's main tap to exactly lag 0 (previously
+   * off-center by ~14 samples) and substantially reduces - though does not
+   * fully eliminate - a periodic ripple visible on the CE/CIR dashboard
+   * panels. Does not change MCH BLER either way (confirmed separately still
+   * 1.0 with this on or off) - that remaining decode failure has a different,
+   * not-yet-found cause. See SIB13_MBSFN_TEST_RESULTS.md. */
   chest_cfg->sync_error_enable    = true;
   chest_cfg->estimator_alg = SRSRAN_ESTIMATOR_ALG_INTERPOLATE;
   chest_cfg->cfo_estimate_enable  = false;
@@ -88,15 +121,44 @@ MbsfnFrameProcessor::~MbsfnFrameProcessor() {
   }
 }
 
-void MbsfnFrameProcessor::set_cell(srsran_cell_t cell) {
+void MbsfnFrameProcessor::set_cell(srsran_cell_t cell, srsran_scs_t mbsfn_scs) {
+  /* _ue_dl's buffers (signal_buffer_rx et al.) are allocated once, in this class's own
+   * init(), sized from the fixed MAX_PRB -- srsran_ue_dl_set_cell_scs() below has no
+   * awareness of that outer allocation and will happily reconfigure the PHY chain for
+   * anything cell.nof_prb/mbsfn_prb claims, so a wider request here would silently
+   * write past those buffers rather than fail cleanly. Nothing today can actually
+   * request more than 40 PRB (pmch-Bandwidth-r17's real ASN.1 range, TS 36.331 clause
+   * 6.3.7, checked directly), comfortably under MAX_PRB=100 -- but
+   * modem_zmqtest.conf's mbsfn_prb_test_override is an operator-set debug value with
+   * no such ceiling, so this is a real boundary, not a hypothetical one. */
+  if (cell.mbsfn_prb > MAX_PRB || cell.nof_prb > MAX_PRB) {
+    spdlog::error("MbsfnFrameProcessor::set_cell: requested nof_prb={} mbsfn_prb={} exceeds MAX_PRB={} -- "
+                  "clamping both to avoid overflowing buffers sized for MAX_PRB",
+                  cell.nof_prb, cell.mbsfn_prb, MAX_PRB);
+    cell.nof_prb   = std::min<uint32_t>(cell.nof_prb, MAX_PRB);
+    cell.mbsfn_prb = std::min<uint32_t>(cell.mbsfn_prb, MAX_PRB);
+  }
   _cell = cell;
-  srsran_ue_dl_set_cell(&_ue_dl, cell);
+  srsran_ue_dl_set_cell_scs(&_ue_dl, cell, mbsfn_scs);
 
   /* (Re)plan the CIR IFFT and size its scratch buffers here -- called only
    * from the single main thread on cell (re)configuration, never from
    * process()'s worker-pool thread, so there's no risk of concurrent
-   * fftwf_plan_ / fftwf_destroy_plan calls racing across processor instances. */
-  auto sz = (uint32_t)srsran_symbol_sz(_cell.nof_prb);
+   * fftwf_plan_ / fftwf_destroy_plan calls racing across processor instances.
+   *
+   * FIXED (2026-07-19): this used srsran_symbol_sz(_cell.nof_prb) - the plain
+   * 15kHz-numerology table - even though MBSFN here actually runs at a reduced
+   * SCS (e.g. 1.25kHz, symbol_sz=12288 for 40 PRB, confirmed live via
+   * fft_mbsfn's own cfg). That mismatch (a 12x-undersized canvas for 1.25kHz)
+   * meant ce_values()/cir_values() below read only the first ~1/12th of the
+   * real chest_res.ce[] array and IFFT'd it at the wrong transform size -
+   * exactly the "PMCH only acquired at 25 instead of 40 PRB" / periodic
+   * frequency-notch appearance seen on the CE waterfall and CIR dashboard
+   * panels. This is a display-only bug (actual PMCH decode uses
+   * _pmch_cfg.pdsch_cfg.grant.nof_re against the full-size ce[] array
+   * directly, unaffected), but the wrong canvas size and RE-per-PRB stride
+   * corrupt every value shown on those two panels. */
+  auto sz = (uint32_t)srsran_symbol_sz_scs(_cell.nof_prb, mbsfn_scs);
   if (!_cir_plan_ready || _cir_plan_size != sz) {
     if (_cir_plan_ready) {
       srsran_dft_plan_free(&_cir_plan);
@@ -115,6 +177,24 @@ void MbsfnFrameProcessor::set_cell(srsran_cell_t cell) {
 
 auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   spdlog::trace("Processing MBSFN TTI {}", tti);
+
+  /* PROC_TIMING_DIAG: direct measurement of (a) how long this specific call
+   * takes to reach the MCCHDIAG print, and (b) the wall-clock gap since the
+   * previous call to this function - to test whether occasions with
+   * elevated MCCH EVM correlate with unusually long processing or an
+   * unusually late/gapped call, rather than continuing to guess at external
+   * causes (bridge logging, CIR/CE stride, coarse CPU-frequency variance -
+   * all tested and ruled out, see the comments on those). Static, so this is
+   * genuinely the previous call's own entry time, not per-tti state. */
+  auto t_entry = std::chrono::steady_clock::now();
+  static std::chrono::steady_clock::time_point t_last_entry{};
+  static bool have_last_entry = false;
+  double interval_us = 0.0;
+  if (have_last_entry) {
+    interval_us = std::chrono::duration<double, std::micro>(t_entry - t_last_entry).count();
+  }
+  t_last_entry = t_entry;
+  have_last_entry = true;
 
   uint32_t sfn = tti / 10;
   uint8_t sf = tti % 10;
@@ -155,17 +235,86 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   srsran_scs_t saved_scs = _sf_cfg.subcarrier_spacing;
   bool scs_switched = mbsfn_cfg.subcarrier_spacing != saved_scs;
   if (scs_switched) {
+    // TEMPORARY (SCS_TIMING_DIAG): measure the actual wall-clock cost of
+    // switching MBSFN SCS -- srsran_ue_dl_set_mbsfn_subcarrier_spacing()
+    // replans an FFTW plan (FFTW_MEASURE mode) whenever the FFT size
+    // changes, under a mutex shared with every other PHY worker thread.
+    // Investigating whether this is expensive enough on the real-time
+    // decode path to explain the n_prb=25 PMCH BLER / periodic sync loss.
+    auto t0 = std::chrono::steady_clock::now();
     srsran_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, mbsfn_cfg.subcarrier_spacing);
     srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, _area_id);
     _sf_cfg.subcarrier_spacing = mbsfn_cfg.subcarrier_spacing;
+    if (getenv("SCS_TIMING_DIAG")) {
+      auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+      fprintf(stderr, "SCS_TIMING switch_to=%d us=%lld\n", (int)mbsfn_cfg.subcarrier_spacing, (long long)us);
+    }
   }
 
   auto restore_scs = [&]() {
+    auto t0 = std::chrono::steady_clock::now();
     srsran_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, saved_scs);
     srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, _area_id);
     _sf_cfg.subcarrier_spacing = saved_scs;
+    if (getenv("SCS_TIMING_DIAG")) {
+      auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+      fprintf(stderr, "SCS_TIMING restore_to=%d us=%lld\n", (int)saved_scs, (long long)us);
+    }
   };
 
+  if (SRSRAN_SCS_IS_370HZ(_sf_cfg.subcarrier_spacing)) {
+    /* This state lives on Phy, not on this instance: mb_idx round-robins across
+     * thread_cnt separate MbsfnFrameProcessor instances on every dispatched
+     * subframe whenever there's no active, time-interleaved MCH content to pin
+     * it (confirmed live -- MCCH-only occasions, this repo's own test files
+     * included, hit exactly this case) -- per-instance accumulation state
+     * would never survive across the 3 consecutive subframes a 370 kHz slot
+     * spans. Phy is the one object guaranteed not to be rotated away from. */
+    uint32_t nof_prb370 = _cell.mbsfn_prb ? _cell.mbsfn_prb : _cell.nof_prb;
+    if (!_phy.scs370_accumulate_and_prepare(tti, _signal_buffer_rx, _rx_channels, nof_prb370,
+                                             _sf_cfg.subcarrier_spacing)) {
+      // Still gathering this slot's remaining subframes (or resyncing after a
+      // missed one) -- nothing to decode yet, not a failure. Same "nothing to
+      // do this subframe" handling as the !mbsfn_cfg.enable case above, minus
+      // the total/errors counters, since no decode was ever attempted.
+      //
+      // Undo the is_mcch total++ above: that counter's whole design (see its
+      // own comment) assumes 1 subframe = 1 real MCCH attempt, true for every
+      // other SCS but not 370 kHz, where mbsfn_config_for_tti() now correctly
+      // marks all 3 constituent subframes of a slot is_mcch=true even though
+      // only the last one is a real decode attempt. Without this, BLER =
+      // errors/total undercounts by ~3x here specifically -- confirmed live:
+      // 90 real decode attempts, all crc=0, yet total/errors initially read
+      // as if only 1 in 3 subframes were a real attempt (BLER 0.32, not the
+      // true ~1.0), which is exactly the misleading-aggregate-metric trap the
+      // "don't take this at face value" caution was about.
+      if (mbsfn_cfg.is_mcch) {
+        _rest._mcch.total--;
+      }
+      _rest.record_subframe_event(tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH,
+                                   RestHandler::SF_STATUS_IDLE, mch_idx);
+      if (scs_switched) { restore_scs(); }
+      _mutex.unlock();
+      return -1;
+    }
+  }
+
+  if (getenv("WIDE_FFT_DIAG") && SRSRAN_SCS_IS_370HZ(_sf_cfg.subcarrier_spacing)) {
+    srsran_ofdm_t* fft = &_ue_dl.fft_mbsfn[0];
+    uint32_t symbol_sz = fft->cfg.symbol_sz;
+    uint32_t third = symbol_sz / 3;
+    float p0 = srsran_vec_avg_power_cf(fft->cfg.in_buffer, third);
+    float p1 = srsran_vec_avg_power_cf(fft->cfg.in_buffer + third, third);
+    float p2 = srsran_vec_avg_power_cf(fft->cfg.in_buffer + 2 * third, third);
+    static cf_t last_seen_p1_sample = 0;
+    cf_t cur_p1_sample = fft->cfg.in_buffer[third];
+    fprintf(stderr,
+            "WIDE_FFT_DIAG tti=%u symbol_sz=%u sf_sz=%u ue_sync_sf_len=%u pwr_third0=%.4e pwr_third1=%.4e "
+            "pwr_third2=%.4e p1_sample_unchanged_since_last_call=%d\n",
+            tti, symbol_sz, fft->sf_sz, _phy.ue_sync_sf_len(), p0, p1, p2,
+            (cur_p1_sample == last_seen_p1_sample) ? 1 : 0);
+    last_seen_p1_sample = cur_p1_sample;
+  }
   if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
     /* A hard failure independent of time-interleaving's soft-combining state
      * (this subframe never even reached the decode attempt) -- count it as
@@ -179,7 +328,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     }
     spdlog::error("Getting PDCCH FFT estimate");
     _rest.record_subframe_event(
-        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL);
+        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL,
+        mch_idx);
     if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
@@ -234,8 +384,33 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   uint32_t ti_slot_m  = ti_active ? (ti_s_mod % ti_m_cfg) : 0;
   uint32_t ti_slot_n  = ti_active ? (ti_s_mod / ti_m_cfg) : 0;
 
+  /* The eNB's control socket allows changing embms.pmch1.time_interleaving_n/m while running
+   * (rrc::reconfigure_embms()) -- confirmed live, this can happen mid-session. ti_block_len
+   * above is a function of N and (clamped) M, so a live change redefines what subframe index
+   * maps to which slot m: the SAME absolute subframe that used to be slot m's n==3 (mid-span,
+   * soft-combining in progress) can suddenly become a DIFFERENT slot's n==0 (start of a brand
+   * new TB) under the new N/M, or vice versa. Every _softbuffer[]/_softbuffer_init[]/
+   * _ti_reported[] entry was populated under the OLD mapping's assumptions, so leaving them in
+   * place doesn't just risk stale data being reported once -- decode staying keyed off _last_ti_n
+   * showed this reproduces as a hard BLER-collapsing corruption within a few live changes (not
+   * just a cosmetic staleness), confirmed live 2026-07-31 on this exact rig. A slot's own
+   * srsran_softbuffer_rx_t allocation doesn't need to change size (PMCH_MAX_CB_TI/
+   * SOFTBUFFER_SIZE are fixed regardless of N/M), so this only needs a content reset
+   * (srsran_softbuffer_rx_reset(), safe to call on a never-initialized struct too -- it no-ops
+   * internally when buffer_f is still null), not a re-init/reallocation. */
+  if (mbsfn_cfg.time_interleaving_n != _last_ti_n || ti_m_cfg != _last_ti_m) {
+    for (uint32_t m = 0; m < SRSRAN_PMCH_MAX_TI_M; m++) {
+      srsran_softbuffer_rx_reset(&_softbuffer[m]);
+      _ti_reported[m] = false;
+    }
+    _last_ti_n = mbsfn_cfg.time_interleaving_n;
+    _last_ti_m = ti_m_cfg;
+  }
+
   if (!_softbuffer_init[ti_slot_m]) {
-    srsran_softbuffer_rx_init(&_softbuffer[ti_slot_m], 100);
+    // PMCH_MAX_CB_TI, not plain nof_prb sizing - see the matching comment on
+    // slot 0's eager init above.
+    srsran_softbuffer_rx_init_guru(&_softbuffer[ti_slot_m], PMCH_MAX_CB_TI, SOFTBUFFER_SIZE);
     _softbuffer_init[ti_slot_m] = true;
   }
   if (!ti_active || ti_slot_n == 0) {
@@ -265,7 +440,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     }
     spdlog::warn("Error decoding PMCH");
     _rest.record_subframe_event(
-        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL);
+        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL,
+        mch_idx);
     if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
@@ -273,52 +449,101 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
 
   if (scs_switched) { restore_scs(); }
 
-  /* PMCH DTX detection. The eNB legitimately transmits NO PMCH on MCH data
-   * subframes where MAC has nothing scheduled (cc_worker::encode_pmch returns
-   * early when dci.rnti==0 - idle MTCH window), so what arrives here is an
-   * RS-only subframe with empty data REs. Decoding it anyway is meaningless:
-   * the all-zero LLR input usually "succeeds" by converging to the valid
-   * all-zero codeword, but a +/-1-sample timing-dither at a CAS re-track
-   * breaks FFT circularity just enough (~-60dB RS leakage into the empty data
-   * bins, confirmed by raw-capture cross-correlation: failing subframes show
-   * the RX window at lag=1 vs the TX waveform, passing ones at lag=0) to
-   * occasionally flip that into a CRC failure - both outcomes are artifacts
-   * of decoding a non-transmitted TB, and the failures polluted the MCH BLER
-   * (~0.15%, always sf5, in 4-frame bursts = one CAS re-track period).
-   * Standard receiver practice (cf. PDCCH DTX detection): gate on received
-   * energy. Equalized data symbols of a real QPSK TB have ~unit average
-   * power; an absent PMCH leaves ~0 (exactly 0 on a clean channel, noise-level
-   * otherwise). Threshold 1e-3 sits ~30dB below real signal and well above
-   * the leakage artifact. MCCH is never DTX (always transmitted). */
+  /* PMCH DTX / validity detection. The eNB legitimately transmits NO PMCH on
+   * MCH data subframes where MAC has nothing scheduled (cc_worker::encode_pmch
+   * returns early when dci.rnti==0 - idle MTCH window), so what arrives here
+   * is an RS-only subframe with empty data REs. Decoding it anyway is
+   * meaningless. Standard receiver practice (cf. PDCCH DTX detection): gate on
+   * received energy. Equalized data symbols of a real QPSK/16QAM TB have
+   * ~unit average power (confirmed live: 0.9997-1.0002 on every genuine
+   * decode).
+   *
+   * Lower bound WIDENED 2026-07-19 (was 1e-3): cc_worker::encode_pmch()'s idle
+   * path now explicitly re-writes the MBSFN reference signals after zeroing
+   * the RE grid (needed so the receiver's own channel estimate/CIR stays
+   * valid on idle occasions - see SIB13_MBSFN_TEST_RESULTS.md), which
+   * introduces a small, genuine amount of pilot-to-data leakage into the
+   * equalized "empty" data REs - confirmed live: 0.0010-0.0012 on idle
+   * occasions now (was 0.000000-0.000003 before that fix, when the whole grid
+   * including pilots was zeroed). That's barely above the old 1e-3 threshold
+   * and was being misclassified as real content, driving MCH BLER back to
+   * ~1.0 on the same handful of subframes every time. 1e-2 keeps 2 full
+   * orders of magnitude of margin below the ~1.0 real-content floor while
+   * safely covering this leakage.
+   * - Below 1e-2 (2 orders of magnitude under real signal): nothing was
+   *   transmitted, IDLE.
+   * - Above 10 (order of magnitude above the ~1.0 real-content ceiling):
+   *   confirmed live (2026-07-17, CAS-muting sf=0 investigation) this only
+   *   happens on subframes the eNB also transmitted nothing on (same ~130
+   *   raw pre-equalization power as genuine idle subframes at every other
+   *   position - not a real, elevated signal) - the huge equalized value
+   *   (thousands, seen live) can only come from a degenerate/near-zero
+   *   denominator in the equalizer, not a real received TB. Treating it as a
+   *   genuine CRC failure wrongly inflated MCH BLER by counting an invalid
+   *   measurement as a real, failed decode attempt (confirmed: this fully
+   *   explains the CAS-muting sf=0 BLER anomaly - ~14% of otherwise-idle
+   *   occasions were misclassified this way, always on the same subframe
+   *   position, at a uniform rate regardless of absolute frame number -
+   *   consistent with a timing/estimation artifact, not real content).
+   *   Treat the same as IDLE: nothing reliable to decode either way. MCCH is
+   *   never DTX (always transmitted), so this whole gate does not apply to
+   *   it, upper bound included. */
+  float data_pw = srsran_vec_avg_power_cf(_ue_dl.pmch.d, _pmch_cfg.pdsch_cfg.grant.nof_re);
   if (!mbsfn_cfg.is_mcch) {
-    float data_pw = srsran_vec_avg_power_cf(_ue_dl.pmch.d, _pmch_cfg.pdsch_cfg.grant.nof_re);
-    if (data_pw < 1e-3f) {
-      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_IDLE);
-      spdlog::trace("PMCH DTX in TTI {} (data-RE power {}), skipping decode accounting", tti, data_pw);
+    if (data_pw < 1e-2f || data_pw > 10.0f) {
+      if (getenv("MCH_DIAG")) {
+        float rx_pwr_idle = srsran_vec_avg_power_cf(_ue_dl.sf_symbols[0], _ue_dl.cell.nof_prb * SRSRAN_NRE);
+        fprintf(stderr, "MCHIDLE sfn=%u sf=%u datapw=%.6f rxpwr=%.3e worker=%p\n",
+                sfn, (unsigned)sf, data_pw, rx_pwr_idle, (void*)this);
+      }
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_IDLE, mch_idx);
+      spdlog::trace("PMCH DTX/invalid in TTI {} (data-RE power {}), skipping decode accounting", tti, data_pw);
       _mutex.unlock();
       return 0;
     }
   }
 
-  /* Temporary, env-gated (MCH_SF5_DIAG) per-subframe diagnostic for the
-   * occasional subframe-5 PMCH CRC failures. Captures BOTH pass and fail so the
-   * failing rows can be compared against the passing ones: snr_db distinguishes
-   * an RF/estimate cause (low snr at failure) from a decode-config mismatch
-   * (high snr but crc=0 => wrong mch_subframe_idx/mcs/tbs/grant). Silent unless
-   * the env var is set, so it costs nothing in normal operation. */
-  if (!mbsfn_cfg.is_mcch && getenv("MCH_SF5_DIAG")) {
-    // Extra discriminators: evm (symbol-domain quality) and n_iter (turbo
-    // iterations). Low evm + few iters but crc=0 => clean symbols, wrong bits
-    // => RX decoding a TB the TX didn't send there. High evm/max iters => the
-    // symbols themselves are corrupt (RE-extraction / channel). rx_pwr gauges
-    // whether the TX transmitted anything at all on this subframe.
+  /* Temporary, env-gated (MCH_DIAG) per-subframe diagnostic, generalized from
+   * an earlier subframe-5-specific investigation (that one is fixed - see the
+   * DTX-detection block above). Captures BOTH pass and fail so the failing
+   * rows can be compared against the passing ones: snr_db distinguishes an
+   * RF/estimate cause (low snr at failure) from a decode-config mismatch
+   * (high snr but crc=0 => wrong mch_subframe_idx/mcs/tbs/grant); data_pw is
+   * the equalized, post-channel-estimate data power the DTX gate above already
+   * computes (should be ~unit for a healthy QPSK-equivalent TB - low here
+   * despite passing the DTX gate points at a channel-estimate/equalization
+   * problem, not a decode-config mismatch). Silent unless the env var is set,
+   * so it costs nothing in normal operation. */
+  if (!mbsfn_cfg.is_mcch && getenv("MCH_DIAG")) {
+    // Extra discriminators: snr_db (channel-estimate quality) and n_iter
+    // (turbo iterations). Low snr + few iters but crc=0 => genuine RF/
+    // channel-estimate cause. High snr/max iters despite crc=0 => clean
+    // channel but wrong bits => RX decoding a TB the TX didn't send there
+    // (wrong mch_subframe_idx/mcs/tbs/grant). rx_pwr gauges whether the TX
+    // transmitted anything at all on this subframe (raw, pre-equalization,
+    // first OFDM symbol only - nof_prb*SRSRAN_NRE is one symbol's worth of
+    // REs, not the whole subframe).
     float rx_pwr = srsran_vec_avg_power_cf(_ue_dl.sf_symbols[0], _ue_dl.cell.nof_prb * SRSRAN_NRE);
+    // Direct channel-estimate health check: if ce is near-zero at this
+    // subframe, equalization (division by ce) would blow up datapw exactly
+    // as observed - this distinguishes "bad channel estimate" from "bad raw
+    // signal" (rx_pwr already covers the latter).
+    float ce_pw = _ue_dl.chest_res.ce[0][0]
+        ? srsran_vec_avg_power_cf(_ue_dl.chest_res.ce[0][0], _pmch_cfg.pdsch_cfg.grant.nof_re)
+        : -1.0f;
+    // pmch_dec.evm was claimed dead above (always zero-initialized) as of
+    // whenever that comment was written; srsran_evm_run_s() was since added
+    // in pmch.c (see its call site's own comment there) - print the actual
+    // current value instead of trusting the stale claim, to settle it either
+    // way against the dashboard's own mcs=0/evm=0.00 reading for a
+    // no-real-content PMCH (2026-07-21).
     fprintf(stderr,
-            "MCHDIAG sfn=%u sf=%u mch_sf_idx=%u pmch_idx=%u mcs=%d nof_re=%d tbs=%d crc=%d evm=%.4f n_iter=%.2f rxpwr=%.3e\n",
+            "MCHDIAG sfn=%u sf=%u mch_sf_idx=%u pmch_idx=%u mcs=%d nof_re=%d tbs=%d crc=%d snr_db=%.2f n_iter=%.2f rxpwr=%.3e datapw=%.4f cepw=%.6e rsrp=%.4e syncerr=%.4f cfo=%.6f evm=%.4f worker=%p\n",
             sfn, (unsigned)sf, mbsfn_cfg.mch_subframe_idx, mch_idx,
             _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx,
             _pmch_cfg.pdsch_cfg.grant.nof_re, (int)_pmch_cfg.pdsch_cfg.grant.tb[0].tbs,
-            (int)pmch_dec.crc, pmch_dec.evm, pmch_dec.avg_iterations_block, rx_pwr);
+            (int)pmch_dec.crc, _ue_dl.chest_res.snr_db, pmch_dec.avg_iterations_block, rx_pwr, data_pw,
+            ce_pw, _ue_dl.chest_res.rsrp, _ue_dl.chest_res.sync_error, _phy.cfo(), pmch_dec.evm, (void*)this);
   }
 
   spdlog::trace("PMCH: tti: {}, l_crb={}, tbs={}, mcs={}, crc={}, snr={} dB, n_iter={}\n",
@@ -334,6 +559,102 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rest._mcch.SetData(mch_data());
     _rest._mcch.mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
     _rest._mcch.evm_rms = pmch_dec.evm;
+    /* CPU_MIGRATION_DIAG: hypothesis 3 (coarse CPU-frequency variance) from
+     * the original MCCH EVM ripple investigation was "ruled out at this
+     * granularity" - it sampled per-core frequency on a SEPARATE thread every
+     * ~300ms and correlated against timestamped MCCHDIAG lines, three orders
+     * of magnitude too coarse to catch a migration/frequency-ramp event that
+     * only matters for the few hundred microseconds this decode actually
+     * takes. This measures INLINE, at the exact moment of THIS occasion's
+     * decode, on the SAME thread doing the decode: which core it's running
+     * on (sched_getcpu(), a cheap syscall) and that core's current scaling
+     * frequency (a small sysfs read - cheap enough for a ~once-per-MCCH-
+     * occasion rate, unlike the ~1kHz per-subframe rate that ruled out
+     * similar diagnostics elsewhere this campaign). thread_local so each
+     * worker thread tracks its own last-seen core independently; a mismatch
+     * from the previous occasion means this thread migrated cores since
+     * then - a real mechanism for the kind of cache-cold-start/TLB-flush
+     * jitter that a non-RT-priority thread floating across 32 cores could
+     * plausibly hit, and one the original investigation never actually
+     * tested (only frequency was checked, not migration itself). */
+    if (getenv("CPU_MIGRATION_DIAG")) {
+      thread_local int last_cpu = -1;
+      int cur_cpu = sched_getcpu();
+      bool migrated = (last_cpu != -1) && (cur_cpu != last_cpu);
+      long freq_khz = -1;
+      char path[64];
+      snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cur_cpu);
+      FILE* ff = fopen(path, "r");
+      if (ff) {
+        if (fscanf(ff, "%ld", &freq_khz) != 1) {
+          freq_khz = -1;
+        }
+        fclose(ff);
+      }
+      fprintf(stderr, "CPU_MIGRATION_DIAG sfn=%u sf=%u cpu=%d last_cpu=%d migrated=%d freq_khz=%ld evm=%.4f\n",
+              sfn, (unsigned)sf, cur_cpu, last_cpu, (int)migrated, freq_khz, pmch_dec.evm);
+      last_cpu = cur_cpu;
+    }
+    /* ALIGN_DUMP: a different angle than timing (bridge logging, CIR/CE
+     * stride, coarse CPU-frequency variance, and this occasion's own
+     * processing duration were all tested and ruled out - see the comments
+     * on those). Tests whether a BUMP occasion's raw post-FFT RE grid and
+     * channel estimate show a detectable sample-alignment shift (a phase
+     * ramp across RE index, the classic signature of a residual timing/CFO
+     * error) that a NORMAL occasion doesn't - same raw[i]/ce[i] technique
+     * already validated for Finding 7 earlier this campaign. Self-triggers
+     * on evm alone (no tti-matching needed): dumps this occasion whenever
+     * evm crosses the threshold, then automatically dumps the VERY NEXT
+     * occasion too (regardless of its own evm) as the paired "normal"
+     * comparison sample. Hard-capped at 6 pairs so this can't grow
+     * unbounded; each dump is small (nof_re complex floats, a few KB). */
+    if (getenv("ALIGN_DUMP")) {
+      static int  pairs_dumped   = 0;
+      static bool want_normal    = false;
+      constexpr int kMaxPairs    = 6;
+      constexpr float kEvmThresh = 0.055f;
+      auto dump_occasion = [&](const char* tag) {
+        char path[256];
+        snprintf(path, sizeof(path), "/home/jordijoan/align_dump_%02d_%s_sfn%u_sf%u.bin",
+                 pairs_dumped, tag, sfn, (unsigned)sf);
+        FILE* f = fopen(path, "wb");
+        if (f) {
+          uint32_t nre = _pmch_cfg.pdsch_cfg.grant.nof_re;
+          fwrite(&nre, sizeof(nre), 1, f);
+          float evm_val = pmch_dec.evm;
+          fwrite(&evm_val, sizeof(evm_val), 1, f);
+          fwrite(_ue_dl.sf_symbols[0], sizeof(cf_t), nre, f);
+          fwrite(_ue_dl.chest_res.ce[0][0], sizeof(cf_t), nre, f);
+          fclose(f);
+        }
+      };
+      if (want_normal) {
+        dump_occasion("normal");
+        want_normal = false;
+        pairs_dumped++;
+      } else if (pmch_dec.evm > kEvmThresh && pairs_dumped < kMaxPairs) {
+        dump_occasion("bump");
+        want_normal = true;
+      }
+    }
+    if (getenv("MCH_DIAG")) {
+      float ce_pw_mcch = _ue_dl.chest_res.ce[0][0]
+          ? srsran_vec_avg_power_cf(_ue_dl.chest_res.ce[0][0], _pmch_cfg.pdsch_cfg.grant.nof_re)
+          : -1.0f;
+      double duration_us = std::chrono::duration<double, std::micro>(
+          std::chrono::steady_clock::now() - t_entry).count();
+      fprintf(stderr,
+              "MCCHDIAG sfn=%u sf=%u mcs=%d nof_re=%d tbs=%d crc=%d snr_db=%.2f n_iter=%.2f "
+              "rxpwr=%.3e datapw=%.4f cepw=%.6e rsrp=%.4e syncerr=%.4f nofprb=%u mbsfnprb=%u cfo=%.6f evm=%.4f "
+              "durationus=%.1f intervalus=%.1f worker=%p\n",
+              sfn, (unsigned)sf, _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx,
+              _pmch_cfg.pdsch_cfg.grant.nof_re, (int)_pmch_cfg.pdsch_cfg.grant.tb[0].tbs,
+              (int)pmch_dec.crc, _ue_dl.chest_res.snr_db, pmch_dec.avg_iterations_block,
+              srsran_vec_avg_power_cf(_ue_dl.sf_symbols[0], _ue_dl.cell.nof_prb * SRSRAN_NRE),
+              data_pw, ce_pw_mcch, _ue_dl.chest_res.rsrp, _ue_dl.chest_res.sync_error,
+              _ue_dl.cell.nof_prb, _ue_dl.cell.mbsfn_prb, _phy.cfo(), pmch_dec.evm,
+              duration_us, interval_us, (void*)this);
+    }
   } else {
     _rest._mch[mch_idx].SetData(mch_data());
     _rest._mch[mch_idx].mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
@@ -342,6 +663,19 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   }
   if (++_ce_cir_update_counter >= CE_CIR_UPDATE_STRIDE) {
     _ce_cir_update_counter  = 0;
+    // CIRSTRIDE_DIAG: added to test whether this inline, same-thread IDFT+dB
+    // conversion (running right after decoding this occasion, before the
+    // worker is free for the next one) explains the MCCH EVM bumps chased
+    // across this file and ZmqRxDevice.cpp's logThreadLoop. NOT CONFIRMED:
+    // a live capture correlating this print's own sfn/sf against MCCHDIAG
+    // showed only ~2/10 CIRSTRIDE events immediately followed by an elevated
+    // MCCH reading, and several clear bumps had no CIRSTRIDE event anywhere
+    // near them. Ruled out as the (sole) cause, same as the bridge-logging
+    // hypothesis before it. Left in place - harmless when unset - in case a
+    // future pass wants to re-check it under different conditions.
+    if (getenv("CIRSTRIDE_DIAG")) {
+      fprintf(stderr, "CIRSTRIDE sfn=%u sf=%u is_mcch=%d\n", sfn, (unsigned)sf, (int)mbsfn_cfg.is_mcch);
+    }
     // Fill persistent member buffers (reusing their capacity), then publish by
     // O(1) swap - the previously-published buffer comes back into the member for
     // reuse next cycle, so this is allocation-free in steady state. Same
@@ -369,6 +703,16 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     mch_mac_msg.init_rx(
         static_cast<uint32_t>(_pmch_cfg.pdsch_cfg.grant.tb[0].tbs) / 8);
     mch_mac_msg.parse_packet(_payload_buffer);
+
+    if (mbsfn_cfg.is_mcch && getenv("MCCH_RAW_DIAG")) {
+      uint32_t tbs_bytes = static_cast<uint32_t>(_pmch_cfg.pdsch_cfg.grant.tb[0].tbs) / 8;
+      char hex[97] = {0};
+      for (uint32_t k = 0; k < tbs_bytes && k < 48; k++) {
+        snprintf(hex + k * 2, 3, "%02x", _payload_buffer[k]);
+      }
+      fprintf(stderr, "MCCH_RAW_DIAG sfidx=%u tbs_bytes=%u first48=%s\n",
+              mbsfn_cfg.mch_subframe_idx, tbs_bytes, hex);
+    }
 
     while (mch_mac_msg.next()) {
       if (getenv("PMCH_TI_DIAG")) {
@@ -468,7 +812,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
             for (uint32_t k = 0; k < sz && k < 48; k++) {
               snprintf(hex + k * 2, 3, "%02x", p[k]);
             }
-            fprintf(stderr, "TI_DIAG_MACSDU sfidx=%u lcid=%u sz=%u first48=%s\n", mbsfn_cfg.mch_subframe_idx, lcid, sz, hex);
+            fprintf(stderr, "TI_DIAG_MACSDU mch_idx=%u sfidx=%u lcid=%u sz=%u first48=%s\n", mch_idx, mbsfn_cfg.mch_subframe_idx, lcid, sz, hex);
           }
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
           const std::lock_guard<std::mutex> lock(_rlc_mutex);
@@ -485,7 +829,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
      * would double-count the same logical TB and this trailing subframe
      * would be misreported as a fresh failure. */
     if (!mbsfn_cfg.is_mcch && ti_active && _ti_reported[ti_slot_m]) {
-      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_OK);
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_OK, mch_idx);
       _mutex.unlock();
       return 0;
     }
@@ -493,7 +837,7 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
      * remaining subframes of this slot's own N-span (ti_slot_n/ti_active
      * computed earlier from the same (m,n) split used for the softbuffer). */
     if (ti_active && ti_slot_n < (uint32_t)(mbsfn_cfg.time_interleaving_n - 1u)) {
-      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_IDLE);
+      _rest.record_subframe_event(tti, RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_IDLE, mch_idx);
       _mutex.unlock();
       return 0;
     }
@@ -513,15 +857,17 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
     _rest.record_subframe_event(
-        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL);
+        tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_FAIL,
+        mch_idx);
 
-    /* Failure-triggered raw-sample dump: the sporadic sf5 failures drift in
-     * tti even within a run, so only a capture taken AT the failure itself is
+    /* Failure-triggered raw-sample dump: failures can drift in tti even
+     * within a run, so only a capture taken AT the failure itself is
      * race-free. This processor still owns _signal_buffer_rx (mutex held), so
      * dump the exact time-domain input whose decode just failed CRC, for
-     * offline FFT/window-offset comparison against the TX's (verified
-     * bit-identical) postifft reference. Env-gated; ~1 failure per 1-3s and
-     * 120kB each, bounded by tti-name wraparound. */
+     * offline FFT/window-offset comparison against a matching TX-side
+     * reference. Env-gated; bounded by rarity and tti-name wraparound. Not
+     * specific to any one subframe position - see the DTX/validity gate
+     * above for the 2026-07 CAS-muting sf=0 finding this helped confirm. */
     if (!mbsfn_cfg.is_mcch && getenv("PMCH_RE_DUMP")) {
       char fn[128];
       snprintf(fn, sizeof(fn), "/tmp/pmch_rx_rawFAIL_tti%u.bin", tti);
@@ -575,7 +921,8 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rest._mcch.present = true;
   }
   _rest.record_subframe_event(
-      tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_OK);
+      tti, mbsfn_cfg.is_mcch ? RestHandler::SF_EVENT_MCCH : RestHandler::SF_EVENT_MCH, RestHandler::SF_STATUS_OK,
+      mch_idx);
   _mutex.unlock();
   return mbsfn_cfg.is_mcch ? 0 : 1;
 }
@@ -602,9 +949,24 @@ void MbsfnFrameProcessor::ce_values(std::vector<uint8_t>& out) {
     return;
   }
   float* ce_abs = _ce_scratch_db.data();
-  memset(ce_abs, 0, sz * sizeof(float));
-  uint32_t g = (sz - 12 * _cell.nof_prb) / 2;
-  srsran_vec_abs_dB_cf(_ue_dl.chest_res.ce[0][0], -80, &ce_abs[g], SRSRAN_NRE * _cell.nof_prb);
+  // Floor with -80 (the same floor srsran_vec_abs_dB_cf() below uses for its
+  // own real content), NOT memset-0: this region outside the active
+  // SRSRAN_NRE*nof_prb window never goes through that dB conversion, so a
+  // raw 0.0f here is NOT "no signal" - waterfall_color()'s -20..25dB color
+  // ramp maps db=0 to a strong, solid green, not black/background. Confirmed
+  // live, 2026-07-18: this was exactly the solid green blocks bookending the
+  // real (narrower) content on the MBSFN CE waterfall dashboard chart.
+  for (uint32_t i = 0; i < sz; i++) {
+    ce_abs[i] = -80.0f;
+  }
+  /* SRSRAN_NRE_SCS(_ue_dl.subcarrier_spacing), not the plain SRSRAN_NRE (12):
+   * the real ce[] array is laid out at the ACTUAL numerology's RE-per-PRB
+   * density (144 for 1.25kHz, matching fft_mbsfn's own nof_re=5760 for 40
+   * PRB) - using 12 here read only the first ~1/12th of it. See set_cell()'s
+   * matching fix/comment above. */
+  uint32_t nre_per_prb = SRSRAN_NRE_SCS(_ue_dl.subcarrier_spacing);
+  uint32_t g = (sz - nre_per_prb * _cell.nof_prb) / 2;
+  srsran_vec_abs_dB_cf(_ue_dl.chest_res.ce[0][0], -80, &ce_abs[g], nre_per_prb * _cell.nof_prb);
   // assign() reuses out's existing capacity - no heap allocation after the
   // first call (out is a persistent member, swapped into _rest below).
   const uint8_t* data = reinterpret_cast<const uint8_t*>(ce_abs);
@@ -624,8 +986,10 @@ void MbsfnFrameProcessor::cir_values(std::vector<uint8_t>& out) {
   // scratch buffers are pre-sized in set_cell() - no allocation here.
   cf_t* ce_freq = _cir_scratch_freq.data();
   srsran_vec_cf_zero(ce_freq, sz);
-  uint32_t g = (sz - 12 * _cell.nof_prb) / 2;
-  memcpy(&ce_freq[g], _ue_dl.chest_res.ce[0][0], SRSRAN_NRE * _cell.nof_prb * sizeof(cf_t));
+  // See ce_values()'s matching fix/comment: SCS-aware RE-per-PRB density, not the plain 12.
+  uint32_t nre_per_prb = SRSRAN_NRE_SCS(_ue_dl.subcarrier_spacing);
+  uint32_t g = (sz - nre_per_prb * _cell.nof_prb) / 2;
+  memcpy(&ce_freq[g], _ue_dl.chest_res.ce[0][0], nre_per_prb * _cell.nof_prb * sizeof(cf_t));
 
   cf_t* cir_time = _cir_scratch_time.data();
   srsran_dft_run_c(&_cir_plan, ce_freq, cir_time);
