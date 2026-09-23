@@ -1,11 +1,42 @@
-<h1 align="center">MBMS Modem</h1>
 <p align="center">
-  <img src="https://img.shields.io/badge/Status-Under_Development-yellow" alt="Under Development">
-  <img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/Platform-Linux-lightgrey" alt="Platform: Linux">
-  <img src="https://img.shields.io/badge/C%2B%2B-00599C?logo=cplusplus&logoColor=white" alt="C++">
-  <img src="https://img.shields.io/badge/3GPP-LTE--based%205G%20Broadcast-informational" alt="3GPP LTE-based 5G Broadcast">
+  <img src=".github/banner.svg" width="100%" alt="Reference Tools · 5G Broadcast - TV and Radio Services: MBMS Modem">
 </p>
+
+<p align="center">
+  Receive-side modem for LTE-based 5G Terrestrial Broadcast: acquires the cell, decodes MCCH and PMCH, and hands MBMS packets to the client.
+</p>
+
+<p align="center">
+  <img alt="Status: under development"
+    src="https://img.shields.io/badge/Status-Under_Development-yellow">
+  <a href="https://github.com/5G-MAG/rt-mbms-modem/releases"><img alt="Version"
+    src="https://img.shields.io/github/v/release/5G-MAG/rt-mbms-modem?label=Version&sort=semver"></a>
+  <a href="LICENSE"><img alt="License: GNU Affero General Public License v3.0"
+    src="https://img.shields.io/badge/License-AGPL%20v3.0-blue"></a>
+</p>
+
+<p align="center">
+  <a href="https://www.5g-mag.com/reference-tools/5g-broadcast">Project page</a> &nbsp;&middot;&nbsp;
+  <a href="https://github.com/5G-MAG/rt-mbms-modem/issues">Issues</a> &nbsp;&middot;&nbsp;
+  <a href="https://www.5g-mag.com/contributing">Contributing</a>
+</p>
+
+---
+
+## At a glance
+
+|  |  |
+|---|---|
+| **Implements** | TS 36.211, TS 36.212, TS 36.213 and TS 36.331 for the FeMBMS radio, including the Rel-19 PMCH time-interleaving and Rel-16 CAS features. The repository does not record the version of each document it was built against. |
+| **Role** | Receive side: the physical layer and the MBMS control plane |
+| **Works with** | [rt-mbms-client](https://github.com/5G-MAG/rt-mbms-client) and [rt-mbms-tx](https://github.com/5G-MAG/rt-mbms-tx) |
+| **Part of** | [5G Broadcast - TV and Radio Services](https://www.5g-mag.com/reference-tools/5g-broadcast) |
+
+## Specification
+
+Built against the documents named above. Clause-by-clause coverage, and what is still absent, is
+recorded on the project page rather than here:
+<https://www.5g-mag.com/reference-tools/5g-broadcast>
 
 ## Introduction
 
@@ -565,4 +596,20 @@ If you encounter segmentation faults in the rt-mbms-modem for higher bandwidths 
 
 ## Docker Implementation
 
-An easy to use docker Implentation is also available. The `modem` folder contains all the essential files for running the process in a container. Please check the [tutorial](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/tutorials/docker-implementation.html) for a detailed description on how to run the processes in docker containers. 
+An easy to use docker Implentation is also available. The `modem` folder contains all the essential files for running the process in a container. Please check the [tutorial](https://5g-mag.github.io/Getting-Started/pages/lte-based-5g-broadcast/tutorials/docker-implementation.html) for a detailed description on how to run the processes in docker containers.
+
+## Development
+
+Branches are `main` and `development`. `lib/srsran` is tracked in this repository rather than
+pinned as a submodule, so the receiver's PHY changes are versioned with the code that depends on
+them. The srsRAN test suite builds with the project and runs with `ctest`.
+
+## Contributing
+
+Contributions are welcome. How to raise an issue, fork the repository and open a pull request, and
+the Contributor License Agreement required before code can be merged, are described at
+<https://www.5g-mag.com/contributing>.
+
+## License
+
+Distributed under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
