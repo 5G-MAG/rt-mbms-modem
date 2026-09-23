@@ -337,7 +337,23 @@ typedef struct SRSRAN_API {
   /* Rel-16: semiStaticCFI-MBMS-r16 (TS 36.331/36.213 §9.1.3, MIB-MBMS bits [11-12]):
    * INTEGER(0..3). 0 = derive CFI from PCFICH; 1/2/3 directly ARE the CFI value. */
   uint8_t               semi_static_cfi;   /* 0..3; 0 also doubles as "not yet decoded" on RX */
+  /* Set true once the receiver has confirmed (by a CRC-validated SI-PDSCH decode)
+   * that this MBMS-dedicated CAS transmits PBCH repetition (TS 36.211 §6.6.4.1).
+   * When true, the SI-PDSCH RE mapping recovers the PDSCH REs interleaved in the
+   * repeated-PBCH symbols. Determined at decode time rather than from signalling:
+   * §6.6.4 "configured with repetition" is not conveyed to the UE before PBCH
+   * decode, so presence is established by whether the recovery makes the SI TB's
+   * 24-bit CRC pass. Cleared by default (bzero). */
+  bool                  is_mbms_r16;
 } srsran_cell_t;
+
+/* True when the repeated-PBCH SI-PDSCH RE recovery (TS 36.211 §6.6.4.1) must be
+ * applied: an MBMS-dedicated wideband cell (the spec precondition N_RB^DL > 6) on
+ * which repetition has been confirmed present (see is_mbms_r16). */
+static inline bool srsran_cell_is_mbms_r16(const srsran_cell_t* cell)
+{
+  return cell->mbms_dedicated && cell->nof_prb > 6 && cell->is_mbms_r16;
+}
 
 // Common downlink properties that may change every subframe
 typedef struct SRSRAN_API {

@@ -1047,14 +1047,13 @@ void srsran_configure_pmch(srsran_pmch_cfg_t* pmch_cfg, srsran_cell_t* cell, srs
   if (mbsfn_cfg->time_interleaving_n > 1) {
     int base_tbs = pmch_cfg->pdsch_cfg.grant.tb[0].tbs;
     int scaled   = base_tbs * (int)mbsfn_cfg->time_interleaving_n;
-    /* Round to the nearest valid TBS table entry. TX and RX must use the same
-     * rounding so that CB segmentation operates on identical total sizes. */
-    int tbs_idx  = srsran_ra_tbs_to_table_idx((uint32_t)scaled, pmch_cfg->pdsch_cfg.grant.nof_prb,
-                                               SRSRAN_RA_NOF_TBS_IDX - 1);
-    if (tbs_idx >= (int)SRSRAN_RA_NOF_TBS_IDX) tbs_idx = (int)SRSRAN_RA_NOF_TBS_IDX - 1;
-    if (tbs_idx < 0) tbs_idx = 0;
-    pmch_cfg->pdsch_cfg.grant.tb[0].tbs = srsran_ra_tbs_from_idx((uint32_t)tbs_idx,
-                                                                   pmch_cfg->pdsch_cfg.grant.nof_prb);
+    /* TS 36.213 j40 §11.1: round the TI-scaled TBS to the closest valid TBS in the
+     * UNION of Table 7.1.7.2.1-1 (one layer) and the 2/3/4-layer translation tables
+     * 7.1.7.2.2-1 / 7.1.7.2.4-1 / 7.1.7.2.5-1 (ties round up) -- NOT the one-layer
+     * table alone, which lacks the finer set of large valid TBS the scaled size can
+     * land on. TX and RX must use the same rounding so CB segmentation matches. */
+    pmch_cfg->pdsch_cfg.grant.tb[0].tbs =
+        (int)srsran_ra_tbs_round_pmch_ti((uint32_t)scaled, pmch_cfg->pdsch_cfg.grant.nof_prb);
   }
   pmch_cfg->pdsch_cfg.grant.nof_tb     = 1;
   pmch_cfg->pdsch_cfg.grant.nof_layers = 1;

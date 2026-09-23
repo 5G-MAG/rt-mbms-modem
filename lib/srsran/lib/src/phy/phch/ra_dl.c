@@ -109,13 +109,28 @@ uint32_t ra_re_x_prb(const srsran_cell_t* cell, srsran_dl_sf_cfg_t* sf, uint32_t
         (prb_idx >= cell->nof_prb / 2 - 3 && prb_idx < cell->nof_prb / 2 + 3 + (cell->nof_prb % 2))) {
       if (subframe == 0) {
         if (slot == 0) {
-          re = (nof_symbols - nof_ctrl_symbols - 2) * SRSRAN_NRE;
-        } else {
+          re = (nof_symbols - nof_ctrl_symbols - 2) * SRSRAN_NRE; // Ctrl symbols and PSS/SSS
+          if (srsran_cell_is_mbms_r16(cell)) {
+            /* Rel-16 repeated PBCH: some REs of the repeated-PBCH symbol (l=0,3 for
+             * CP_EXT / l=0,4 and 0,3 for CP_NORM) are unused by PBCH and carry PDSCH. */
+            re -= (SRSRAN_CP_ISEXT(cp_) ? 1 : 2) * SRSRAN_NRE;
+            re += 2; // empty REs from the repeated PBCH symbol (l=1, ending at 0,3 for CP_EXT)
+            skip_refs = false;
+          }
+        } else { // slot 1
           if (SRSRAN_CP_ISEXT(cp_)) {
             re        = (nof_symbols - 4) * SRSRAN_NRE;
+            if (srsran_cell_is_mbms_r16(cell)) {
+              re -= 2 * SRSRAN_NRE;
+              re += 2; // empty REs from the repeated PBCH symbol (l=3 CP_EXT, ending at 1,5)
+            }
             skip_refs = false;
           } else {
             re = (nof_symbols - 4) * SRSRAN_NRE + 2 * cell->nof_ports;
+            if (srsran_cell_is_mbms_r16(cell)) {
+              re -= 3 * SRSRAN_NRE;
+              re += 2; // empty REs from the repeated PBCH symbol (l=1, ending at 1,4)
+            }
           }
         }
       } else if (subframe == 5) {
@@ -126,8 +141,20 @@ uint32_t ra_re_x_prb(const srsran_cell_t* cell, srsran_dl_sf_cfg_t* sf, uint32_t
       if ((cell->nof_prb % 2) && (prb_idx == cell->nof_prb / 2 - 3 || prb_idx == cell->nof_prb / 2 + 3)) {
         if (slot == 0) {
           re += 2 * SRSRAN_NRE / 2;
+          if (srsran_cell_is_mbms_r16(cell)) {
+            re += (SRSRAN_CP_ISEXT(cp_) ? 1 : 2) * SRSRAN_NRE / 2; // repeated PBCH at 0,3 (CP_EXT) or 0,4 and 0,3 (CP_NORM)
+            re -= cell->nof_ports > 2 ? 2 : cell->nof_ports;       // CRS of the repeated PBCH symbol
+            re -= 1;                                               // one RE stays unused in the repeated PBCH symbol
+          }
         } else if (subframe == 0) {
           re += 4 * SRSRAN_NRE / 2 - cell->nof_ports;
+          if (srsran_cell_is_mbms_r16(cell)) {
+            re += (SRSRAN_CP_ISEXT(cp_) ? 2 : 3) * SRSRAN_NRE / 2;
+            if (!SRSRAN_CP_ISEXT(cp_)) { // for CP_NORM the 1,4 symbol carries CRS, subtract it
+              re -= cell->nof_ports > 2 ? 2 : cell->nof_ports;
+            }
+            re -= 1; // one RE stays unused in the repeated PBCH symbol
+          }
           if (SRSRAN_CP_ISEXT(cp_)) {
             re -= cell->nof_ports > 2 ? 2 : cell->nof_ports;
           }

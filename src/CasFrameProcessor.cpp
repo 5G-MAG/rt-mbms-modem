@@ -200,6 +200,41 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
      * before the round-robin fix (every occasion carried the same SI message
      * with the same shape), but a visible one-cycle-stale glitch now that
      * different SI messages (different MCS/TBS index) rotate through here. */
+
+    /* TS 36.211 §6.6.4.1: on an MBMS-dedicated wideband CAS (N_RB^DL > 6) the PBCH
+     * is repeated, and the repeated-PBCH symbols do not fill every RE, so the unused
+     * REs carry SI-PDSCH. Whether a given cell transmits this repetition is not
+     * signalled to the UE before PBCH decode, so we determine it by decode success:
+     * if the legacy decode failed CRC, retry once with the repeated-PBCH RE recovery
+     * enabled (ra_dl.c/pdsch.c, gated by cell.is_mbms_r16). Keep it enabled only if
+     * the SI TB's 24-bit CRC then passes; otherwise revert. A wrong RE set cannot
+     * pass the CRC, so this never mis-triggers on a non-repetition cell (which decodes
+     * on the first, legacy attempt and never reaches here). Once confirmed, the flag
+     * persists on the ue_dl/pdsch cell copies, so later CAS occasions use the recovery
+     * directly. */
+    if (ret == 0 && !pdsch_res[0].crc && _cell.mbms_dedicated && _cell.nof_prb > 6 &&
+        !_ue_dl.cell.is_mbms_r16 && _ue_dl_cfg.cfg.pdsch.grant.tb[0].enabled) {
+      _ue_dl.cell.is_mbms_r16       = true;
+      _ue_dl.pdsch.cell.is_mbms_r16 = true;
+      srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant);
+      srsran_softbuffer_rx_reset_tbs(_ue_dl_cfg.cfg.pdsch.softbuffers.rx[0],
+                                     (uint32_t)_ue_dl_cfg.cfg.pdsch.grant.tb[0].tbs);
+      pdsch_res[0].crc = false;
+      int rret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, pdsch_res);
+      if (rret != 0 || !pdsch_res[0].crc) {
+        _ue_dl.cell.is_mbms_r16       = false;  // not a repetition cell: revert
+        _ue_dl.pdsch.cell.is_mbms_r16 = false;
+      } else {
+        _cell.is_mbms_r16 = true;
+        spdlog::info("Confirmed Rel-16 CAS PBCH repetition (TS 36.211 6.6.4.1): SI-PDSCH decoded via repeated-PBCH RE recovery");
+        if (getenv("CAS_PDSCH_DIAG")) {
+          fprintf(stderr, "R16REP_CONFIRMED tti=%u: SI-PDSCH decoded via TS36.211-6.6.4.1 repeated-PBCH RE recovery "
+                          "(legacy nof_re failed CRC, recovered nof_re=%d passed)\n",
+                  tti, (int)_ue_dl_cfg.cfg.pdsch.grant.nof_re);
+        }
+      }
+    }
+
     _rest._pdsch.SetData(pdsch_data());
     if (ret) {
       // Processing error (bad grant/buffer) before a CRC could even be computed.
@@ -248,6 +283,35 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
               pdsch_cfg->grant.tb[i].rv = original_rv;
               srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
             }
+            // Temporary diagnostic (CAS_CFI_BRUTEFORCE=1, off by default): the PDSCH
+            // RE mapping/rate-matching depends on sf->cfi (control-region size). The
+            // DCI was found at the real cfi (validated by its PDCCH CRC), but if the
+            // SI-PDSCH data region uses a different effective cfi, the LLRs are
+            // misaligned and turbo fails on every RV with clean symbols. Recompute the
+            // grant at cfi=1/2/3 (keeping the already-decoded DCI) and retry the PDSCH
+            // decode to see whether any cfi actually yields a CRC pass.
+            if (getenv("CAS_CFI_BRUTEFORCE")) {
+              uint32_t orig_cfi = _sf_cfg.cfi;
+              for (uint32_t try_cfi = 1; try_cfi <= 3; try_cfi++) {
+                if (try_cfi == orig_cfi) {
+                  continue;
+                }
+                _sf_cfg.cfi = try_cfi;
+                srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant);
+                srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+                srsran_pdsch_res_t cfi_res = {};
+                cfi_res.payload = _data[i];
+                cfi_res.crc     = false;
+                int cret = srsran_ue_dl_decode_pdsch(&_ue_dl, &_sf_cfg, &_ue_dl_cfg.cfg.pdsch, &cfi_res);
+                fprintf(stderr, "CFIBRUTE tti=%u orig_cfi=%u try_cfi=%u nof_re=%d tbs=%d ret=%d crc=%d\n",
+                        tti, orig_cfi, try_cfi, (int)pdsch_cfg->grant.nof_re,
+                        (int)pdsch_cfg->grant.tb[i].tbs, cret, cfi_res.crc ? 1 : 0);
+              }
+              // Restore the real cfi + grant + softbuffer so downstream logic is unaffected.
+              _sf_cfg.cfi = orig_cfi;
+              srsran_ue_dl_dci_to_pdsch_grant(&_ue_dl, &_sf_cfg, &_ue_dl_cfg, &dci[k], &_ue_dl_cfg.cfg.pdsch.grant);
+              srsran_softbuffer_rx_reset_tbs(pdsch_cfg->softbuffers.rx[i], (uint32_t)pdsch_cfg->grant.tb[i].tbs);
+            }
           }
         }
       }
@@ -257,9 +321,9 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
       // with the periodic EVM/CINR peaks.
       if (getenv("CAS_PDSCH_DIAG")) {
         fprintf(stderr,
-                "CASDIAG tti=%u mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d format=%d rnti=0x%x nof_prb_alloc=%d L=%d ncce=%d "
+                "CASDIAG tti=%u cfi=%d mcs=%d evm=%.4f snr=%.2f crc=%d tbs=%d format=%d rnti=0x%x nof_prb_alloc=%d L=%d ncce=%d "
                 "nof_re=%d nof_bits_E=%d mod=%d\n",
-                tti, dci[k].tb[0].mcs_idx, (double)pdsch_res[0].evm,
+                tti, (int)_sf_cfg.cfi, dci[k].tb[0].mcs_idx, (double)pdsch_res[0].evm,
                 (double)_ue_dl.chest_res.snr_db, pdsch_res[0].crc ? 1 : 0,
                 (int)pdsch_cfg->grant.tb[0].tbs, (int)dci[k].format, dci[k].rnti,
                 (int)pdsch_cfg->grant.nof_prb, (int)dci[k].location.L, (int)dci[k].location.ncce,
