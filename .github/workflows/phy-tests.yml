@@ -1,0 +1,79 @@
+name: PHY tests
+
+# Builds the srsRAN submodule (lib/srsran) standalone and runs its FeMBMS
+# PMCH/PBCH-CAS/MCCH test suite (lib/srsran/lib/src/phy/phch/test and
+# lib/srsran/lib/test/asn1). This is independent of the modem application
+# (Phy.cpp/Rrc.cpp/main.cpp) and the supporting_files/rt-common-shared
+# submodule — lib/srsran is itself a complete, self-contained srsRAN fork
+# with its own CMakeLists.txt, so it is built and tested on its own rather
+# than through the full 5G-MAG modem app (see cmake_build.yml for that).
+#
+# RF frontends, srsUE/srsENB/srsEPC apps and the GUI are disabled: this job
+# only needs the PHY library and its unit tests.
+#
+# NOTE: authored and syntax-checked (gcc/g++ -fsyntax-only) against the actual
+# headers, but never run end-to-end (this development environment has no
+# cmake/FFTW/mbedtls and no network access to install them). Treat the first
+# few runs as shakeout: legacy tests under phch/test and test/asn1 that were
+# previously never built (see the "informational" job below) may need fixture
+# files or minor fixes that weren't visible from source inspection alone.
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git \
+            libfftw3-dev libmbedtls-dev \
+            libboost-all-dev \
+            libconfig++-dev libsctp-dev
+
+      - name: Configure
+        run: |
+          mkdir -p lib/srsran/build
+          cd lib/srsran/build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_ALL_TEST=ON \
+            -DENABLE_SRSUE=OFF \
+            -DENABLE_SRSENB=OFF \
+            -DENABLE_SRSEPC=OFF \
+            -DENABLE_GUI=OFF \
+            -DENABLE_UHD=OFF \
+            -DENABLE_BLADERF=OFF \
+            -DENABLE_SOAPYSDR=OFF \
+            -DENABLE_SKIQ=OFF \
+            -DENABLE_ZEROMQ=OFF \
+            -DENABLE_HARDSIM=OFF
+
+      - name: Build
+        run: cmake --build lib/srsran/build -j"$(nproc)"
+
+      # Blocking: the FeMBMS PMCH/PBCH-CAS/MCCH coverage added this session.
+      # This is the signal this workflow exists to protect.
+      - name: Run FeMBMS test suite
+        run: ctest --test-dir lib/srsran/build -R "fembms|pbch_cas_rep|mcch" --output-on-failure
+
+      # Informational only: lib/src/phy/phch/test and lib/test/asn1 (within
+      # lib/srsran) were both disabled at the CMake level since this fork's
+      # first commit (see repo history), so every other test in these two
+      # directories has never been built or run either. Surface their state
+      # without blocking on it until they've had a chance to be triaged
+      # individually.
+      - name: Run full phch/asn1 suite (informational, non-blocking)
+        if: always()
+        run: ctest --test-dir lib/srsran/build --output-on-failure || true

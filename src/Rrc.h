@@ -80,6 +80,9 @@ class Rrc : public srsue::rrc_interface_rlc, public srsue::rrc_interface_pdcp {
     void handle_sib1(const asn1::rrc::sib_type1_mbms_r14_s& sib1);
     rrc_state_t _state = ACQUIRE_SIB;
 
+    static constexpr uint8_t kValueTagUnset = 0xFF;
+    uint8_t _last_sys_info_value_tag = kValueTagUnset;
+
     const libconfig::Config& _cfg;
     srsran::rlc& _rlc;
     Phy& _phy;

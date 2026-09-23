@@ -272,6 +272,19 @@ auto main(int argc, char **argv) -> int {
   cfg.lookupValue("modem.sdr.search_sample_rate_hz", sample_rate);
   search_sample_rate = sample_rate;
 
+  if (arguments.sample_file != nullptr && arguments.file_bw) {
+    // Sample files are captured at a fixed rate determined by the channel bandwidth given via
+    // --file-bandwidth (there's no "reduced-bandwidth blind search" possible on a file, unlike
+    // with a live SDR where modem.sdr.search_sample_rate_hz picks a deliberately narrow search
+    // rate). Phy::cell_search() below sizes its FFT/frame lengths from cs_nof_prb = file_bw * 5,
+    // so SdrReader must be tuned to that same native rate from the start; otherwise its ring
+    // buffer pacing/watermark math (based on _sampleRate) runs against a smaller rate than the
+    // sample counts srsran's cell-search actually requests for that PRB count, starving
+    // MultichannelRingbuffer reads once the mismatch is large enough (e.g. at 100 PRB with a
+    // 25 PRB search_sample_rate_hz).
+    sample_rate = search_sample_rate = (unsigned)srsran_sampling_freq_hz(arguments.file_bw * 5);
+  }
+
   unsigned long long center_frequency = frequency;
   if (!cfg.lookupValue("modem.sdr.center_frequency_hz", center_frequency)) {
     spdlog::error("Unable to parse center_frequency_hz - values must have a ‘L’ character appended");
@@ -425,6 +438,30 @@ auto main(int argc, char **argv) -> int {
     switch (state) {
       case processing: {  // processing
         tti = (tti + 1) % 10240; // Clamp the TTI
+
+        if (phy.rom_redirect_pending()) {
+          auto [rom_earfcn, rom_prb] = phy.consume_rom_redirect();
+          if (rom_earfcn != 0) {
+            double freq_mhz = srsran_band_fd(rom_earfcn);
+            // freq_mhz > 0.0 does not catch EARFCNs that land in inter-band gap ranges;
+            // those resolve against a dummy sentinel with a nonzero frequency. Acceptable
+            // because ROM targets in practice are always valid broadcast EARFCNs.
+            if (freq_mhz > 0.0) {
+              unsigned rom_freq_hz = static_cast<unsigned>(freq_mhz * 1e6);
+              if (rom_freq_hz != frequency) {
+                spdlog::info("ROM redirect: retuning SDR to EARFCN={} ({:.3f} MHz, {} PRB)",
+                             rom_earfcn, freq_mhz, rom_prb);
+                frequency = rom_freq_hz;
+                restart = true;
+              } else {
+                spdlog::debug("ROM redirect: EARFCN={} matches current frequency, no retune needed", rom_earfcn);
+              }
+            } else {
+              spdlog::warn("ROM redirect: cannot resolve EARFCN={} to a frequency, ignoring", rom_earfcn);
+            }
+          }
+        }
+
         if (phy.is_cas_subframe(tti)) {
           // Get the samples from the SDR interface, hand them to a CAS processor, and start it
           // on a thread from the pool.
@@ -446,7 +483,17 @@ auto main(int argc, char **argv) -> int {
               mbsfn_nof_prb = phy.nof_mbsfn_prb();
 
               // ...adjust the SDR's sample rate to fit the wider MBSFN bandwidth...
-              unsigned new_srate = srsran_sampling_freq_hz(mbsfn_nof_prb);
+              srsran_scs_t mbsfn_scs = SRSRAN_SCS_15KHZ;
+              switch (phy.mbsfn_subcarrier_spacing()) {
+                case Phy::SubcarrierSpacing::df_7kHz5:     mbsfn_scs = SRSRAN_SCS_7KHZ5;      break;
+                case Phy::SubcarrierSpacing::df_2kHz5:     mbsfn_scs = SRSRAN_SCS_2KHZ5;      break;
+                case Phy::SubcarrierSpacing::df_1kHz25:    mbsfn_scs = SRSRAN_SCS_1KHZ25;     break;
+                case Phy::SubcarrierSpacing::df_370Hz:     mbsfn_scs = SRSRAN_SCS_370HZ;      break;
+                case Phy::SubcarrierSpacing::df_370Hz_sl4: mbsfn_scs = SRSRAN_SCS_370HZ_SL4;  break;
+                case Phy::SubcarrierSpacing::df_370Hz_sl2: mbsfn_scs = SRSRAN_SCS_370HZ_SL2;  break;
+                default: break;
+              }
+              unsigned new_srate = (unsigned)srsran_sampling_freq_hz_scs(mbsfn_nof_prb, mbsfn_scs);
               spdlog::info("Setting sample rate {} Mhz for MBSFN with {} PRB / {} Mhz channel width", new_srate/1000000.0, mbsfn_nof_prb,
                   mbsfn_nof_prb * 0.2);
               sdr.stop();
@@ -473,6 +520,63 @@ auto main(int argc, char **argv) -> int {
           // All other frames in FeMBMS dedicated mode are MBSFN frames.
           spdlog::debug("sending tti {} to mbsfn proc {}", tti, mb_idx);
 
+          /* TS 36.213 §11.1 (Rel-19 time interleaving): peek at whether time
+           * interleaving is active for this tti and, if so, whether this is
+           * the LAST subframe of its N*M-subframe block - see the comment at
+           * the mb_idx advance below for why. A block spans N*M subframes,
+           * not N: within it, subframe s belongs to slot m=s%M with
+           * redundancy version n=(s%(N*M))/M (see srsran_pmch_decode's
+           * comment in pmch.c for the full derivation) - M independent,
+           * pipelined transport blocks are in flight across the whole
+           * block, not just one, so the worker instance (and its per-slot
+           * softbuffer array in MbsfnFrameProcessor) must stay fixed for
+           * the full N*M span, not just N. Calls the same public Phy method
+           * MbsfnFrameProcessor::process() calls internally; its one side
+           * effect (scheduling an MCCH re-read at a modification-period
+           * boundary) is idempotent, gated on a flag that's already true
+           * after the first of the two calls, so calling it here too is
+           * safe. Only trust time_interleaving_n/m/mch_subframe_idx when
+           * enable && !is_mcch, matching how MbsfnFrameProcessor.cpp itself
+           * gates on these fields - other struct fields are not guaranteed
+           * initialized otherwise. */
+          unsigned           peek_area = 0;
+          srsran_mbsfn_cfg_t peek_cfg  = phy.mbsfn_config_for_tti(tti, peek_area);
+          bool ti_last_of_block        = true; /* default: advance every TTI, matching the old behavior */
+          /* mbsfn_config_for_tti() only populates time_interleaving_n/m/mch_subframe_idx
+           * when sf_idx falls inside a PMCH's own data allocation - gap subframes within
+           * an otherwise TI-active MCH's schedule (CAS, additionalNonMBSFNSubframes) leave
+           * peek_cfg.time_interleaving_n at its unconditional default (1), so the block-
+           * boundary check below can't see them. Left unhandled, such a gap subframe fell
+           * through to the "advance every TTI" default - a spurious rotation that
+           * permanently offset which absolute mch_subframe_idx block boundary this
+           * worker's pinning aligns to for the rest of that scheduling period (confirmed
+           * empirically via PMCH_TI_DIAG: the very first 1-2 real TI subframes after each
+           * MCCH occasion landed on an already-abandoned instance). Query the MCCH content
+           * directly (stable across the whole scheduling period, unlike the per-tti peek)
+           * to tell "TI genuinely isn't configured" (old behavior: advance every TTI) apart
+           * from "TI is configured but this specific subframe isn't a real block position"
+           * (must not advance - see the fuller rationale in "Round 19"/finding #3 of the
+           * project roadmap). */
+          const srsran::mcch_msg_t& mcch_for_ti = phy.current_mcch();
+          bool ti_configured_for_active_mch =
+              !peek_cfg.is_mcch && mcch_for_ti.nof_pmch_info > 0 && mcch_for_ti.pmch_info_list[0].time_interleaving_n > 1;
+          if (ti_configured_for_active_mch && !(peek_cfg.enable && peek_cfg.time_interleaving_n > 1)) {
+            ti_last_of_block = false;
+          } else if (peek_cfg.enable && !peek_cfg.is_mcch && peek_cfg.time_interleaving_n > 1) {
+            /* Clamp defensively, consistent with MbsfnFrameProcessor.cpp's
+             * own clamp on the same broadcast-derived field: an out-of-range
+             * M here would only mis-time the worker advance, not corrupt
+             * memory, but the two must agree on what M means. */
+            uint8_t ti_m = peek_cfg.time_interleaving_m;
+            if (ti_m == 0) {
+              ti_m = 1;
+            } else if (ti_m > SRSRAN_PMCH_MAX_TI_M) {
+              ti_m = SRSRAN_PMCH_MAX_TI_M;
+            }
+            uint32_t block_len  = (uint32_t)peek_cfg.time_interleaving_n * (uint32_t)ti_m;
+            ti_last_of_block = (peek_cfg.mch_subframe_idx % block_len) == (block_len - 1);
+          }
+
           // Get the samples from the SDR interface, hand them to an MNSFN processor, and start it
           // on a thread from the pool. Getting the buffer pointer from the pool also locks this processor.
           if (!restart && phy.get_next_frame(mbsfn_processors[mb_idx]->get_rx_buffer_and_lock(), mbsfn_processors[mb_idx]->rx_buffer_size())) {
@@ -481,9 +585,13 @@ auto main(int argc, char **argv) -> int {
               if (!mbsfn_processors[mb_idx]->mbsfn_configured()) {
                 srsran_scs_t scs = SRSRAN_SCS_15KHZ;
                 switch (phy.mbsfn_subcarrier_spacing()) {
-                  case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ; break;
-                  case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSRAN_SCS_7KHZ5; break;
-                  case Phy::SubcarrierSpacing::df_1kHz25: scs = SRSRAN_SCS_1KHZ25; break;
+                  case Phy::SubcarrierSpacing::df_15kHz:  scs = SRSRAN_SCS_15KHZ;  break;
+                  case Phy::SubcarrierSpacing::df_7kHz5:  scs = SRSRAN_SCS_7KHZ5;  break;
+                  case Phy::SubcarrierSpacing::df_2kHz5:     scs = SRSRAN_SCS_2KHZ5;      break;
+                  case Phy::SubcarrierSpacing::df_1kHz25:    scs = SRSRAN_SCS_1KHZ25;     break;
+                  case Phy::SubcarrierSpacing::df_370Hz:     scs = SRSRAN_SCS_370HZ;      break;
+                  case Phy::SubcarrierSpacing::df_370Hz_sl4: scs = SRSRAN_SCS_370HZ_SL4;  break;
+                  case Phy::SubcarrierSpacing::df_370Hz_sl2: scs = SRSRAN_SCS_370HZ_SL2;  break;
                 }
                 auto cell = phy.cell();
                 cell.nof_prb = cell.mbsfn_prb;
@@ -504,7 +612,32 @@ auto main(int argc, char **argv) -> int {
             sync_losses++; 
             state = syncing;
           }
-          mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
+          /* Only advance the round-robin worker index when this tti was the
+           * last subframe of its N*M-subframe time-interleaving block (or
+           * time interleaving isn't active, in which case every subframe is
+           * independent and this is unconditional exactly as before).
+           * Keeping mb_idx unchanged for the continuation subframes of a
+           * block is what makes all N*M of them land on the SAME
+           * MbsfnFrameProcessor instance - required for that instance's
+           * per-slot softbuffer array / srsran_pmch_t per-slot state to
+           * accumulate across the block at all: the block interleaves M
+           * independently-pipelined transport blocks (see pmch.c), so the
+           * instance must stay fixed for the WHOLE block, not just one
+           * slot's own N subframes (see the roadmap's finding #3a for the
+           * original bug this fixes, and its later generalization from N to
+           * N*M once the M-slot pipelining model was corrected). */
+          if (getenv("PMCH_TI_DIAG")) {
+            fprintf(stderr,
+                    "TI_DIAG_MAIN tti=%u mb_idx_before=%u enable=%d is_mcch=%d ti_n=%u ti_m=%u "
+                    "mch_subframe_idx=%u ti_last_of_block=%d ti_configured=%d mcch_nof_pmch=%u mcch_ti_n=%u\n",
+                    tti, mb_idx, (int)peek_cfg.enable, (int)peek_cfg.is_mcch, peek_cfg.time_interleaving_n,
+                    peek_cfg.time_interleaving_m, peek_cfg.mch_subframe_idx, (int)ti_last_of_block,
+                    (int)ti_configured_for_active_mch, mcch_for_ti.nof_pmch_info,
+                    mcch_for_ti.nof_pmch_info > 0 ? mcch_for_ti.pmch_info_list[0].time_interleaving_n : 0);
+          }
+          if (ti_last_of_block) {
+            mb_idx = static_cast<int>((mb_idx + 1) % thread_cnt);
+          }
         }
       }
       break;

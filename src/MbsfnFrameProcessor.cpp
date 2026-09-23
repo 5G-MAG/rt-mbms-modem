@@ -20,7 +20,7 @@
 #include "MbsfnFrameProcessor.h"
 #include "spdlog/spdlog.h"
 
-std::map<uint8_t, uint16_t> MbsfnFrameProcessor::_sched_stops;
+std::map<std::pair<uint8_t,uint8_t>, uint16_t> MbsfnFrameProcessor::_sched_stops;
 
 std::mutex MbsfnFrameProcessor::_sched_stop_mutex;
 std::mutex MbsfnFrameProcessor::_rlc_mutex;
@@ -41,7 +41,12 @@ auto MbsfnFrameProcessor::init() -> bool {
     return false;;
   }
 
-  srsran_softbuffer_rx_init(&_softbuffer, 100);
+  /* Slot 0 is the only slot used when time interleaving isn't configured
+   * (by far the common case) - init it eagerly so behavior/cost for that
+   * case is unchanged. Slots 1..M-1 (time-interleaving pipelining) are
+   * lazily init'd in process() the first time they're actually used. */
+  srsran_softbuffer_rx_init(&_softbuffer[0], 100);
+  _softbuffer_init[0] = true;
 
   _ue_dl_cfg.snr_to_cqi_offset = 0;
 
@@ -59,7 +64,7 @@ auto MbsfnFrameProcessor::init() -> bool {
   _ue_dl_cfg.cfg.pdsch.max_nof_iterations = 8;
   _ue_dl_cfg.cfg.pdsch.meas_evm_en        = false;
   _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
-  _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer;
+  _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer[0];
 
   _pmch_cfg.pdsch_cfg.csi_enable         = true;
   _pmch_cfg.pdsch_cfg.max_nof_iterations = 8;
@@ -71,7 +76,11 @@ auto MbsfnFrameProcessor::init() -> bool {
 }
 
 MbsfnFrameProcessor::~MbsfnFrameProcessor() {
-  srsran_softbuffer_rx_free(&_softbuffer);
+  for (uint32_t i = 0; i < SRSRAN_PMCH_MAX_TI_M; i++) {
+    if (_softbuffer_init[i]) {
+      srsran_softbuffer_rx_free(&_softbuffer[i]);
+    }
+  }
   srsran_ue_dl_free(&_ue_dl);
 }
 
@@ -103,19 +112,48 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     return -1;
   }
 
+  /* MCCH is never time-interleaved (a time-interleaved MCH must not carry
+   * MCCH, per TS 36.300 §15.3.3) -- count it immediately, once per subframe,
+   * same as always. MCH's total++ is deferred below: when time-interleaving
+   * is active, a logical TB spans N subframes, and counting "total" once per
+   * subframe here while "errors" (further below) only fires once per TB
+   * would silently skew any BLER computed from these two counters -- see the
+   * matching comment where MCH's total/errors are actually counted. */
   if (mbsfn_cfg.is_mcch) {
     _rest._mcch.total++;
-  } else {
-    _rest._mch[mch_idx].total++;
   }
 
+  /* Switch FFT SCS and chest refs for MCCH subframes when MCCH SCS differs from data SCS.
+   * For 0.37 kHz and 2.5 kHz data carriers the MCCH is transmitted at 1.25 kHz;
+   * for 7.5 kHz the MCCH SCS matches the data SCS (no switch needed).
+   * Mirror TX cc_worker which calls srsran_enb_dl_set_mbsfn_subcarrier_spacing() per-TTI. */
+  srsran_scs_t saved_scs = _sf_cfg.subcarrier_spacing;
+  bool scs_switched = mbsfn_cfg.subcarrier_spacing != saved_scs;
+  if (scs_switched) {
+    srsran_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, mbsfn_cfg.subcarrier_spacing);
+    srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, _area_id);
+    _sf_cfg.subcarrier_spacing = mbsfn_cfg.subcarrier_spacing;
+  }
+
+  auto restore_scs = [&]() {
+    srsran_ue_dl_set_mbsfn_subcarrier_spacing(&_ue_dl, saved_scs);
+    srsran_ue_dl_set_mbsfn_area_id(&_ue_dl, _area_id);
+    _sf_cfg.subcarrier_spacing = saved_scs;
+  };
+
   if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
+    /* A hard failure independent of time-interleaving's soft-combining state
+     * (this subframe never even reached the decode attempt) -- count it as
+     * its own standalone total+error immediately, same for MCH whether or
+     * not time-interleaving is active. */
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
+      _rest._mch[mch_idx].total++;
       _rest._mch[mch_idx].errors++;
     }
     spdlog::error("Getting PDCCH FFT estimate");
+    if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
   }
@@ -123,25 +161,88 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   srsran_configure_pmch(&_pmch_cfg, &_cell, &mbsfn_cfg);
   srsran_ra_dl_compute_nof_re(&_cell, &_sf_cfg, &_pmch_cfg.pdsch_cfg.grant);
 
-  _pmch_cfg.area_id = _area_id;
+  _pmch_cfg.area_id             = _area_id;
+  _pmch_cfg.cyclic_shift        = mbsfn_cfg.cyclic_shift;
+  _pmch_cfg.cyclic_shift_alpha  = mbsfn_cfg.cyclic_shift_alpha;
+  _pmch_cfg.freq_interleaving   = mbsfn_cfg.freq_interleaving;
+  _pmch_cfg.use_mcs_table2      = mbsfn_cfg.use_mcs_table2;
+  _pmch_cfg.time_interleaving_n = mbsfn_cfg.time_interleaving_n;
+  _pmch_cfg.time_interleaving_m = mbsfn_cfg.time_interleaving_m;
+  _pmch_cfg.subframe_idx        = mbsfn_cfg.mch_subframe_idx;
 
-  srsran_softbuffer_rx_reset_cb(&_softbuffer, 1);
+  if (!mbsfn_cfg.is_mcch && getenv("PMCH_TI_DIAG")) {
+    fprintf(stderr,
+            "TI_DIAG_MFP this=%p tti=%u is_mcch=%d ti_n=%u ti_m=%u mch_subframe_idx=%u\n",
+            (void*)this, tti, (int)mbsfn_cfg.is_mcch, mbsfn_cfg.time_interleaving_n,
+            mbsfn_cfg.time_interleaving_m, mbsfn_cfg.mch_subframe_idx);
+  }
+
+  /* TS 36.213 §11.1 (see srsran_pmch_decode's comment in pmch.c for the full
+   * derivation): subframe s=mch_subframe_idx belongs to slot m=s%M with
+   * redundancy version n=(s%(N*M))/M. srsran_pmch_decode's per-subframe
+   * rate-matching relies on slot m's OWN softbuffer LLR/CRC state persisting
+   * across the N subframes of ITS span (that's how the soft-combining
+   * happens - each subframe's rv_idx-specific rate-matching pass adds its
+   * LLRs to that slot's buffer). Resetting every subframe (the previous,
+   * unconditional behavior) would wipe that progress before it can
+   * accumulate; resetting one shared buffer regardless of slot would
+   * corrupt one slot's progress with another's. So: reset slot m's buffer
+   * only when slot m starts a new TB (n==0 for that slot), or every
+   * subframe when time interleaving isn't configured (N<=1, slot m is
+   * always 0), matching the previous behavior exactly for that case. */
+  bool     ti_active = mbsfn_cfg.time_interleaving_n > 1;
+  /* Clamp defensively: time_interleaving_m is decoded from broadcast MCCH
+   * data (not locally-trusted state), and ti_slot_m below indexes fixed-size
+   * SRSRAN_PMCH_MAX_TI_M arrays - a value in this uint8_t field above that
+   * bound (only reachable via a malformed/unexpected broadcast, valid RRC
+   * values are 4/8/16/32) must not turn into an out-of-bounds access. */
+  uint8_t ti_m_cfg = mbsfn_cfg.time_interleaving_m;
+  if (ti_m_cfg == 0) {
+    ti_m_cfg = 1;
+  } else if (ti_m_cfg > SRSRAN_PMCH_MAX_TI_M) {
+    ti_m_cfg = SRSRAN_PMCH_MAX_TI_M;
+  }
+  uint32_t ti_block_len = ti_active ? ((uint32_t)mbsfn_cfg.time_interleaving_n * (uint32_t)ti_m_cfg) : 1;
+  uint32_t ti_s_mod   = ti_active ? (mbsfn_cfg.mch_subframe_idx % ti_block_len) : 0;
+  uint32_t ti_slot_m  = ti_active ? (ti_s_mod % ti_m_cfg) : 0;
+  uint32_t ti_slot_n  = ti_active ? (ti_s_mod / ti_m_cfg) : 0;
+
+  if (!_softbuffer_init[ti_slot_m]) {
+    srsran_softbuffer_rx_init(&_softbuffer[ti_slot_m], 100);
+    _softbuffer_init[ti_slot_m] = true;
+  }
+  if (!ti_active || ti_slot_n == 0) {
+    srsran_softbuffer_rx_reset_cb(&_softbuffer[ti_slot_m], 1);
+    _ti_reported[ti_slot_m] = false;
+  }
 
   srsran_pdsch_res_t pmch_dec = {};
-  _pmch_cfg.pdsch_cfg.softbuffers.rx[0] = &_softbuffer;
+  _pmch_cfg.pdsch_cfg.softbuffers.rx[0] = &_softbuffer[ti_slot_m];
   pmch_dec.payload = _payload_buffer;
-  srsran_softbuffer_rx_reset_tbs(_pmch_cfg.pdsch_cfg.softbuffers.rx[0], _pmch_cfg.pdsch_cfg.grant.tb[0].tbs);
+  if (!ti_active || ti_slot_n == 0) {
+    srsran_softbuffer_rx_reset_tbs(_pmch_cfg.pdsch_cfg.softbuffers.rx[0], _pmch_cfg.pdsch_cfg.grant.tb[0].tbs);
+  }
 
   if (srsran_ue_dl_decode_pmch(&_ue_dl, &_sf_cfg, &_pmch_cfg, &pmch_dec) != 0) {
+    /* Genuine execution error (srsran_ue_dl_decode_pmch's return value is
+     * reserved for that, never for a plain CRC miss -- see srsran_pmch_decode's
+     * own convention). Count immediately and mark this slot's TB as reported
+     * so a later subframe in the same span (if ti_active) doesn't also count
+     * a second, redundant outcome for what is really the same logical TB. */
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
+      _rest._mch[mch_idx].total++;
       _rest._mch[mch_idx].errors++;
+      _ti_reported[ti_slot_m] = true;
     }
     spdlog::warn("Error decoding PMCH");
+    if (scs_switched) { restore_scs(); }
     _mutex.unlock();
     return -1;
   }
+
+  if (scs_switched) { restore_scs(); }
 
   spdlog::trace("PMCH: tti: {}, l_crb={}, tbs={}, mcs={}, crc={}, snr={} dB, n_iter={}\n",
       tti,
@@ -162,6 +263,19 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   }
 
   if (pmch_dec.crc) {
+    /* srsran_pmch_decode() reports crc=true at most once per slot's N-span
+     * (it forces crc=false on every subsequent subframe once that slot's
+     * ti_decoded flag is set, to avoid re-delivering the same TB) -- so this
+     * is always a fresh outcome for MCH, never a repeat. Count total++ here,
+     * matched 1:1 with the errors++ below (deferred to the same per-TB
+     * granularity, not per-subframe) so a BLER computed from these two
+     * counters is meaningful whether or not time-interleaving is active. */
+    if (!mbsfn_cfg.is_mcch) {
+      _rest._mch[mch_idx].total++;
+      if (ti_active) {
+        _ti_reported[ti_slot_m] = true;
+      }
+    }
     mch_mac_msg.init_rx(
         static_cast<uint32_t>(_pmch_cfg.pdsch_cfg.grant.tb[0].tbs) / 8);
     mch_mac_msg.parse_packet(_payload_buffer);
@@ -170,14 +284,49 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       if (srsran::mch_lcid::MCH_SCHED_INFO == mch_mac_msg.get()->mch_ce_type()) {
         uint16_t stop = 0;
         uint8_t lcid = 0;
+        /* pmch-TimeInterleavingN/M-LastMTCH-r19 (TS 36.331 CR5168r3): track the two
+         * highest stop values decoded from THIS period's own fresh MSI content (not
+         * the persistent _sched_stops map below, which can carry stale entries from
+         * earlier periods with a different session composition). TX encodes these
+         * CEs in schedule order (mac.cc's mtch_sched[] order, cumulative stop values),
+         * so the highest stop is the overall period boundary (mtch_stop) and the
+         * second-highest is where the last session's own window starts -- exactly
+         * mirroring TX's mtch_sched[num_mtch_sched-2].stop. */
+        uint16_t highest_stop = 0, second_highest_stop = 0;
         while (mch_mac_msg.get()->get_next_mch_sched_info(&lcid, &stop)) {
           const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
-          spdlog::debug("Scheduling stop for LCID {} in sf {}", lcid, stop);
-          _sched_stops[ lcid ] = stop;
+          spdlog::debug("Scheduling stop for PMCH {} LCID {} in sf {}", mch_idx, lcid, stop);
+          _sched_stops[ {(uint8_t)mch_idx, lcid} ] = stop;
+          if (stop > highest_stop) {
+            second_highest_stop = highest_stop;
+            highest_stop         = stop;
+          } else if (stop > second_highest_stop) {
+            second_highest_stop = stop;
+          }
         }
+        /* second_highest_stop stays 0 for a single-session period (only one CE
+         * decoded), which set_last_mtch_start()/mbsfn_config_for_tti() already
+         * treat as "no distinct last-session window" -- the common case is
+         * unaffected. */
+        _phy.set_last_mtch_start((uint8_t)mch_idx, second_highest_stop);
       } else if (mch_mac_msg.get()->is_sdu()) {
         uint32_t lcid = mch_mac_msg.get()->get_sdu_lcid();
         spdlog::trace("Processing MAC MCH PDU entered, lcid {}", lcid);
+
+        /* TS 36.321 Table 6.2.1-4: LCID 0 within an MCH MAC PDU is reserved
+         * for MCCH specifically - a regular MTCH data subframe must never
+         * legitimately carry it. Without this check, a data subframe with no
+         * real MAC content queued (TX has nothing to send, e.g. no MBMS
+         * traffic source configured) still transmits a well-formed all-zero
+         * PMCH TB (see rt-mbms-tx's encode_pmch), which decodes successfully
+         * as a degenerate case; its first MAC subheader byte (0x00: E-bit=0,
+         * LCID=0) then gets misread as an MCCH SDU and misdelivered to the
+         * RRC/MCCH handler, corrupting Phy::_mcch (nof_pmch_info reset to 0)
+         * until the next real MCCH occasion overwrites it. */
+        if (lcid == (uint32_t)srsran::mch_lcid::MCCH && !mbsfn_cfg.is_mcch) {
+          spdlog::warn("Dropping spurious MCCH-LCID SDU decoded from a non-MCCH subframe (mch_idx {})", mch_idx);
+          continue;
+        }
 
         if (lcid >= SRSRAN_N_MCH_LCIDS) {
           spdlog::warn("Radio bearer id must be in [0:%d] - %d", SRSRAN_N_MCH_LCIDS, lcid);
@@ -191,6 +340,15 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         }
 
         {
+          if (!mbsfn_cfg.is_mcch && getenv("PMCH_TI_DIAG")) {
+            uint8_t* p = mch_mac_msg.get()->get_sdu_ptr();
+            uint32_t sz = mch_mac_msg.get()->get_payload_size();
+            char hex[97] = {0};
+            for (uint32_t k = 0; k < sz && k < 48; k++) {
+              snprintf(hex + k * 2, 3, "%02x", p[k]);
+            }
+            fprintf(stderr, "TI_DIAG_MACSDU lcid=%u sz=%u first48=%s\n", lcid, sz, hex);
+          }
           _phy._mcs = mbsfn_cfg.mbsfn_mcs;
           const std::lock_guard<std::mutex> lock(_rlc_mutex);
           _rlc.write_pdu_mch(mch_idx, lcid, mch_mac_msg.get()->get_sdu_ptr(), mch_mac_msg.get()->get_payload_size());
@@ -198,10 +356,38 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
       }
     }
   } else {
+    /* This slot's current TB already succeeded earlier in its own N-span
+     * (crc=true branch above already ran and counted it) -- this call is
+     * just one of the redundant trailing "already decoded" subframes
+     * srsran_pmch_decode() reports as crc=false by design. Not a new
+     * outcome; nothing to count. Without this check, MCH's total/errors
+     * would double-count the same logical TB and this trailing subframe
+     * would be misreported as a fresh failure. */
+    if (!mbsfn_cfg.is_mcch && ti_active && _ti_reported[ti_slot_m]) {
+      _mutex.unlock();
+      return 0;
+    }
+    /* Rel-19 §6.5.3: partial accumulation — not a real failure, waiting for
+     * remaining subframes of this slot's own N-span (ti_slot_n/ti_active
+     * computed earlier from the same (m,n) split used for the softbuffer). */
+    if (ti_active && ti_slot_n < (uint32_t)(mbsfn_cfg.time_interleaving_n - 1u)) {
+      _mutex.unlock();
+      return 0;
+    }
     if (mbsfn_cfg.is_mcch) {
       _rest._mcch.errors++;
     } else {
+      /* Reached the last subframe of this TB's span and it never decoded --
+       * a genuine failure. Count total++ here (matching errors++'s
+       * granularity, once per TB, not once per subframe -- see the crc=true
+       * branch's matching comment) and mark reported so this same outcome
+       * can't be double-counted if somehow called again before the next
+       * slot-m reset. */
+      _rest._mch[mch_idx].total++;
       _rest._mch[mch_idx].errors++;
+      if (ti_active) {
+        _ti_reported[ti_slot_m] = true;
+      }
     }
 
     spdlog::trace("PMCH in TTI {} failed with CRC error", tti);
@@ -210,31 +396,36 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
   }
 
   if (!mbsfn_cfg.is_mcch) {
-    for (uint32_t i = 0; i < _phy.mcch().nof_pmch_info; i++) {
-      unsigned fn_in_scheduling_period =  sfn % srsran::enum_to_number(_phy.mcch().pmch_info_list[i].mch_sched_period);
-      unsigned sf_idx;
-      if (_cell.mbms_dedicated) {
-        sf_idx = fn_in_scheduling_period * 10 + sf - (fn_in_scheduling_period / 4) - 1;
-      } else {
-        sf_idx = fn_in_scheduling_period * 6 + (sf < 6 ? sf - 1 : sf - 3);
-      }
-          spdlog::debug("tti{}, sfn {}, sf {}, fn_in_scheduling_period {}, sf_idf {}", tti, sfn, sf, fn_in_scheduling_period, sf_idx);
+    /* Use _pmch_cfg.subframe_idx (= mch_subframe_idx from Phy::mbsfn_config_for_tti) as the
+     * allocation index for sched_stop comparison.  This is the 0-based per-PMCH index
+     * used by the TX when it sets the MCH stop values in the MCCH scheduling info.
+     * Only check stops keyed to the current PMCH (mch_idx). */
+    unsigned sf_idx = _pmch_cfg.subframe_idx;
+    spdlog::debug("tti{}, sfn {}, sf {}, mch_idx {}, sf_idx (mch_subframe_idx) {}", tti, sfn, sf, mch_idx, sf_idx);
 
-      const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
-      for (auto itr = _sched_stops.cbegin() ; itr != _sched_stops.cend() ;) {
-        if ( sf_idx >= itr->second ) {
-          spdlog::debug("Stopping LCID {} in tti {} (idx in rf {})", itr->first, tti, sf_idx);
-          const std::lock_guard<std::mutex> lock(_rlc_mutex);
-          if (!_allow_rrc_sn_across_periods) {
-            _rlc.stop_mch(i, itr->first);
-          }
-          itr = _sched_stops.erase(itr);
-        } else {
-          itr = std::next(itr);
+    const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
+    for (auto itr = _sched_stops.cbegin(); itr != _sched_stops.cend();) {
+      if (itr->first.first != (uint8_t)mch_idx) {
+        itr = std::next(itr);
+        continue;
+      }
+      if (sf_idx >= itr->second) {
+        uint8_t lcid = itr->first.second;
+        spdlog::debug("Stopping PMCH {} LCID {} in tti {} (idx in rf {})", mch_idx, lcid, tti, sf_idx);
+        const std::lock_guard<std::mutex> lock(_rlc_mutex);
+        if (!_allow_rrc_sn_across_periods) {
+          _rlc.stop_mch(mch_idx, lcid);
         }
+        itr = _sched_stops.erase(itr);
+      } else {
+        itr = std::next(itr);
       }
     }
   } else {
+    {
+      const std::lock_guard<std::mutex> lock(_sched_stop_mutex);
+      _sched_stops.clear();
+    }
     const std::lock_guard<std::mutex> lock(_rlc_mutex);
     _rlc.stop_mch(0, 0);
     _rest._mcch.present = true;
