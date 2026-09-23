@@ -44,7 +44,32 @@ link_directories(
     ${PROJECT_BINARY_DIR}/lib/srsran/lib/src/phy/
     )
 
-set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,-bugprone-easily-swappable-parameters,modernize*,-modernize-use-scoped-lock,-modernize-use-trailing-return-type,performance*)
+# clang-tidy runs its own bundled Clang frontend against every translation unit,
+# separately from the compiler that actually builds it. Clang's heuristic for
+# locating a GCC installation's C++ headers lags behind very recent GCC releases:
+# with GCC 15 and clang-tidy 21 every file fails with "'string' file not found"
+# although the real build has no such problem. Hand clang-tidy the include search
+# path of the compiler actually configured, instead of relying on its own.
+set(CLANG_TIDY_EXTRA_ARGS "")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  execute_process(
+    COMMAND ${CMAKE_CXX_COMPILER} -E -x c++ -Wp,-v /dev/null
+    ERROR_VARIABLE _cxx_verbose_includes
+    OUTPUT_QUIET)
+  string(REGEX MATCH "#include <\\.\\.\\.> search starts here:\n(.*)\nEnd of search list"
+         _matched "${_cxx_verbose_includes}")
+  if(_matched)
+    string(REPLACE "\n" ";" _include_lines "${CMAKE_MATCH_1}")
+    foreach(_line ${_include_lines})
+      string(STRIP "${_line}" _path)
+      if(_path)
+        list(APPEND CLANG_TIDY_EXTRA_ARGS "--extra-arg=-isystem${_path}")
+      endif()
+    endforeach()
+  endif()
+endif()
+
+set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,-bugprone-easily-swappable-parameters,modernize*,-modernize-use-scoped-lock,-modernize-use-trailing-return-type,performance* ${CLANG_TIDY_EXTRA_ARGS})
 
 add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp
