@@ -336,7 +336,7 @@ modem: {
   sdr: {
     center_frequency_hz = 943200000L;
     filter_bandwidth_hz =   5000000;
-    search_sample_rate =    7680000;
+    search_sample_rate_hz = 7680000;
 
     normalized_gain = 40.0;
     device_args = "driver=lime";
