@@ -50,7 +50,8 @@ The main components are separate modules:
 * Reception of I/Q data from the Lime SDR Mini. For tests, the live data can be replaced with a
   previously recorded sample file.
 * PHY: synchronisation, OFDM demodulation, channel estimation, decoding of the physical control and
-  user data channels
+  user data channels. A Rel-16 cell is detected from the repeated PBCH of its CAS, and PDSCH
+  decoding then allows for the repeated PBCH symbols.
 * MAC: evaluation of DCI, CFI, SIB and MIB; decoding of MCCH and MTCH
 * Reading the settings from the configuration file
 * RLC / GW: receipt of MTCH data, output on a tun network interface
@@ -67,6 +68,11 @@ The modem needs these extensions and adjustments in srsRAN:
 * phy/ue/: dynamic selection of sample rate and number of PRB, to support sample files and the
   FeMBMS radio frame structure (1 + 39)
 * asn1: support for subcarrier_spacing_mbms_r14
+* phy/phch/: detection and combining of the repeated PBCH symbols of a Rel-16 CAS, and PDSCH
+  resource allocation and decoding when the PBCH is repeated
+* phy/phch/, phy/ue/: CFI read from the MIB (Rel-16); the PCFICH is decoded only when the MIB gives
+  none
+* phy/phch/: PDCCH aggregation level 16
 
 ## Install dependencies
 
