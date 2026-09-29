@@ -64,7 +64,6 @@ The modem needs these extensions and adjustments in srsRAN:
 * phy/dft/: FFT for subcarrier spacings of 1.25 and 7.5 kHz
 * phy/phch/: MIB1-MBMS extension
 * phy/phch/: support for subcarrier spacings of 1.25 and 7.5 kHz
-* phy/sch/: BER calculation
 * phy/ue/: dynamic selection of sample rate and number of PRB, to support sample files and the
   FeMBMS radio frame structure (1 + 39)
 * asn1: support for subcarrier_spacing_mbms_r14
@@ -313,17 +312,6 @@ default. To use another level, start *modem* manually with `-l [logNumber]`.
 To see only the *MBMS Modem* entries, filter the syslog file:
 
 ``cat /var/log/syslog | grep "modem"``
-
-### Troubleshooting
-
-#### Problems with higher bandwidths
-If rt-mbms-modem crashes with segmentation faults at higher bandwidths, try disabling the BER
-calculation:
-````
-- edit lib/srsRAN/lib/src/phy/phch/sch.c
-- change #define CALCULATE_BER in line 34 to #undef CALCULATE_BER
-- rebuild (cd build; ninja)
-````
 
 ### Docker
 
