@@ -286,8 +286,9 @@ privileges so that it runs at real-time scheduling priority. It starts with the 
 |  `` -d `` | `` --sdr_devices `` | Prints a list of all available SDR devices |
 |  `` -f `` | `` --sample-file=FILE `` | Sample file in 4 byte float interleaved format to read I/Q data from. <br />If present, the data from this file will be decoded instead of live SDR data.<br /> The channel bandwidth must be specified with the --file-bandwidth flag, and<br /> the sample rate of the file must be suitable for this bandwidth. |
 |  ``  -l `` | `` --log-level=LEVEL  `` | Log verbosity: 0 = trace, 1 = debug, 2 = info, 3 = warn, 4 = error, 5 = critical, 6 = none. Default: 2. |
-|  `` -p `` | `` --override_nof_prb `` | Override the number of PRB received in the MIB |
-|  `` -s `` | `` --srsRAN-log-level=LEVEL `` |  Log verbosity for srsRAN: 0 = debug, 1 = info, 2 = warn, 3 = error, 4 = none, Default: 4. |
+|  `` -p `` | `` --override_nof_prb=PRB `` | Override the number of PRB received in the MIB |
+|  `` -r `` | `` --repeat `` | Replay the sample file endlessly (default: false) |
+|  `` -s `` | `` --srsran-log-level=LEVEL `` |  Log verbosity for srsRAN: 0 = debug, 1 = info, 2 = warn, 3 = error, 4 = none, Default: 4. |
 |  `` -w `` | `` --write-sample-file=FILE `` | Create a sample file in 4 byte float interleaved format containing the raw received I/Q data.|
 |  `` -? `` | `` --help `` | Give this help list |
 |  `` -V `` | `` --version `` | Print program version |
