@@ -87,7 +87,7 @@ class RestHandler {
         };
         bool present = false;
         int mcs = 0;
-        double ber;
+        double ber = -1.0;  // pre-FEC BER estimate of the last decoded TB, -1 until one is decoded
         float evm_rms = 0.0f;
         unsigned total = 0;
         unsigned errors = 0;

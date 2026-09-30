@@ -37,7 +37,7 @@ srsRAN are necessary:
 * phy/dft/: FFT for subcarrier spacings 1.25 and 7.5 kHz
 * phy/phch/: MIB1-MBMS extension
 * phy/phch/: support for subcarrier spacings 1.25 and 7.5 kHz
-* phy/sch/: BER-calculation added
+* phy/phch/: pre-FEC bit error rate (BER) estimate of decoded code blocks
 * phy/ue/: Dynamic selection of sample rate / number of PRB to support sample files and FeMBMS-Radioframestructure (1 +
   39)
 * asn1: Support for subcarrier_spacing_mbms_r14
@@ -345,6 +345,12 @@ The API is only accessible when the *MBMS Modem* is running.
 See <a href="https://5g-mag.github.io/rt-mbms-modem/">API
 documentation</a> for *MBMS Modem*.
 
+The channel status commands (`pdsch_status`, `mcch_status`, `mch_status`) report the BLER, the MCS and a
+bit error rate (`ber`). The BER is an estimate of the channel bit error rate before error correction (pre-FEC). It
+is taken only from correctly decoded blocks: each code block that passes its CRC is encoded again and compared with
+the hard decisions of the received bits. It covers the first transport block of the last correctly decoded
+subframe, and is `-1` until one has been decoded.
+
 #### Securing the RESTful API interface
 
 By default, the startup scripts for *rt-mbms-modem* create a self-signed SSL certificate for the RESTful API
@@ -425,13 +431,10 @@ or
 
 ## Troubleshooting
 
-### Problems with higher bandwidths
-If you encounter segmentation faults in the rt-mbms-modem for higher bandwidths try disabling the BER calculation:
-````
-- edit lib/srsRAN/lib/src/phy/phch/sch.c
-- change #define CALCULATE_BER in line 34 to #undef CALCULATE_BER
-- rebuild (cd build; ninja)
-````
+### Turning off the BER estimate
+The BER estimate encodes every correctly decoded code block a second time. To leave it out, set `meas_ber_en` to
+`false` in `src/CasFrameProcessor.cpp` and `src/MbsfnFrameProcessor.cpp` and rebuild (`cd build; ninja`). The
+status commands then report `-1` for `ber`.
 
 ## Docker Implementation
 

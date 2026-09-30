@@ -64,6 +64,7 @@ auto MbsfnFrameProcessor::init() -> bool {
   _pmch_cfg.pdsch_cfg.csi_enable         = true;
   _pmch_cfg.pdsch_cfg.max_nof_iterations = 8;
   _pmch_cfg.pdsch_cfg.meas_evm_en        = false;
+  _pmch_cfg.pdsch_cfg.meas_ber_en        = true;
   _pmch_cfg.pdsch_cfg.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
 
   _sf_cfg.sf_type = SRSRAN_SF_MBSFN;
@@ -159,6 +160,13 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rest._mch[mch_idx].SetData(mch_data());
     _rest._mch[mch_idx].mcs = _pmch_cfg.pdsch_cfg.grant.tb[0].mcs_idx;
     _rest._mch[mch_idx].present = true;
+  }
+  if (pmch_dec.crc && pmch_dec.ber >= 0.0f) {
+    if (mbsfn_cfg.is_mcch) {
+      _rest._mcch.ber = pmch_dec.ber;
+    } else {
+      _rest._mch[mch_idx].ber = pmch_dec.ber;
+    }
   }
 
   if (pmch_dec.crc) {
