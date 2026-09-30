@@ -64,6 +64,7 @@ auto CasFrameProcessor::init() -> bool {
   _ue_dl_cfg.cfg.pdsch.csi_enable         = true;
   _ue_dl_cfg.cfg.pdsch.max_nof_iterations = 8;
   _ue_dl_cfg.cfg.pdsch.meas_evm_en        = false;
+  _ue_dl_cfg.cfg.pdsch.meas_ber_en        = true;
   _ue_dl_cfg.cfg.pdsch.decoder_type       = SRSRAN_MIMO_DECODER_MMSE;
   _ue_dl_cfg.cfg.pdsch.softbuffers.rx[0] = &_softbuffer;
 
@@ -148,6 +149,9 @@ auto CasFrameProcessor::process(uint32_t tti) -> bool {
     } else {
       spdlog::debug("Decoded PDSCH");
       _rest._pdsch.evm_rms = pdsch_res[0].evm; // evm of the first codeword
+      if (pdsch_res[0].crc && pdsch_res[0].ber >= 0.0f) {
+        _rest._pdsch.ber = pdsch_res[0].ber; // pre-FEC BER of the first codeword
+      }
       for (int i = 0; i < SRSRAN_MAX_CODEWORDS; i++) {
         // .. and pass received PDUs to RLC for further processing
         if (pdsch_cfg->grant.tb[i].enabled && pdsch_res[i].crc) {
