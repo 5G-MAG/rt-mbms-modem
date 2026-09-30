@@ -168,6 +168,7 @@ void RestHandler::get(http_request message) {
       value sdr = value::object();
       sdr["bler"] = value(static_cast<float>(_pdsch.errors) /
                                 static_cast<float>(_pdsch.total));
+      sdr["ber"] = value(_pdsch.ber);
       sdr["mcs"] = value(_pdsch.mcs);
       sdr["present"] = 1;
       message.reply(status_codes::OK, sdr);
@@ -178,6 +179,7 @@ void RestHandler::get(http_request message) {
       value sdr = value::object();
       sdr["bler"] = value(static_cast<float>(_mcch.errors) /
                                 static_cast<float>(_mcch.total));
+      sdr["ber"] = value(_mcch.ber);
       sdr["mcs"] = value(_mcch.mcs);
       sdr["present"] = 1;
       message.reply(status_codes::OK, sdr);
@@ -207,6 +209,7 @@ void RestHandler::get(http_request message) {
       value sdr = value::object();
       sdr["bler"] = value(static_cast<float>(_mch[idx].errors) /
                                 static_cast<float>(_mch[idx].total));
+      sdr["ber"] = value(_mch[idx].ber);
       sdr["mcs"] = value(_mch[idx].mcs);
       sdr["present"] = value(_mch[idx].present);
       message.reply(status_codes::OK, sdr);

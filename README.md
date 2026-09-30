@@ -388,10 +388,6 @@ The API is available only while the *MBMS Modem* is running.
 
 See the [API documentation](https://5g-mag.github.io/rt-mbms-modem/) for the *MBMS Modem*.
 
-The channel status commands (`pdsch_status`, `mcch_status`, `mch_status`) report the BLER and
-MCS of the channel. They do not report a bit error rate (BER): the srsRAN version the modem is
-built against does not calculate one.
-
 #### Securing the RESTful API interface
 
 By default the *rt-mbms-modem* startup scripts create a self-signed SSL certificate for the
