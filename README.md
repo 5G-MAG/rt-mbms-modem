@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/banner.svg" width="100%" alt="Reference Tools · 5G Broadcast - TV and Radio Services: MBMS Modem">
+  <img src=".github/banner.svg" width="100%" alt="Reference Tools · 5G Broadcast for TV and Radio Services: MBMS Modem">
 </p>
 
 <p align="center">
@@ -8,8 +8,7 @@
 </p>
 
 <p align="center">
-  <img alt="Status: under development"
-    src="https://img.shields.io/badge/Status-Under%20Development-e67e22">
+  <img alt="Status" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fwww.5g-mag.com%2Fbadges%2Fstatus%2Frt-mbms-modem.json">
   <a href="https://github.com/5G-MAG/rt-mbms-modem/releases"><img alt="Version"
     src="https://img.shields.io/github/v/release/5G-MAG/rt-mbms-modem?label=Version"></a>
   <a href="LICENSE"><img alt="License: GNU Affero General Public License v3.0"
@@ -28,7 +27,7 @@
 
 |  |  |
 |---|---|
-| **Part of** | [5G Broadcast - TV and Radio Services](https://www.5g-mag.com/reference-tools/5g-broadcast/), alongside [rt-libflute](https://github.com/5G-MAG/rt-libflute), [rt-mbms-application](https://github.com/5G-MAG/rt-mbms-application), [rt-mbms-application-provider](https://github.com/5G-MAG/rt-mbms-application-provider), [rt-mbms-bmsc](https://github.com/5G-MAG/rt-mbms-bmsc), [rt-mbms-client](https://github.com/5G-MAG/rt-mbms-client), [rt-mbms-examples](https://github.com/5G-MAG/rt-mbms-examples), [rt-mbms-gw](https://github.com/5G-MAG/rt-mbms-gw), [rt-mbms-mw-android](https://github.com/5G-MAG/rt-mbms-mw-android), [rt-mbms-tx](https://github.com/5G-MAG/rt-mbms-tx) and [rt-mbms-tx-for-qrd-and-crd](https://github.com/5G-MAG/rt-mbms-tx-for-qrd-and-crd) |
+| **Part of** | [5G Broadcast for TV and Radio Services](https://www.5g-mag.com/reference-tools/5g-broadcast/), alongside [rt-libflute](https://github.com/5G-MAG/rt-libflute), [rt-mbms-application](https://github.com/5G-MAG/rt-mbms-application), [rt-mbms-application-provider](https://github.com/5G-MAG/rt-mbms-application-provider), [rt-mbms-bmsc](https://github.com/5G-MAG/rt-mbms-bmsc), [rt-mbms-client](https://github.com/5G-MAG/rt-mbms-client), [rt-mbms-examples](https://github.com/5G-MAG/rt-mbms-examples), [rt-mbms-gw](https://github.com/5G-MAG/rt-mbms-gw), [rt-mbms-mw](https://github.com/5G-MAG/rt-mbms-mw), [rt-mbms-mw-android](https://github.com/5G-MAG/rt-mbms-mw-android), [rt-mbms-tx](https://github.com/5G-MAG/rt-mbms-tx), [rt-mbms-tx-for-qrd-and-crd](https://github.com/5G-MAG/rt-mbms-tx-for-qrd-and-crd), [rt-wui](https://github.com/5G-MAG/rt-wui) |
 
 ## Introduction
 
