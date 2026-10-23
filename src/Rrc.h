@@ -40,9 +40,9 @@ class Rrc : public srsue::rrc_interface_rlc, public srsue::rrc_interface_pdcp {
      *  @param rlc RLC reference
      *  @param rlc PHY reference
      */
-    Rrc(const libconfig::Config& cfg, Phy& phy, srsran::rlc& rlc)
-      : _cfg(cfg)
-      , _rlc(rlc)
+    Rrc(/*const libconfig::Config& cfg,*/ Phy& phy, srsran::rlc& rlc)
+      : /*_cfg(cfg)
+      ,*/ _rlc(rlc)
       , _phy(phy) {}
     virtual ~Rrc() = default;
 
@@ -68,19 +68,20 @@ class Rrc : public srsue::rrc_interface_rlc, public srsue::rrc_interface_pdcp {
     /**
      *  Handle SIB1(SIB13) from BCCH/DLSCH, and set the scheduling info in PHY.
      */
-    void write_pdu_bcch_dlsch(srsran::unique_byte_buffer_t pdu) override;
-    void write_pdu(uint32_t lcid, srsran::unique_byte_buffer_t pdu) override {}; // Unused
-    void write_pdu_bcch_bch(srsran::unique_byte_buffer_t pdu) override {}; // Unused
-    void write_pdu_pcch(srsran::unique_byte_buffer_t pdu) override {}; // Unused
-    const char* get_rb_name(uint32_t lcid) override { return "RB" + lcid; };
+    void write_pdu_bcch_dlsch([[maybe_unused]] srsran::unique_byte_buffer_t pdu) override;
+    void write_pdu([[maybe_unused]] uint32_t lcid, [[maybe_unused]] srsran::unique_byte_buffer_t pdu) override {}; // Unused
+    void write_pdu_bcch_bch([[maybe_unused]] srsran::unique_byte_buffer_t pdu) override {}; // Unused
+    void write_pdu_pcch([[maybe_unused]] srsran::unique_byte_buffer_t pdu) override {}; // Unused
+    const char* get_rb_name(uint32_t lcid) override { _rb_name = "RB" + std::to_string(lcid); return _rb_name.c_str(); };
     void protocol_failure() override {};
-    void notify_pdcp_integrity_error(uint32_t lcid) override {};
+    void notify_pdcp_integrity_error([[maybe_unused]] uint32_t lcid) override {};
 
  private:
     void handle_sib1(const asn1::rrc::sib_type1_mbms_r14_s& sib1);
     rrc_state_t _state = ACQUIRE_SIB;
 
-    const libconfig::Config& _cfg;
+ //   const libconfig::Config& _cfg;
     srsran::rlc& _rlc;
     Phy& _phy;
+    std::string _rb_name = "RB";
 };

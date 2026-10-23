@@ -28,7 +28,7 @@ std::mutex MbsfnFrameProcessor::_rlc_mutex;
 auto MbsfnFrameProcessor::init() -> bool {
   _signal_buffer_max_samples = 3 * SRSRAN_SF_LEN_PRB(MAX_PRB);
 
-  for (auto ch = 0; ch < _rx_channels; ch++) {
+  for (size_t ch = 0; ch < _rx_channels; ch++) {
     _signal_buffer_rx[ch] = srsran_vec_cf_malloc(_signal_buffer_max_samples);
     if (!_signal_buffer_rx[ch]) {
       spdlog::error("Could not allocate regular DL signal buffer\n");
@@ -71,6 +71,11 @@ auto MbsfnFrameProcessor::init() -> bool {
 }
 
 MbsfnFrameProcessor::~MbsfnFrameProcessor() {
+  for (auto & i : _signal_buffer_rx) {
+    if (i) {
+      free(i);
+    }
+  }
   srsran_softbuffer_rx_free(&_softbuffer);
   srsran_ue_dl_free(&_ue_dl);
 }
@@ -81,7 +86,13 @@ void MbsfnFrameProcessor::set_cell(srsran_cell_t cell) {
 }
 
 auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
-  spdlog::trace("Processing MBSFN TTI {}", tti);
+
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+  auto t2 = t1;
+
+  //_mutex.lock();
+  spdlog::debug("Processing MBSFN TTI {}, id {}", tti, id);
 
   uint32_t sfn = tti / 10;
   uint8_t sf = tti % 10;
@@ -99,24 +110,28 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
 
   if (!mbsfn_cfg.enable) {
     spdlog::trace("PMCH: tti {}: neither MCCH nor MCH enabled. Skipping subframe");
-    _mutex.unlock();
+   // _mutex.unlock();
     return -1;
   }
 
   if (mbsfn_cfg.is_mcch) {
-    _rest._mcch.total++;
+    //_rest._mcch.total++;
+    _rest._mcch.add_total();
   } else {
-    _rest._mch[mch_idx].total++;
+    //_rest._mch[mch_idx].total++;
+    _rest._mch[mch_idx].add_total();
   }
 
   if (srsran_ue_dl_decode_fft_estimate(&_ue_dl, &_sf_cfg, &_ue_dl_cfg) < 0) {
     if (mbsfn_cfg.is_mcch) {
-      _rest._mcch.errors++;
+      //_rest._mcch.errors++;
+      _rest._mcch.add_error();
     } else {
-      _rest._mch[mch_idx].errors++;
+      //_rest._mch[mch_idx].errors++;
+      _rest._mch[mch_idx].add_error();
     }
     spdlog::error("Getting PDCCH FFT estimate");
-    _mutex.unlock();
+    //_mutex.unlock();
     return -1;
   }
 
@@ -134,12 +149,14 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
 
   if (srsran_ue_dl_decode_pmch(&_ue_dl, &_sf_cfg, &_pmch_cfg, &pmch_dec) != 0) {
     if (mbsfn_cfg.is_mcch) {
-      _rest._mcch.errors++;
+      //_rest._mcch.errors++;
+      _rest._mcch.add_error();
     } else {
-      _rest._mch[mch_idx].errors++;
+      //_rest._mch[mch_idx].errors++;
+      _rest._mch[mch_idx].add_error();
     }
     spdlog::warn("Error decoding PMCH");
-    _mutex.unlock();
+    //_mutex.unlock();
     return -1;
   }
 
@@ -182,11 +199,13 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
         if (lcid >= SRSRAN_N_MCH_LCIDS) {
           spdlog::warn("Radio bearer id must be in [0:%d] - %d", SRSRAN_N_MCH_LCIDS, lcid);
           if (mbsfn_cfg.is_mcch) {
-            _rest._mcch.errors++;
+            //_rest._mcch.errors++;
+            _rest._mcch.add_error();
           } else {
-            _rest._mch[mch_idx].errors++;
+            //_rest._mch[mch_idx].errors++;
+            _rest._mch[mch_idx].add_error();
           }
-          _mutex.unlock();
+          //_mutex.unlock();
           return -1;
         }
 
@@ -199,13 +218,15 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     }
   } else {
     if (mbsfn_cfg.is_mcch) {
-      _rest._mcch.errors++;
+      //_rest._mcch.errors++;
+      _rest._mcch.add_error();
     } else {
-      _rest._mch[mch_idx].errors++;
+      //_rest._mch[mch_idx].errors++;
+      _rest._mch[mch_idx].add_error();
     }
 
     spdlog::trace("PMCH in TTI {} failed with CRC error", tti);
-    _mutex.unlock();
+    //_mutex.unlock();
     return -1;
   }
 
@@ -239,7 +260,10 @@ auto MbsfnFrameProcessor::process(uint32_t tti) -> int {
     _rlc.stop_mch(0, 0);
     _rest._mcch.present = true;
   }
-  _mutex.unlock();
+  //_mutex.unlock();
+
+  t2 = std::chrono::high_resolution_clock::now();
+  //spdlog::info("Time spend processing MBSFN {} microseconds.", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
   return mbsfn_cfg.is_mcch ? 0 : 1;
 }
 
@@ -255,5 +279,5 @@ void MbsfnFrameProcessor::configure_mbsfn(uint8_t area_id, srsran_scs_t subcarri
 
 auto MbsfnFrameProcessor::mch_data() const -> std::vector<uint8_t> const {
   const uint8_t* data = reinterpret_cast<uint8_t*>(_ue_dl.pmch.d);
-  return std::move(std::vector<uint8_t>( data, data + _pmch_cfg.pdsch_cfg.grant.nof_re * sizeof(cf_t)));
+  return (std::vector<uint8_t>( data, data + _pmch_cfg.pdsch_cfg.grant.nof_re * sizeof(cf_t)));
 }

@@ -43,7 +43,7 @@ void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buff
     } else {
       auto ip_hdr = reinterpret_cast<iphdr*>(pdu->msg);
       if (ip_hdr->protocol == 17 /*UDP*/) {
-        auto udp_hdr = reinterpret_cast<udphdr*>(pdu->msg + 4U * ip_hdr->ihl);
+        auto udp_hdr = reinterpret_cast<udphdr*>(pdu->msg + static_cast<size_t>(4U) * ip_hdr->ihl);
         char dest[INET6_ADDRSTRLEN] = "";   // NOLINT
         inet_ntop(AF_INET, (const void*)&ip_hdr->daddr, dest, sizeof(dest));
 
@@ -73,6 +73,7 @@ void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buff
       }
 
       _wr_mutex.lock();
+//      spdlog::info("GW write: {} bytes to TUN", pdu->N_bytes);
       int n = write(_tun_fd, pdu->msg, pdu->N_bytes);
       _wr_mutex.unlock();
 

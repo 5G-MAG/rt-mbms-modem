@@ -45,16 +45,16 @@ public:
 	}
 
 	thread_pool(thread_pool const &) = delete;
-	thread_pool(thread_pool &&) = default;
+//	thread_pool(thread_pool &&) = default;
 
 	thread_pool &operator=(thread_pool const &) = delete;
-	thread_pool &operator=(thread_pool &&) = default;
+//	thread_pool &operator=(thread_pool &&) = default;
 
 	// Push a new task into the queue
 	template <class Func, class... Args>
 	auto push(Func &&fn, Args &&...args)
 	{
-		using return_type = typename std::result_of<Func(Args...)>::type;
+		using return_type = typename std::invoke_result<Func, Args...>::type;
 
 		auto task{ std::make_shared<std::packaged_task<return_type()>>(
 			std::bind(std::forward<Func>(fn), std::forward<Args>(args)...)

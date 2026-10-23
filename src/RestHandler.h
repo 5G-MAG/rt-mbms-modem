@@ -70,8 +70,14 @@ class RestHandler {
     /**
      *  Start function for the listener.
      */
-    void start() { _listener->open().wait(); }
+    void start() { _listener->open().wait(); running = true; }
 
+    void stop() { 
+      if (running) {
+        _listener->close().wait();
+        running = false;
+      }
+    }
     /**
      *  RX Info pertaining to an SCH (MCCH/MCH or PDSCH)
      */
@@ -85,12 +91,20 @@ class RestHandler {
           std::lock_guard<std::mutex> lock(_data_mutex);
           return _data; 
         };
+        void add_error() { errors_total.fetch_add((uint64_t(1) << 32) | 1); } // error implica también +1 total
+        void add_total() { errors_total.fetch_add(1); }
+        std::pair<uint32_t, uint32_t> snapshot_and_reset() {
+          uint64_t snap = errors_total.exchange(0);
+          return { snap >> 32, snap & 0xFFFFFFFF };  // {errors, total}
+        }
         bool present = false;
         int mcs = 0;
         double ber;
         float evm_rms = 0.0f;
         unsigned total = 0;
         unsigned errors = 0;
+        std::atomic<uint64_t> errors_total {0};
+
       private:
         std::vector<uint8_t> _data = {};
         std::mutex _data_mutex;
@@ -170,10 +184,11 @@ class RestHandler {
     void get(web::http::http_request message);
     void put(web::http::http_request message);
 
-    const libconfig::Config& _cfg;
+//    const libconfig::Config& _cfg;
 
     std::unique_ptr<web::http::experimental::listener::http_listener> _listener;
 
+    bool running = false;
     state_t& _state;
     SdrReader& _sdr;
     Phy& _phy;
