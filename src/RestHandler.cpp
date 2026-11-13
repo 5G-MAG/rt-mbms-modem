@@ -840,6 +840,15 @@ web::json::value RestHandler::sib_info_json() {
       b["si_message_index"] = value(sib16.si_message_index);
       s16["boundary"] = b;
     }
+    if (auto anchor = _phy.sib16_anchor()) {
+      value a = value::object();
+      a["boundary_sfn"]     = value(anchor->request.sfn);
+      a["label_ns"]         = value(anchor->request.label_ns);
+      a["label_local_clock"] = value(anchor->request.label_local_clock);
+      a["sample_clock_ns"]  = value(anchor->sample_clock_ns);
+      a["host_time_ns"]     = value(anchor->host_time_ns);
+      s16["anchor"] = a;
+    }
     root["sib16"] = s16;
   } else {
     root["sib16"] = value::null();

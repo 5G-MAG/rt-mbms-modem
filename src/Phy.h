@@ -27,6 +27,9 @@
 #include <map>
 #include <vector>
 #include <atomic>
+#include <optional>
+#include <ctime>
+#include "SubframeClock.h"
 #include <array>
 #include <mutex>
 #include <utility>
@@ -241,6 +244,20 @@ class Phy {
     /* TTI of the subframe CasFrameProcessor is currently decoding (the running counter of main.cpp's loop). Unlike
      * tti()/sfn(), which are set once when the MIB is decoded, this follows the stream. */
     void     note_rx_tti(uint32_t tti) { _rx_tti.store(tti, std::memory_order_relaxed); }
+
+    /* Subframe to receive-sample-clock mapping (SubframeClock.h). The main loop notes every subframe; RRC asks for the clock at
+     * the frame boundary a SIB16 time names. */
+    void note_subframe_clock(uint32_t tti, uint64_t sample_clock_ns) {
+      timespec ts;
+      clock_gettime(CLOCK_REALTIME, &ts);
+      _subframe_clock.note(tti, sample_clock_ns, (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec);
+    }
+    void request_sib16_anchor(const MBMS_RT::SubframeClock::Request& r) {
+      timespec ts;
+      clock_gettime(CLOCK_REALTIME, &ts);
+      _subframe_clock.request(r, (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec);
+    }
+    std::optional<MBMS_RT::SubframeClock::Anchor> sib16_anchor() const { return _subframe_clock.latest(); }
     uint32_t rx_tti() const { return _rx_tti.load(std::memory_order_relaxed); }
 
     /**
@@ -1017,6 +1034,7 @@ class Phy {
     uint32_t _buffer_max_samples = 0;
     uint32_t _tti = 0;
     std::atomic<uint32_t> _rx_tti{0};
+    MBMS_RT::SubframeClock         _subframe_clock;
     uint32_t _mib_decode_count = 0;
     uint64_t _last_mib_decoded_at = 0;
 

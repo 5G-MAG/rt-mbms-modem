@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 #include <thread>
@@ -93,6 +94,16 @@ public:
      * Get current sample rate
      */
     double get_sample_rate() { return _sampleRate; }
+
+    /**
+     * The receive sample clock: nanoseconds of signal consumed so far through get_samples(), counted at the sample rate in force
+     * when each sample was consumed. It is the receiver's own timeline, advancing by exactly one subframe per subframe read, and
+     * is what a broadcast time label has to be related to (see SubframeClock.h). It is not wall-clock time.
+     * Samples already buffered when the rate changes are counted at the new rate.
+     */
+    uint64_t sample_clock_ns() const {
+      return _clock_base_ns.load() + (uint64_t)((double)_segment_samples.load() * 1e9 / _sampleRate);
+    }
 
     /**
      * Get current center frequency
@@ -173,6 +184,9 @@ private:
 
     unsigned _rx_channels = 1;
     double _sampleRate;
+    std::atomic<uint64_t> _clock_base_ns{0};   // sample clock time of the samples counted at earlier rates
+    std::atomic<uint64_t> _segment_samples{0}; // samples consumed since the current rate was set
+    void close_clock_segment();
     double _frequency;
     unsigned _filterBw;
     double _gain;

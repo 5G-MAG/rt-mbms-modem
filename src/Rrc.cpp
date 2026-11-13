@@ -517,6 +517,14 @@ void Rrc::handle_sib_list(const sys_info_r8_ies_s::sib_type_and_info_l_& sib_lis
                   sib16_info.si_message_index  = (uint8_t)(n0 + 1);
                   sib16_info.boundary_sfn      = boundary;
                   sib16_info.has_boundary      = true;
+                  if (sib16_info.has_time_reference) {
+                    MBMS_RT::SubframeClock::Request r;
+                    r.tti               = (uint32_t)boundary * 10; // subframe 0 of the boundary frame
+                    r.sfn               = boundary;
+                    r.label_ns          = sib16_info.time_reference_ns;
+                    r.label_local_clock = sib16_info.time_reference_local_clock;
+                    _phy.request_sib16_anchor(r);
+                  }
                 }
               }
             }

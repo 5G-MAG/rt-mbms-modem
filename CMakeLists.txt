@@ -94,6 +94,9 @@ enable_testing()
 add_executable(sib16_time_test test/sib16_time_test.cc)
 add_test(NAME sib16_time_test COMMAND sib16_time_test)
 
+add_executable(subframe_clock_test test/subframe_clock_test.cc)
+add_test(NAME subframe_clock_test COMMAND subframe_clock_test)
+
 # Wide constrained integers through the vendored srsRAN ASN.1 library.
 add_executable(asn1_wide_integer_test test/asn1_wide_integer_test.cc)
 target_link_libraries(asn1_wide_integer_test rrc_asn1 asn1_utils)

@@ -589,6 +589,7 @@ auto main(int argc, char **argv) -> int {
     switch (state) {
       case processing: {  // processing
         tti = (tti + 1) % 10240; // Clamp the TTI
+        phy.note_subframe_clock(tti, sdr.sample_clock_ns()); // sample clock at the first sample of this subframe
 
         if (phy.rom_redirect_pending()) {
           auto [rom_earfcn, rom_prb] = phy.consume_rom_redirect();

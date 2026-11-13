@@ -168,10 +168,18 @@ auto SdrReader::set_gain(bool use_agc, double gain, uint8_t idx) -> bool {
   }
 }
 
+void SdrReader::close_clock_segment() {
+  // Fold the samples counted at the outgoing rate into the base, so that sample_clock_ns() stays continuous across a rate change.
+  if (_sampleRate > 0) {
+    _clock_base_ns.fetch_add((uint64_t)((double)_segment_samples.exchange(0) * 1e9 / _sampleRate));
+  }
+}
+
 auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
     uint32_t bandwidth, double gain, const std::string& antenna, bool use_agc) -> bool {
   _frequency = frequency;
   _filterBw = bandwidth;
+  close_clock_segment();
   _sampleRate = sample_rate;
   _use_agc = use_agc;
 
@@ -200,6 +208,7 @@ auto SdrReader::tune(uint32_t frequency, uint32_t sample_rate,
 
   _frequency = sdr->getFrequency( SOAPY_SDR_RX, 0);
   bandwidth = sdr->getBandwidth( SOAPY_SDR_RX, 0);
+  close_clock_segment();
   _sampleRate = sdr->getSampleRate( SOAPY_SDR_RX, 0);
 
   spdlog::info("SDR tuned to {} MHz, filter bandwidth {} MHz, sample rate {}, gain {}, antenna path {}",
@@ -452,6 +461,7 @@ auto SdrReader::get_samples(cf_t* data[SRSRAN_MAX_CHANNELS], uint32_t nsamples, 
     }
   }
   _buffer->read(buffers, cnt); // Copy from the ringbuffer to the data array. This also decreases _used.
+  _segment_samples.fetch_add(nsamples, std::memory_order_relaxed);
 
   if (getenv("SYNC_OFFSET_DIAG")) {
     auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(
