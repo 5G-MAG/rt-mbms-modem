@@ -89,7 +89,10 @@ add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp
   src/Gw.cpp src/RestHandler.cpp src/MeasurementFileWriter.cpp src/MultichannelRingbuffer.cpp)
 
+# Arithmetic of the SIB16 time reference (src/Sib16Time.h), header only.
 enable_testing()
+add_executable(sib16_time_test test/sib16_time_test.cc)
+add_test(NAME sib16_time_test COMMAND sib16_time_test)
 
 # Wide constrained integers through the vendored srsRAN ASN.1 library.
 add_executable(asn1_wide_integer_test test/asn1_wide_integer_test.cc)

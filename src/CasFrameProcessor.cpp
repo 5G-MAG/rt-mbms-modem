@@ -137,6 +137,9 @@ void CasFrameProcessor::set_cell(srsran_cell_t cell, srsran_scs_t mbsfn_scs) {
 }
 
 auto CasFrameProcessor::process(uint32_t tti) -> bool {
+  // The running TTI lives in main.cpp's loop; Phy::tti() is set only at MIB decode. Publish it so RRC can name the
+  // SFN at which an SI message is decoded (SIB16 time reference).
+  _phy.note_rx_tti(tti);
   // TEMPORARY DIAGNOSTIC (CAS_TIMING_DIAG=1, 2026-07-22): measures this call's own wall-clock
   // duration regardless of which of process()'s several early-return points is hit, to test
   // whether a single CAS/PDSCH decode occasionally takes close to or longer than the 5ms

@@ -238,6 +238,11 @@ class Phy {
      */
     uint32_t sfn() { return _tti / 10; }
 
+    /* TTI of the subframe CasFrameProcessor is currently decoding (the running counter of main.cpp's loop). Unlike
+     * tti()/sfn(), which are set once when the MIB is decoded, this follows the stream. */
+    void     note_rx_tti(uint32_t tti) { _rx_tti.store(tti, std::memory_order_relaxed); }
+    uint32_t rx_tti() const { return _rx_tti.load(std::memory_order_relaxed); }
+
     /**
      * PSS correlation peak value from the tracking-stage synchronizer (higher
      * is a stronger/cleaner PSS detection).
@@ -673,16 +678,43 @@ class Phy {
     }
 
     /**
-     * SIB16 (SystemInformationBlockType16-r11, TS 36.331 §6.3.14) GPS time.
+     * SIB16 (SystemInformationBlockType16-r11, TS 36.331 clause 6.3.1): UTC time, and GPS time via leapSeconds.
      */
     struct Sib16Info {
       bool     has_time_info           = false;
       uint64_t gps_time_10ms           = 0;  /* raw 48-bit counter, TS 36.331 units */
       bool     has_leap_seconds        = false;
-      uint16_t leap_seconds            = 0;
+      int16_t  leap_seconds            = 0;  /* leapSeconds-r11 is INTEGER (-127..128) */
       bool     has_local_time_offset   = false;
       int8_t   local_time_offset_15min = 0;
       uint64_t last_received_at        = 0;
+
+      /* timeInfoUTC read as the specification defines it: UTC seconds in 10 ms units since
+       * 1900-01-01 (TS 36.331 V19.4.0 clause 6.3.1), converted to Unix milliseconds. The field
+       * above keeps its historical name, gps_time_10ms, but holds this same raw count. */
+      int64_t  time_info_utc_unix_ms   = 0;
+
+      /* timeReferenceInfo-r15 (TS 36.331 V19.4.0 clause 6.3.2), 0.25 us granularity. */
+      bool     has_time_reference      = false;
+      uint32_t ref_days                = 0;
+      uint32_t ref_seconds             = 0;
+      uint16_t ref_milli_seconds       = 0;
+      uint16_t ref_quarter_micro_seconds = 0;
+      int64_t  time_reference_ns       = 0;  /* nanoseconds from the field's origin (GPS epoch unless timeInfoType=localClock) */
+      bool     time_reference_local_clock = false; /* timeInfoType = localClock: origin left to upper layers */
+      bool     has_uncertainty         = false;
+      uint8_t  uncertainty             = 0;  /* LSBs of refQuarterMicroSeconds that may be inaccurate */
+      bool     has_reference_sfn       = false;
+      uint16_t reference_sfn           = 0;
+
+      /* Which frame boundary the time names, derived from the SI schedule of SIB1-MBMS
+       * (TS 36.331 clause 5.2.3b) and the SFN at which this SIB16 was decoded. */
+      uint16_t rx_sfn                  = 0;  /* SFN when the SI message was decoded */
+      bool     has_boundary            = false;
+      uint16_t boundary_sfn            = 0;  /* SFN whose start the time names, assuming decode inside the SI-window */
+      uint16_t si_periodicity_rf       = 0;
+      uint16_t si_window_ms            = 0;
+      uint8_t  si_message_index        = 0;  /* n in x = (n-1)*w */
     };
     void set_sib16_info(Sib16Info info) {
       std::lock_guard<std::mutex> lock(_sib16_mutex);
@@ -984,6 +1016,7 @@ class Phy {
     cf_t* _mib_buffer[SRSRAN_MAX_CHANNELS] = {};
     uint32_t _buffer_max_samples = 0;
     uint32_t _tti = 0;
+    std::atomic<uint32_t> _rx_tti{0};
     uint32_t _mib_decode_count = 0;
     uint64_t _last_mib_decoded_at = 0;
 

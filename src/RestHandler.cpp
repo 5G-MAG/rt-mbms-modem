@@ -814,6 +814,32 @@ web::json::value RestHandler::sib_info_json() {
       s16["local_time_offset_15min"] = value(sib16.local_time_offset_15min);
     }
     s16["last_received_at"] = value(sib16.last_received_at);
+    s16["time_info_utc_unix_ms"] = value(sib16.time_info_utc_unix_ms);
+    s16["rx_sfn"] = value(sib16.rx_sfn);
+    if (sib16.has_time_reference) {
+      value tr = value::object();
+      tr["ref_days"] = value(sib16.ref_days);
+      tr["ref_seconds"] = value(sib16.ref_seconds);
+      tr["ref_milli_seconds"] = value(sib16.ref_milli_seconds);
+      tr["ref_quarter_micro_seconds"] = value(sib16.ref_quarter_micro_seconds);
+      tr["time_ns"] = value(sib16.time_reference_ns);
+      tr["local_clock"] = value(sib16.time_reference_local_clock);
+      if (sib16.has_uncertainty) {
+        tr["uncertainty"] = value(sib16.uncertainty);
+      }
+      if (sib16.has_reference_sfn) {
+        tr["reference_sfn"] = value(sib16.reference_sfn);
+      }
+      s16["time_reference"] = tr;
+    }
+    if (sib16.has_boundary) {
+      value b = value::object();
+      b["boundary_sfn"] = value(sib16.boundary_sfn);
+      b["si_periodicity_rf"] = value(sib16.si_periodicity_rf);
+      b["si_window_ms"] = value(sib16.si_window_ms);
+      b["si_message_index"] = value(sib16.si_message_index);
+      s16["boundary"] = b;
+    }
     root["sib16"] = s16;
   } else {
     root["sib16"] = value::null();

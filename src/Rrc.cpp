@@ -21,6 +21,7 @@
 #include <cstdio>
 
 #include "Rrc.h"
+#include "Sib16Time.h"
 #include "spdlog/fmt/fmt.h"
 #include "spdlog/spdlog.h"
 #include "srsran/asn1/rrc_utils.h"
@@ -468,16 +469,57 @@ void Rrc::handle_sib_list(const sys_info_r8_ies_s::sib_type_and_info_l_& sib_lis
         const auto& sib16 = sib.sib16_v1130();
         if (sib16.time_info_r11_present) {
           const auto& ti = sib16.time_info_r11;
-          /* time_info_utc_r11 is a 48-bit GPS epoch count in units of 10 ms (TS 36.331 §6.3.4).
-           * Maximum valid value: 2^48-1 ≈ 281 trillion; check for the common sentinel 0. */
+          /* timeInfoUTC counts UTC seconds in 10 ms units since 1900-01-01 (TS 36.331 V19.4.0
+           * clause 6.3.1); it is not a GPS count. Check for the common sentinel 0. */
           if (ti.time_info_utc_r11 == 0) {
-            spdlog::warn("SIB16: time_info_utc_r11 is zero — ignoring GPS time");
+            spdlog::warn("SIB16: time_info_utc_r11 is zero — ignoring time");
           } else {
             uint64_t gps_10ms = ti.time_info_utc_r11;
-            spdlog::info("SIB16: GPS time {} * 10ms ({}s since GPS epoch)", gps_10ms, gps_10ms / 100);
+            spdlog::info("SIB16: timeInfoUTC {} * 10ms since 1900 ({}s)", gps_10ms, gps_10ms / 100);
             Phy::Sib16Info sib16_info;
             sib16_info.has_time_info = true;
             sib16_info.gps_time_10ms = gps_10ms;
+            sib16_info.time_info_utc_unix_ms = MBMS_RT::sib16_time::time_info_utc_to_unix_ms(gps_10ms);
+            sib16_info.rx_sfn = (uint16_t)((_phy.rx_tti() / 10) % 1024);
+            if (sib16.ext && sib16.time_ref_info_r15.is_present()) {
+              const auto& tr = *sib16.time_ref_info_r15;
+              /* time in 0.25 us units = refDays*86400*1000*4000 + refSeconds*1000*4000 + refMilliSeconds*4000
+               * + refQuarterMicroSeconds (TS 36.331 V19.4.0 clause 6.3.2) */
+              const int64_t ref_ns = MBMS_RT::sib16_time::reference_time_ns(tr.time_r15.ref_days_r15, tr.time_r15.ref_seconds_r15,
+                                                                  tr.time_r15.ref_milli_seconds_r15,
+                                                                  tr.time_r15.ref_quarter_micro_seconds_r15);
+              sib16_info.has_time_reference         = true;
+              sib16_info.ref_days                   = tr.time_r15.ref_days_r15;
+              sib16_info.ref_seconds                = tr.time_r15.ref_seconds_r15;
+              sib16_info.ref_milli_seconds          = tr.time_r15.ref_milli_seconds_r15;
+              sib16_info.ref_quarter_micro_seconds  = tr.time_r15.ref_quarter_micro_seconds_r15;
+              sib16_info.time_reference_ns          = ref_ns;
+              sib16_info.time_reference_local_clock = tr.time_info_type_r15_present;
+              sib16_info.has_uncertainty            = tr.uncertainty_r15_present;
+              sib16_info.uncertainty                = tr.uncertainty_r15;
+              sib16_info.has_reference_sfn          = tr.ref_sfn_r15_present;
+              sib16_info.reference_sfn              = tr.ref_sfn_r15;
+              spdlog::info("SIB16: timeReferenceInfo {} ns from origin (days {} s {} ms {} q {})", ref_ns,
+                           tr.time_r15.ref_days_r15, tr.time_r15.ref_seconds_r15, tr.time_r15.ref_milli_seconds_r15,
+                           tr.time_r15.ref_quarter_micro_seconds_r15);
+            }
+            /* Which boundary: TS 36.331 V19.4.0 clause 5.2.3b. n is the order of entry in the SIB1-MBMS
+             * schedulingInfoList, x = (n-1)*w, the window starts at subframe a = x mod 10 of the frame with
+             * SFN mod T = FLOOR(x/10), and the time names the SFN boundary at or immediately after its end. */
+            const Phy::Sib1Info s1 = _phy.sib1_info();
+            for (size_t n0 = 0; n0 < s1.sched_info.size() && s1.si_win_len_ms > 0; n0++) {
+              for (uint8_t t : s1.sched_info[n0].sib_types) {
+                uint16_t boundary = 0;
+                if (t == 16 && MBMS_RT::sib16_time::boundary_sfn((uint32_t)n0 + 1, s1.si_win_len_ms, s1.sched_info[n0].si_periodicity_rf,
+                                                         sib16_info.rx_sfn, &boundary)) {
+                  sib16_info.si_periodicity_rf = s1.sched_info[n0].si_periodicity_rf;
+                  sib16_info.si_window_ms      = s1.si_win_len_ms;
+                  sib16_info.si_message_index  = (uint8_t)(n0 + 1);
+                  sib16_info.boundary_sfn      = boundary;
+                  sib16_info.has_boundary      = true;
+                }
+              }
+            }
             if (ti.leap_seconds_r11_present) {
               spdlog::info("SIB16: UTC-GPS leap seconds = {}", ti.leap_seconds_r11);
               sib16_info.has_leap_seconds = true;
