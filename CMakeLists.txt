@@ -89,6 +89,13 @@ add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp
   src/Gw.cpp src/RestHandler.cpp src/MeasurementFileWriter.cpp src/MultichannelRingbuffer.cpp)
 
+enable_testing()
+
+# Wide constrained integers through the vendored srsRAN ASN.1 library.
+add_executable(asn1_wide_integer_test test/asn1_wide_integer_test.cc)
+target_link_libraries(asn1_wide_integer_test rrc_asn1 asn1_utils)
+add_test(NAME asn1_wide_integer_test COMMAND asn1_wide_integer_test)
+
 target_link_libraries( modem
     LINK_PUBLIC
     srsran_phy
