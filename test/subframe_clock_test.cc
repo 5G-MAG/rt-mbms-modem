@@ -68,6 +68,14 @@ int main()
     for (uint32_t t = 5000; t < 10251; t++) c.note(t % 10240, (uint64_t)t * 1000000);
     CHECK(c.latest() && c.latest()->sample_clock_ns == 10250ull * 1000000); // t = 10250 is tti 10 again
   }
+  // The latest note is where the clock stands now.
+  {
+    SubframeClock c;
+    CHECK(!c.last_note());
+    c.note(7, 7000000);
+    c.note(8, 8000000);
+    CHECK(c.last_note() && c.last_note()->tti == 8 && c.last_note()->sample_clock_ns == 8000000);
+  }
   std::printf("subframe_clock_test: all passed\n");
   return 0;
 }

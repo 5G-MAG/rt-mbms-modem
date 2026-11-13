@@ -258,6 +258,7 @@ class Phy {
       _subframe_clock.request(r, (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec);
     }
     std::optional<MBMS_RT::SubframeClock::Anchor> sib16_anchor() const { return _subframe_clock.latest(); }
+    std::optional<MBMS_RT::SubframeClock::Note>   rx_clock() const { return _subframe_clock.last_note(); }
     uint32_t rx_tti() const { return _rx_tti.load(std::memory_order_relaxed); }
 
     /**

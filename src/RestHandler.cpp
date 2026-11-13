@@ -854,6 +854,14 @@ web::json::value RestHandler::sib_info_json() {
     root["sib16"] = value::null();
   }
 
+  // Where the receiver's sample clock stands now (first sample of the latest subframe), so a consumer can take a measurement "now" on it.
+  if (auto note = _phy.rx_clock()) {
+    value c = value::object();
+    c["tti"]             = value(note->tti);
+    c["sample_clock_ns"] = value(note->sample_clock_ns);
+    root["rx_clock"]     = c;
+  }
+
   // MCCH-derived PMCH schedule
   {
     const srsran::mcch_msg_t& mcch = _phy.mcch();

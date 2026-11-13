@@ -56,6 +56,9 @@ public:
     std::lock_guard<std::mutex> lock(_mutex);
     _ring[_next % kHistory] = {tti, sample_clock_ns, true};
     _next++;
+    _last_tti      = tti;
+    _last_clock_ns = sample_clock_ns;
+    _have_last     = true;
     if (_pending && _pending->tti == tti) {
       _anchor  = Anchor{*_pending, sample_clock_ns, host_time_ns};
       _pending.reset();
@@ -77,6 +80,20 @@ public:
     _pending = r;
   }
 
+  struct Note {
+    uint32_t tti;
+    uint64_t sample_clock_ns;
+  };
+  /// The most recent subframe noted: where the receiver's sample clock stands now.
+  std::optional<Note> last_note() const
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!_have_last) {
+      return std::nullopt;
+    }
+    return Note{_last_tti, _last_clock_ns};
+  }
+
   std::optional<Anchor> latest() const
   {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -94,6 +111,9 @@ private:
   size_t                 _next = 0;
   std::optional<Request> _pending;
   std::optional<Anchor>  _anchor;
+  uint32_t               _last_tti      = 0;
+  uint64_t               _last_clock_ns = 0;
+  bool                   _have_last     = false;
 };
 
 } // namespace MBMS_RT
