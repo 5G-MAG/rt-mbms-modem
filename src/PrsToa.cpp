@@ -210,13 +210,16 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
     CellToa out;
     out.cell_id = ci.cell_id;
     out.prs_id = (ci.prs.id == prs::kPrsIdFromCell) ? ci.cell_id : ci.prs.id;
-    const uint32_t tti_nc = (j.tti + ci.sfn_offset) % prs::kSubframesPerSfnCycle;   // this cell's own subframe numbering at the reference cell's occasion
+    // This cell's own subframe numbering at the reference cell's occasion: its SFN = 0 begins `sfn_offset` subframes after the reference cell's, so at a given instant its
+    // subframe number is the reference cell's minus the offset (LPPe subframeOffset = Tnc - Tref), and the reference cell's SFN = 0 began at its subframe -offset.
+    const uint32_t offset_nc = ci.sfn_offset % prs::kSubframesPerSfnCycle;
+    const uint32_t tti_nc = (j.tti + prs::kSubframesPerSfnCycle - offset_nc) % prs::kSubframesPerSfnCycle;
     if (j.cell.mbms_dedicated && !(tti_nc % 10 == 0 && prs::cas_frame(j.cell, (tti_nc / 10) % 1024))) {
       out.skipped = true;       // 15 kHz subframes only, and an MBMS-dedicated cell has them only as cell acquisition subframes
       results.push_back(out);
       continue;
     }
-    if (!prs::active(ci.prs, tti_nc, ci.sfn_offset) || ci.prs.nof_prb > j.cell.nof_prb) {
+    if (!prs::active(ci.prs, tti_nc, (prs::kSubframesPerSfnCycle - offset_nc) % prs::kSubframesPerSfnCycle) || ci.prs.nof_prb > j.cell.nof_prb) {
       results.push_back(out);   // muted in this occasion
       continue;
     }

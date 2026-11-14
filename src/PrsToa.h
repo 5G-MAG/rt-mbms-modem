@@ -53,7 +53,8 @@ class PrsToa {
     // plus the expected RSTD. Both NaN: the whole +-0.75 ms.
     double    expected_rstd_ns = std::nan("");
     double    expected_uncertainty_ns = std::nan("");
-    // Whole subframes by which this cell's subframe numbering runs ahead of the reference cell's (LPPe subframeOffset: SFNnc = SFNref + subframeOffset / 10). The cell's
+    // Whole subframes from the beginning of frame SFN = 0 of the reference cell to the beginning of the next frame SFN = 0 of this cell (LPPe subframeOffset = Tnc - Tref, so
+    // its subframe number is the reference cell's minus this offset). The cell's
     // occasion, muting bit and replica are those of its own subframe number at the reference cell's occasion. On an MBMS-dedicated carrier PRS is only in the cell
     // acquisition subframes (15 kHz only, frames n_f mod 4 = 0): a cell whose own number is not one of them has no PRS there and is reported as skipped.
     uint32_t  sfn_offset = 0;
