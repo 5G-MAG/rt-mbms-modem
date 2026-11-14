@@ -371,6 +371,10 @@ void RestHandler::get(http_request message) {
         alerts.push_back(v);
       }
       message.reply(status_codes::OK, value::array(alerts));
+    } else if (paths[0] == "prs") {
+      /* Time of arrival of the positioning reference signals of the cells the application layer has configured (PUT prs_assistance), with the latest
+       * measurements and counters. See PrsToa.h. */
+      message.reply(status_codes::OK, prs_json());
     } else if (paths[0] == "sib_info") {
       /* Full decoded SIB1-MBMS/SIB13/SIB15/SIB16 content plus the current
        * MCCH-derived PMCH schedule, for the SIB Inspection/Audit page. One
@@ -426,6 +430,49 @@ void RestHandler::put(http_request message) {
       _set_params( a, f, g, sr, bw);
 
       message.reply(status_codes::OK, answer);
+    } else if (paths[0] == "prs_assistance") {
+      /* The PRS information of the reference cell and its neighbours, pushed down from the application layer once it has the assistance data
+       * (slide 15 of the broadcast positioning proposal): {"reference_cell_id": 1, "cells": [{"cell_id": 1, "prs": {"bandwidth_prb": 25,
+       * "configuration_index": 2435, "num_dl_frames": 1, "prs_id": null, "muting": null}}, ...]}. An empty cell list clears it. */
+      value answer = value::object();
+      try {
+        const auto& jval = message.extract_json().get();
+        MBMS_RT::PrsToa::Assistance a;
+        a.reference_cell_id = jval.has_field("reference_cell_id") ? static_cast<uint32_t>(jval.at("reference_cell_id").as_integer()) : 0;
+        if (jval.has_field("cells")) {
+          for (const auto& cv : jval.at("cells").as_array()) {
+            MBMS_RT::PrsToa::CellInfo ci;
+            ci.cell_id = static_cast<uint32_t>(cv.at("cell_id").as_integer());
+            const auto& pv = cv.at("prs");
+            ci.prs.enabled       = true;
+            ci.prs.config_index  = static_cast<uint32_t>(pv.at("configuration_index").as_integer());
+            ci.prs.nof_prb       = static_cast<uint32_t>(pv.at("bandwidth_prb").as_integer());
+            ci.prs.nof_subframes = pv.has_field("num_dl_frames") ? static_cast<uint32_t>(pv.at("num_dl_frames").as_integer()) : 1;
+            if (pv.has_field("prs_id") && !pv.at("prs_id").is_null()) {
+              ci.prs.id = static_cast<uint32_t>(pv.at("prs_id").as_integer());
+            }
+            if (pv.has_field("muting") && !pv.at("muting").is_null()) {
+              ci.prs.muting = pv.at("muting").as_string();
+            }
+            a.cells.push_back(ci);
+          }
+        }
+        std::string why;
+        if (_phy.prs_toa().set_assistance(a, why)) {
+          spdlog::info("PRS assistance data set: {} cells, reference cell {}", a.cells.size(), a.reference_cell_id);
+          answer["ok"] = value::boolean(true);
+          message.reply(status_codes::OK, answer);
+        } else {
+          spdlog::warn("PRS assistance data refused: {}", why);
+          answer["ok"]    = value::boolean(false);
+          answer["error"] = value::string(why);
+          message.reply(status_codes::BadRequest, answer);
+        }
+      } catch (const std::exception& e) {
+        answer["ok"]    = value::boolean(false);
+        answer["error"] = value::string(std::string("malformed PRS assistance data: ") + e.what());
+        message.reply(status_codes::BadRequest, answer);
+      }
     } else if (paths[0] == "chest_cfg_params") {
       value answer;
 
@@ -648,6 +695,65 @@ std::string format_tmgi(const srsran::tmgi_t& tmgi) {
 }
 
 } // namespace
+
+web::json::value RestHandler::prs_json() {
+  using web::json::value;
+  value root = value::object();
+  const auto a = _phy.prs_toa().assistance();
+  if (_phy.prs_toa().has_assistance()) {
+    value av = value::object();
+    av["reference_cell_id"] = value(a.reference_cell_id);
+    std::vector<value> cells;
+    for (const auto& c : a.cells) {
+      value cv = value::object();
+      cv["cell_id"] = value(c.cell_id);
+      value pv = value::object();
+      pv["bandwidth_prb"]       = value(c.prs.nof_prb);
+      pv["configuration_index"] = value(c.prs.config_index);
+      pv["num_dl_frames"]       = value(c.prs.nof_subframes);
+      pv["prs_id"]              = (c.prs.id == MBMS_RT::prs::kPrsIdFromCell) ? value::null() : value(c.prs.id);
+      pv["muting"]              = c.prs.muting.empty() ? value::null() : value::string(c.prs.muting);
+      cv["prs"] = pv;
+      cells.push_back(cv);
+    }
+    av["cells"] = value::array(cells);
+    root["assistance"] = av;
+  } else {
+    root["assistance"] = value::null();
+  }
+  const auto st = _phy.prs_toa().stats();
+  value sv = value::object();
+  sv["windows"]     = value(static_cast<uint64_t>(st.windows));
+  sv["dropped"]     = value(static_cast<uint64_t>(st.dropped));
+  sv["gaps"]        = value(static_cast<uint64_t>(st.gaps));
+  sv["unsupported"] = value(static_cast<uint64_t>(st.unsupported));
+  sv["discarded"]   = value(static_cast<uint64_t>(st.discarded));
+  sv["last_ms"]     = value(st.last_ms);
+  root["stats"] = sv;
+  std::vector<value> ms;
+  for (const auto& m : _phy.prs_toa().measurements()) {
+    value mv = value::object();
+    mv["tti"]             = value(m.tti);
+    mv["sample_clock_ns"] = value(m.sample_clock_ns);
+    mv["sf_len"]          = value(m.sf_len);
+    mv["sample_rate_hz"]  = value(m.sample_rate_hz);
+    std::vector<value> cells;
+    for (const auto& c : m.cells) {
+      value cv = value::object();
+      cv["cell_id"]   = value(c.cell_id);
+      cv["prs_id"]    = value(c.prs_id);
+      cv["present"]   = value::boolean(c.present);
+      cv["toa_ns"]    = value(c.toa_ns);
+      cv["ratio"]     = value(c.ratio);
+      cv["coherence"] = value(c.coherence);
+      cells.push_back(cv);
+    }
+    mv["cells"] = value::array(cells);
+    ms.push_back(mv);
+  }
+  root["measurements"] = value::array(ms);
+  return root;
+}
 
 web::json::value RestHandler::sib_info_json() {
   value root = value::object();

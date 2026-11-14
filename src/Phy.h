@@ -29,6 +29,7 @@
 #include <atomic>
 #include <optional>
 #include <ctime>
+#include "PrsToa.h"
 #include "SubframeClock.h"
 #include <array>
 #include <mutex>
@@ -260,6 +261,10 @@ class Phy {
     std::optional<MBMS_RT::SubframeClock::Anchor> sib16_anchor() const { return _subframe_clock.latest(); }
     std::optional<MBMS_RT::SubframeClock::Note>   rx_clock() const { return _subframe_clock.last_note(); }
     uint32_t rx_tti() const { return _rx_tti.load(std::memory_order_relaxed); }
+
+    /* Time of arrival of the positioning reference signals of several cells (PrsToa.h). The application layer sets the PRS assistance data
+     * (PUT /modem-api/prs_assistance) and reads the measurements (GET /modem-api/prs); get_next_frame() offers every subframe to it. */
+    MBMS_RT::PrsToa& prs_toa() { return _prs_toa; }
 
     /**
      * PSS correlation peak value from the tracking-stage synchronizer (higher
@@ -1036,6 +1041,7 @@ class Phy {
     uint32_t _tti = 0;
     std::atomic<uint32_t> _rx_tti{0};
     MBMS_RT::SubframeClock         _subframe_clock;
+    MBMS_RT::PrsToa                _prs_toa;
     uint32_t _mib_decode_count = 0;
     uint64_t _last_mib_decoded_at = 0;
 

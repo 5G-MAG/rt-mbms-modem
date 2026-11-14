@@ -251,6 +251,7 @@ class RestHandler {
      *  and the current MCCH-derived PMCH schedule, for the SIB Inspection page.
      */
     web::json::value sib_info_json();
+    web::json::value prs_json();
 
     const libconfig::Config& _cfg;
 

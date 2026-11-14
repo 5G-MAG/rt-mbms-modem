@@ -87,12 +87,20 @@ endif()
 
 add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp
-  src/Gw.cpp src/RestHandler.cpp src/MeasurementFileWriter.cpp src/MultichannelRingbuffer.cpp)
+  src/Gw.cpp src/RestHandler.cpp src/MeasurementFileWriter.cpp src/MultichannelRingbuffer.cpp src/PrsToa.cpp)
 
 # Arithmetic of the SIB16 time reference (src/Sib16Time.h), header only.
 enable_testing()
 add_executable(sib16_time_test test/sib16_time_test.cc)
 add_test(NAME sib16_time_test COMMAND sib16_time_test)
+
+# Positioning reference signals and their time of arrival (src/PrsSignal.h), header only, against golden vectors.
+add_executable(prs_signal_test test/prs_signal_test.cc)
+add_test(NAME prs_signal_test COMMAND prs_signal_test ${CMAKE_CURRENT_SOURCE_DIR}/test/prs_golden.txt)
+
+add_executable(prs_toa_test test/prs_toa_test.cc src/PrsToa.cpp)
+target_link_libraries(prs_toa_test Threads::Threads)
+add_test(NAME prs_toa_test COMMAND prs_toa_test)
 
 add_executable(subframe_clock_test test/subframe_clock_test.cc)
 add_test(NAME subframe_clock_test COMMAND subframe_clock_test)

@@ -544,6 +544,19 @@ auto Phy::get_next_frame(cf_t** buffer, uint32_t size) -> bool {
             _ue_sync.frame_total_cnt, (int)_ue_sync.pss_is_stable, _ue_sync.pss_stable_cnt,
             _ue_sync.peak_idx, _ue_sync.next_rf_sample_offset, _ue_sync.mean_sample_offset);
   }
+  if (1 == ret && _prs_toa.has_assistance()) {
+    // Every subframe the receive loop gets goes through here, whichever processor decodes it, so this is where the PRS measurement sees them. The tti and
+    // the sample clock are those noted for this subframe at the top of the loop's iteration.
+    if (auto note = _subframe_clock.last_note()) {
+      MBMS_RT::prs::CellParams cp;
+      cp.nof_prb        = _cell.nof_prb;
+      cp.normal_cp      = SRSRAN_CP_ISNORM(_cell.cp);
+      cp.mbms_dedicated = _cell.mbms_dedicated;
+      cp.nof_ports      = _cell.nof_ports;
+      cp.cell_id        = _cell.id;
+      _prs_toa.push(note->tti, note->sample_clock_ns, reinterpret_cast<const std::complex<float>*>(buffer[0]), _ue_sync.sf_len, cp);
+    }
+  }
   return 1 == ret;
 }
 
