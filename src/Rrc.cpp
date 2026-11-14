@@ -467,21 +467,27 @@ void Rrc::handle_sib_list(const sys_info_r8_ies_s::sib_type_and_info_l_& sib_lis
       }
       case sib_info_item_c::types::sib16_v1130: {
         const auto& sib16 = sib.sib16_v1130();
-        if (sib16.time_info_r11_present) {
-          const auto& ti = sib16.time_info_r11;
-          /* timeInfoUTC counts UTC seconds in 10 ms units since 1900-01-01 (TS 36.331 V19.4.0
-           * clause 6.3.1); it is not a GPS count. Check for the common sentinel 0. */
-          if (ti.time_info_utc_r11 == 0) {
-            spdlog::warn("SIB16: time_info_utc_r11 is zero — ignoring time");
-          } else {
-            uint64_t gps_10ms = ti.time_info_utc_r11;
-            spdlog::info("SIB16: timeInfoUTC {} * 10ms since 1900 ({}s)", gps_10ms, gps_10ms / 100);
+        const auto& ti = sib16.time_info_r11;
+        /* timeInfoUTC counts UTC seconds in 10 ms units since 1900-01-01 (TS 36.331 V19.4.0
+         * clause 6.3.1); it is not a GPS count. Check for the common sentinel 0. timeInfo-r11 is OPTIONAL
+         * and so is timeReferenceInfo-r15: a SIB16 with either one carries a time. */
+        bool have_r11 = false, have_r15 = false;
+        const bool carries_time = MBMS_RT::sib16_time::carries_time(sib16, &have_r11, &have_r15);
+        if (sib16.time_info_r11_present && ti.time_info_utc_r11 == 0) {
+          spdlog::warn("SIB16: time_info_utc_r11 is zero — ignoring it");
+        }
+        if (carries_time) {
+          {
             Phy::Sib16Info sib16_info;
-            sib16_info.has_time_info = true;
-            sib16_info.gps_time_10ms = gps_10ms;
-            sib16_info.time_info_utc_unix_ms = MBMS_RT::sib16_time::time_info_utc_to_unix_ms(gps_10ms);
+            if (have_r11) {
+              uint64_t gps_10ms = ti.time_info_utc_r11;
+              spdlog::info("SIB16: timeInfoUTC {} * 10ms since 1900 ({}s)", gps_10ms, gps_10ms / 100);
+              sib16_info.has_time_info = true;
+              sib16_info.gps_time_10ms = gps_10ms;
+              sib16_info.time_info_utc_unix_ms = MBMS_RT::sib16_time::time_info_utc_to_unix_ms(gps_10ms);
+            }
             sib16_info.rx_sfn = (uint16_t)((_phy.rx_tti() / 10) % 1024);
-            if (sib16.ext && sib16.time_ref_info_r15.is_present()) {
+            if (have_r15) {
               const auto& tr = *sib16.time_ref_info_r15;
               /* time in 0.25 us units = refDays*86400*1000*4000 + refSeconds*1000*4000 + refMilliSeconds*4000
                * + refQuarterMicroSeconds (TS 36.331 V19.4.0 clause 6.3.2) */
@@ -528,12 +534,12 @@ void Rrc::handle_sib_list(const sys_info_r8_ies_s::sib_type_and_info_l_& sib_lis
                 }
               }
             }
-            if (ti.leap_seconds_r11_present) {
+            if (sib16.time_info_r11_present && ti.leap_seconds_r11_present) {
               spdlog::info("SIB16: UTC-GPS leap seconds = {}", ti.leap_seconds_r11);
               sib16_info.has_leap_seconds = true;
               sib16_info.leap_seconds     = ti.leap_seconds_r11;
             }
-            if (ti.local_time_offset_r11_present) {
+            if (sib16.time_info_r11_present && ti.local_time_offset_r11_present) {
               spdlog::info("SIB16: local time offset = {} * 15min", ti.local_time_offset_r11);
               sib16_info.has_local_time_offset   = true;
               sib16_info.local_time_offset_15min = ti.local_time_offset_r11;

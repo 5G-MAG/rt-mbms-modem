@@ -65,6 +65,18 @@ inline bool boundary_sfn(uint32_t n, uint32_t w_ms, uint32_t period_rf, uint32_t
   return true;
 }
 
+/**
+ * What a decoded SystemInformationBlockType16 carries. timeInfo-r11 is OPTIONAL in the ASN.1 and so is timeReferenceInfo-r15 (clause 6.3.2); a SIB16 with either one
+ * names a time. timeInfoUTC of 0 is taken as not set. `Sib16` is the decoded type (asn1::rrc::sib_type16_r11_s).
+ */
+template <class Sib16>
+inline bool carries_time(const Sib16& s, bool* have_r11, bool* have_r15)
+{
+  *have_r11 = s.time_info_r11_present && s.time_info_r11.time_info_utc_r11 != 0;
+  *have_r15 = s.ext && s.time_ref_info_r15.is_present();
+  return *have_r11 || *have_r15;
+}
+
 } // namespace sib16_time
 } // namespace MBMS_RT
 

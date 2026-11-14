@@ -105,6 +105,11 @@ add_test(NAME prs_toa_test COMMAND prs_toa_test)
 add_executable(subframe_clock_test test/subframe_clock_test.cc)
 add_test(NAME subframe_clock_test COMMAND subframe_clock_test)
 
+# Which time a decoded SIB16 carries (timeInfo-r11 and timeReferenceInfo-r15 are both OPTIONAL).
+add_executable(sib16_presence_test test/sib16_presence_test.cc)
+target_link_libraries(sib16_presence_test rrc_asn1 asn1_utils)
+add_test(NAME sib16_presence_test COMMAND sib16_presence_test)
+
 # Wide constrained integers through the vendored srsRAN ASN.1 library.
 add_executable(asn1_wide_integer_test test/asn1_wide_integer_test.cc)
 target_link_libraries(asn1_wide_integer_test rrc_asn1 asn1_utils)
