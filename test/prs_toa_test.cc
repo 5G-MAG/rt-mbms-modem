@@ -441,12 +441,14 @@ int main() {
     CHECK(p.set_assistance(d, w) && p.measurements().empty(), "a change of the cyclic prefix drops it");
   }
 
-  // --- a neighbour whose subframe numbering runs ahead of the reference cell's by whole cell acquisition periods: its muting pattern counts occasions in its own numbering
+  // --- a neighbour whose subframe numbering runs ahead of the reference cell's: its occasions are at its own subframe numbers, and its muting sequence starts at
+  // the first occasion after the beginning of the reference cell's SFN = 0 (TS 37.355, prs-MutingInfo)
   {
-    auto run_off = [&](uint32_t offset, uint32_t seed) {
+    auto run_off = [&](uint32_t index, uint32_t offset, uint32_t seed) {
       PrsToa p;
       std::string w;
       auto a = make_assistance({1, 2});
+      a.cells[1].prs.config_index = index;
       a.cells[1].prs.muting = "10";
       a.cells[1].sfn_offset = offset;
       CHECK(p.set_assistance(a, w), "assistance with subframe offset %u: %s", offset, w.c_str());
@@ -455,11 +457,19 @@ int main() {
       auto ms = p.measurements();
       return ms.empty() ? PrsToa::Measurement{} : ms[0];
     };
-    auto m0 = run_off(0, 51);     // tti 40 is occasion 1 of this cell: bit '0', muted
-    auto m1 = run_off(40, 52);    // in its numbering the occasion is 2: bit '1', present
-    if (m0.cells.size() == 2 && m1.cells.size() == 2) {
+    auto m0 = run_off(2435, 0, 51);       // same period as the reference: tti 40 is the cell's occasion 1 counted from SFN 0: bit '0', muted
+    auto m1 = run_off(2435, 40, 52);      // its own number is 80, and the reference's SFN 0 is its subframe 40: still occasion 1, muted
+    auto m2 = run_off(2475, 40, 53);      // period 80: own number 80 is the first occasion after the reference's SFN 0 (subframe 40): occasion 0, bit '1', present
+    auto m3 = run_off(2475, 200, 54);     // own number 240, the reference's SFN 0 is its subframe 200: the first occasion after it is 240, occasion 0 again
+    auto m4 = run_off(2475, 120, 55);     // own number 160, the reference's SFN 0 is its subframe 120: first occasion 160, occasion 0
+    auto m5 = run_off(2475, 80, 56);      // own number 120 is not an occasion of a period of 80: nothing to measure
+    if (m0.cells.size() == 2 && m1.cells.size() == 2 && m2.cells.size() == 2 && m3.cells.size() == 2 && m4.cells.size() == 2 && m5.cells.size() == 2) {
       CHECK(m0.cells[0].present && !m0.cells[1].present, "offset 0: the neighbour is muted at this occasion (%d)", m0.cells[1].present);
-      CHECK(m1.cells[0].present && m1.cells[1].present && std::fabs(m1.cells[1].toa_ns - 150800.0) < 5.0, "offset 40: the neighbour is present (%d, %.1f ns)", m1.cells[1].present, m1.cells[1].toa_ns);
+      CHECK(m1.cells[0].present && !m1.cells[1].present, "offset 40, same period: still occasion 1, muted (%d)", m1.cells[1].present);
+      CHECK(m2.cells[1].present && std::fabs(m2.cells[1].toa_ns - 150800.0) < 5.0, "period 80, offset 40: counted from the reference's SFN 0, occasion 0, present (%d, %.1f ns)", m2.cells[1].present, m2.cells[1].toa_ns);
+      CHECK(m3.cells[1].present, "period 80, offset 200: occasion 0, present (%d)", m3.cells[1].present);
+      CHECK(m4.cells[1].present, "period 80, offset 120: occasion 0, present (%d)", m4.cells[1].present);
+      CHECK(!m5.cells[1].present, "period 80, offset 80: own number 120 carries no occasion (%d)", m5.cells[1].present);
     }
     PrsToa p;
     std::string w;

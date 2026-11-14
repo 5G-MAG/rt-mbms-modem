@@ -216,7 +216,7 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
       results.push_back(out);
       continue;
     }
-    if (!prs::active(ci.prs, tti_nc) || ci.prs.nof_prb > j.cell.nof_prb) {
+    if (!prs::active(ci.prs, tti_nc, ci.sfn_offset) || ci.prs.nof_prb > j.cell.nof_prb) {
       results.push_back(out);   // muted in this occasion
       continue;
     }

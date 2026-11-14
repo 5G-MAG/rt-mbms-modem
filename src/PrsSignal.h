@@ -77,8 +77,10 @@ inline bool period_offset(uint32_t config_index, uint32_t* period, uint32_t* off
   return false;
 }
 
-/** True if PRS is transmitted in the subframe `tti` = 10 n_f + subframe (modulo 10240): one of the N_PRS consecutive subframes of an occasion, not muted. */
-inline bool active(const Cfg& cfg, uint32_t tti) {
+/** True if PRS is transmitted in the subframe `tti` = 10 n_f + subframe (modulo 10240): one of the N_PRS consecutive subframes of an occasion, not muted.
+ *  `muting_origin` is the subframe, in the numbering of the cell the configuration belongs to, at which the assistance data reference cell's SFN = 0 begins
+ *  (0 for the reference cell itself): TS 37.355 counts the first bit of the muting sequence from the first occasion that starts after that point. */
+inline bool active(const Cfg& cfg, uint32_t tti, uint32_t muting_origin = 0) {
   uint32_t period = 0, offset = 0;
   if (!cfg.enabled || !period_offset(cfg.config_index, &period, &offset)) return false;
   uint32_t sf = tti % kSubframesPerSfnCycle;
@@ -86,8 +88,11 @@ inline bool active(const Cfg& cfg, uint32_t tti) {
     uint32_t start = (sf + kSubframesPerSfnCycle - j) % kSubframesPerSfnCycle;
     if ((start + kSubframesPerSfnCycle - offset) % period != 0) continue;
     if (cfg.muting.empty()) return true;
-    // occasions are counted from SFN 0 within each cycle of 10240 subframes, so a long muting sequence only ever reaches its first 10240 / T_PRS bits
-    uint32_t occasion = ((start + kSubframesPerSfnCycle - offset) % kSubframesPerSfnCycle) / period;
+    // occasions are counted from the reference cell's SFN 0 within each cycle of 10240 subframes (T_PRS divides 10240), so a long muting sequence only ever
+    // reaches its first 10240 / T_PRS bits; `gap` is the distance from the origin to the first occasion at or after it
+    const uint32_t origin = muting_origin % kSubframesPerSfnCycle;
+    const uint32_t gap = (offset % period + period - origin % period) % period;
+    const uint32_t occasion = (((start + kSubframesPerSfnCycle - origin) % kSubframesPerSfnCycle) - gap) / period;
     return cfg.muting[occasion % cfg.muting.size()] == '1';
   }
   return false;

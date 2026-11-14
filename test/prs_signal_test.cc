@@ -225,6 +225,19 @@ static void test_mask_frames() {
   }
 }
 
+// The muting sequence starts at the first occasion at or after the reference cell's SFN = 0, given in the cell's own subframe numbers (TS 37.355, prs-MutingInfo)
+static void test_muting_origin() {
+  Cfg cfg; cfg.enabled = true; cfg.config_index = 2475; cfg.nof_subframes = 1; cfg.muting = "10";   // T_PRS 80, offset 0
+  CHECK(!active(cfg, 80, 0) && active(cfg, 0, 0) && active(cfg, 160, 0), "origin 0: occasion 0 at 0 sent, occasion 1 at 80 muted, occasion 2 at 160 sent");
+  CHECK(active(cfg, 80, 40) && !active(cfg, 160, 40) && active(cfg, 240, 40), "origin 40: the first occasion is 80 (sent), then 160 muted, 240 sent");
+  CHECK(active(cfg, 80, 80) && !active(cfg, 160, 80), "origin 80: an occasion at the origin is the first one");
+  CHECK(active(cfg, 80, 41) && !active(cfg, 160, 41) && active(cfg, 240, 41), "origin 41: the first occasion is 80, bit 0 (sent), then 160 muted");
+  CHECK(active(cfg, 0, 10200) && !active(cfg, 80, 10200), "origin 10200: the first occasion after it is subframe 0 of the next cycle (sent), then 80 muted");
+  cfg.config_index = 2435; cfg.muting = "0110";   // T_PRS 40, offset 0
+  const bool want[] = {false, true, true, false, false, true, true, false};
+  for (uint32_t k = 0; k < 8; k++) CHECK(active(cfg, 40 * (k + 2), 60) == want[k], "T_PRS 40, origin 60: occasion %u sent %d, wanted %d", k, active(cfg, 40 * (k + 2), 60), want[k]);
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) { printf("usage: prs_signal_test golden.txt\n"); return 2; }
   std::ifstream f(argv[1]);
@@ -243,6 +256,7 @@ int main(int argc, char** argv) {
   CHECK(actives >= 12, "only %d activity cases read", actives);
   test_estimator();
   test_mask_frames();
+  test_muting_origin();
   printf("prs_signal_test: %d slot cases, %d waveforms, %d activity cases, %d failures\n", cases, waves, actives, failures);
   return failures ? 1 : 0;
 }
