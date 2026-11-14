@@ -97,6 +97,10 @@ bool PrsToa::set_assistance(const Assistance& a, std::string& why) {
       why = "cell " + std::to_string(c.cell_id) + ": the search window needs both an expected RSTD (within +-1 ms) and a non-negative uncertainty, or neither";
       return false;
     }
+    if (c.sfn_offset % 40 != 0 || c.sfn_offset > 10229) {
+      why = "cell " + std::to_string(c.cell_id) + ": subframeOffset " + std::to_string(c.sfn_offset) + " is not supported: only a multiple of 40 subframes (whole cell acquisition periods), 0..10229";
+      return false;
+    }
     if (c.prs.config_index != ref->prs.config_index) {
       why = "cell " + std::to_string(c.cell_id) + ": a PRS configuration index different from the reference cell's (subframe offsets between cells) is not supported";
       return false;
@@ -108,7 +112,7 @@ bool PrsToa::set_assistance(const Assistance& a, std::string& why) {
   bool windows_only = _have.load() && a.reference_cell_id == _assistance.reference_cell_id && a.cells.size() == _assistance.cells.size();
   for (size_t i = 0; windows_only && i < a.cells.size(); i++) {
     const CellInfo &x = a.cells[i], &y = _assistance.cells[i];
-    windows_only = x.cell_id == y.cell_id && x.cp == y.cp && x.prs.config_index == y.prs.config_index && x.prs.nof_prb == y.prs.nof_prb &&
+    windows_only = x.cell_id == y.cell_id && x.cp == y.cp && x.sfn_offset == y.sfn_offset && x.prs.config_index == y.prs.config_index && x.prs.nof_prb == y.prs.nof_prb &&
                    x.prs.nof_subframes == y.prs.nof_subframes && x.prs.id == y.prs.id && x.prs.muting == y.prs.muting;
   }
   const bool keep = windows_only && !a.cells.empty();
@@ -210,14 +214,15 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
     CellToa out;
     out.cell_id = ci.cell_id;
     out.prs_id = (ci.prs.id == prs::kPrsIdFromCell) ? ci.cell_id : ci.prs.id;
-    if (!prs::active(ci.prs, j.tti) || ci.prs.nof_prb > j.cell.nof_prb) {
+    const uint32_t tti_nc = (j.tti + ci.sfn_offset) % prs::kSubframesPerSfnCycle;   // this cell's own subframe numbering at the reference cell's occasion
+    if (!prs::active(ci.prs, tti_nc) || ci.prs.nof_prb > j.cell.nof_prb) {
       results.push_back(out);   // muted in this occasion
       continue;
     }
     prs::CellParams cp = j.cell;
     cp.cell_id = ci.cell_id;
     if (ci.cp >= 0) cp.normal_cp = (ci.cp == 1);
-    const std::vector<prs::cplx> ref = prs::subframe_waveform(ci.prs, cp, (j.tti / 10) % 1024, j.tti % 10, n_fft);
+    const std::vector<prs::cplx> ref = prs::subframe_waveform(ci.prs, cp, (tti_nc / 10) % 1024, tti_nc % 10, n_fft);
     int peak_lo = std::numeric_limits<int>::min(), peak_hi = std::numeric_limits<int>::max();
     const bool is_ref = ci.cell_id == j.assistance.reference_cell_id;
     if (!is_ref && have_ref && std::isfinite(ci.expected_rstd_ns) && std::isfinite(ci.expected_uncertainty_ns)) {

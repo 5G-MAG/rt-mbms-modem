@@ -449,6 +449,11 @@ void RestHandler::put(http_request message) {
               else if (cpl == "extended") ci.cp = 0;
               else throw std::runtime_error("cell " + std::to_string(ci.cell_id) + ": cp_length must be \"normal\", \"extended\" or null, not \"" + cpl + "\"");
             }
+            if (cv.has_field("subframe_offset") && !cv.at("subframe_offset").is_null()) {
+              const int64_t off = cv.at("subframe_offset").as_number().to_int64();
+              if (off < 0 || off > 10229) throw std::runtime_error("cell " + std::to_string(ci.cell_id) + ": subframe_offset must be 0..10229");
+              ci.sfn_offset = static_cast<uint32_t>(off);
+            }
             auto opt_number = [&cv](const char* key) {
               return (cv.has_field(key) && !cv.at(key).is_null()) ? cv.at(key).as_double() : std::nan("");
             };
@@ -718,6 +723,7 @@ web::json::value RestHandler::prs_json() {
     for (const auto& c : a.cells) {
       value cv = value::object();
       cv["cell_id"] = value(c.cell_id);
+      cv["subframe_offset"] = value(c.sfn_offset);
       cv["cp_length"] = c.cp < 0 ? value::null() : value::string(c.cp == 1 ? "normal" : "extended");
       cv["expected_rstd_ns"] = std::isfinite(c.expected_rstd_ns) ? value(c.expected_rstd_ns) : value::null();
       cv["expected_rstd_uncertainty_ns"] = std::isfinite(c.expected_uncertainty_ns) ? value(c.expected_uncertainty_ns) : value::null();

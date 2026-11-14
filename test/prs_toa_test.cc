@@ -440,6 +440,40 @@ int main() {
     CHECK(p.set_assistance(d, w) && p.measurements().empty(), "a change of the cyclic prefix drops it");
   }
 
+  // --- a neighbour whose subframe numbering runs ahead of the reference cell's by whole cell acquisition periods: its muting pattern counts occasions in its own numbering
+  {
+    auto run_off = [&](uint32_t offset, uint32_t seed) {
+      PrsToa p;
+      std::string w;
+      auto a = make_assistance({1, 2});
+      a.cells[1].prs.muting = "10";
+      a.cells[1].sfn_offset = offset;
+      CHECK(p.set_assistance(a, w), "assistance with subframe offset %u: %s", offset, w.c_str());
+      feed(p, 40, three_subframes({{1, 12.0e-6, 0}, {2, 150.8e-6, 0}}, 40, 30.0, seed), cell);
+      CHECK(wait_for(p, 1), "measurement with subframe offset %u", offset);
+      auto ms = p.measurements();
+      return ms.empty() ? PrsToa::Measurement{} : ms[0];
+    };
+    auto m0 = run_off(0, 51);     // tti 40 is occasion 1 of this cell: bit '0', muted
+    auto m1 = run_off(40, 52);    // in its numbering the occasion is 2: bit '1', present
+    if (m0.cells.size() == 2 && m1.cells.size() == 2) {
+      CHECK(m0.cells[0].present && !m0.cells[1].present, "offset 0: the neighbour is muted at this occasion (%d)", m0.cells[1].present);
+      CHECK(m1.cells[0].present && m1.cells[1].present && std::fabs(m1.cells[1].toa_ns - 150800.0) < 5.0, "offset 40: the neighbour is present (%d, %.1f ns)", m1.cells[1].present, m1.cells[1].toa_ns);
+    }
+    PrsToa p;
+    std::string w;
+    auto a = make_assistance({1, 2});
+    a.cells[1].sfn_offset = 20;
+    CHECK(!p.set_assistance(a, w) && w.find("subframeOffset 20") != std::string::npos, "an offset of 20 subframes is refused with its reason: %s", w.c_str());
+    a.cells[1].sfn_offset = 10280;
+    CHECK(!p.set_assistance(a, w), "an offset beyond 10229 is refused");
+    a.cells[1].sfn_offset = 80;
+    CHECK(p.set_assistance(a, w), "an offset of 80 is accepted: %s", w.c_str());
+    CHECK(p.assistance().cells[1].sfn_offset == 80, "and kept");
+    auto b = a; b.cells[1].sfn_offset = 120;
+    CHECK(p.set_assistance(b, w) && p.measurements().empty(), "a change of the offset is a change of what is measured");
+  }
+
   // --- nothing is kept without assistance
   {
     PrsToa p;

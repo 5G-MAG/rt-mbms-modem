@@ -41,7 +41,7 @@ namespace MBMS_RT {
  * arrival against the start of the middle subframe on the modem's own grid, which the serving cell's synchronisation defines; the same offset is in every
  * cell's figure, so differences between cells (the RSTD of TS 36.214 clause 5.1.12) do not contain it.
  *
- * Supported: cells whose PRS occasions are the reference cell's own (no subframe or slot offsets between cells) and one subframe per occasion (N_PRS 1),
+ * Supported: cells whose PRS occasions are the reference cell's own (no slot offset between cells; a subframe offset only in whole cell acquisition periods of 40 subframes) and one subframe per occasion (N_PRS 1),
  * which is what an MBMS-dedicated cell can have (PRS is defined for 15 kHz only and the cell acquisition subframes are its only 15 kHz subframes).
  */
 class PrsToa {
@@ -53,6 +53,10 @@ class PrsToa {
     // plus the expected RSTD. Both NaN: the whole +-0.75 ms.
     double    expected_rstd_ns = std::nan("");
     double    expected_uncertainty_ns = std::nan("");
+    // Whole subframes by which this cell's subframe numbering runs ahead of the reference cell's (LPPe subframeOffset: SFNnc = SFNref + subframeOffset / 10). Its muting
+    // pattern counts occasions in its own numbering. Only a multiple of 40 is supported: on an MBMS-dedicated carrier PRS is only in the cell acquisition subframes
+    // (15 kHz only), which are in frames n_f mod 4 = 0, so only an offset of whole cell acquisition periods keeps this cell's one at the reference cell's.
+    uint32_t  sfn_offset = 0;
     int       cp = -1;   // this cell's cyclic prefix (TS 37.355 cpLength of OTDOA assistance data, per cell): 0 extended, 1 normal, -1 the serving cell's
   };
   struct Assistance {
