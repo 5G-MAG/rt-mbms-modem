@@ -102,7 +102,7 @@ inline std::vector<char> sync_pbch_mask(const CellParams& c, uint32_t n_f, uint3
   std::vector<char> mask(width * nsym, 0);
   bool present, sync_slot;
   if (c.mbms_dedicated) {
-    present = cas_frame(c, n_f);
+    present = (n_f % 4 == 0);   // clauses 6.11.1.2 and 6.6.4: whatever the bandwidth; cas_frame() is the frame set of the cell acquisition subframes (6.6.4.1)
     sync_slot = (n_s == 0);
   } else {
     present = true;

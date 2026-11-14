@@ -207,6 +207,24 @@ static void test_estimator() {
   }
 }
 
+// The PSS, SSS and PBCH-core exclusion of an MBMS-dedicated cell is in the frames with n_f mod 4 = 0 whatever the bandwidth (TS 36.211 clauses 6.11.1.2 and 6.6.4), not in
+// the frames of the cell acquisition subframes (clause 6.6.4.1: n_f mod 8 = 4 below 25 PRB).
+static void test_mask_frames() {
+  for (uint32_t prb : {6u, 15u, 25u, 50u}) {
+    CellParams c; c.nof_prb = prb; c.normal_cp = true; c.mbms_dedicated = true;
+    const uint32_t width = 12 * prb, centre = 6 * prb;
+    for (uint32_t n_f = 0; n_f < 16; n_f++) {
+      const bool want = n_f % 4 == 0;
+      auto m0 = sync_pbch_mask(c, n_f, 0);
+      CHECK((m0[6 * width + centre] != 0) == want && (m0[5 * width + centre] != 0) == want, "%u PRB frame %u: PSS/SSS mask %d, wanted %d", prb, n_f, m0[6 * width + centre] != 0, want);
+      auto m1 = sync_pbch_mask(c, n_f, 1);
+      CHECK((m1[centre - 36] != 0 && m1[3 * width + centre + 35] != 0) == want, "%u PRB frame %u: PBCH core mask wanted %d", prb, n_f, want);
+      auto m10 = sync_pbch_mask(c, n_f, 10);
+      CHECK(m10[6 * width + centre] == 0, "%u PRB frame %u: no PSS in slot 10 of an MBMS-dedicated cell", prb, n_f);
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) { printf("usage: prs_signal_test golden.txt\n"); return 2; }
   std::ifstream f(argv[1]);
@@ -224,6 +242,7 @@ int main(int argc, char** argv) {
   CHECK(waves >= 4, "only %d waveform cases read", waves);
   CHECK(actives >= 12, "only %d activity cases read", actives);
   test_estimator();
+  test_mask_frames();
   printf("prs_signal_test: %d slot cases, %d waveforms, %d activity cases, %d failures\n", cases, waves, actives, failures);
   return failures ? 1 : 0;
 }
