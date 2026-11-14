@@ -49,6 +49,7 @@ class PrsToa {
   struct CellInfo {
     uint32_t  cell_id = 0;
     prs::Cfg  prs;
+    int       cp = -1;   // this cell's cyclic prefix (TS 37.355 cpLength of OTDOA assistance data, per cell): 0 extended, 1 normal, -1 the serving cell's
   };
   struct Assistance {
     uint32_t              reference_cell_id = 0;

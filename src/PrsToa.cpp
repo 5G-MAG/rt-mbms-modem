@@ -189,6 +189,7 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
     }
     prs::CellParams cp = j.cell;
     cp.cell_id = ci.cell_id;
+    if (ci.cp >= 0) cp.normal_cp = (ci.cp == 1);
     const std::vector<prs::cplx> ref = prs::subframe_waveform(ci.prs, cp, (j.tti / 10) % 1024, j.tti % 10, n_fft);
     const prs::Toa t = prs::correlate(prepared, j.window, ref, static_cast<int>(j.sf_len) - half, static_cast<int>(j.sf_len) + half);
     if (t.ok) {

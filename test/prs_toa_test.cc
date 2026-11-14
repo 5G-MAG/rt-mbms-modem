@@ -26,7 +26,7 @@ static int failures = 0;
 static const uint32_t kNfft = 512, kSfLen = 7680;
 static const double kFs = 7.68e6;
 
-struct Syn { uint32_t cell_id; double delay_s; double power_db; };
+struct Syn { uint32_t cell_id; double delay_s; double power_db; bool normal_cp = false; };
 
 // three consecutive subframes holding the cells' PRS subframe (subframe 0, n_f of the middle one) at fractional delays, plus noise
 static std::vector<std::complex<float>> three_subframes(const std::vector<Syn>& cells, uint32_t mid_tti, double snr_db, uint32_t seed) {
@@ -35,7 +35,7 @@ static std::vector<std::complex<float>> three_subframes(const std::vector<Syn>& 
   std::vector<cplx> sum(m, cplx(0, 0));
   for (const auto& c : cells) {
     Cfg cfg; cfg.enabled = true; cfg.id = c.cell_id; cfg.config_index = 2435; cfg.nof_prb = 25;
-    CellParams cp; cp.nof_prb = 25; cp.normal_cp = false; cp.mbms_dedicated = true; cp.nof_ports = 1; cp.cell_id = c.cell_id;
+    CellParams cp; cp.nof_prb = 25; cp.normal_cp = c.normal_cp; cp.mbms_dedicated = true; cp.nof_ports = 1; cp.cell_id = c.cell_id;
     auto w = subframe_waveform(cfg, cp, (mid_tti / 10) % 1024, mid_tti % 10, kNfft);
     std::vector<cplx> pad(m, cplx(0, 0));
     for (size_t i = 0; i < w.size(); i++) pad[kSfLen + i] = w[i] * static_cast<float>(std::pow(10.0, c.power_db / 20.0));
@@ -293,6 +293,40 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(3000));
     CHECK(p.measurements().empty(), "a measurement finished after the clearing is not kept (%zu kept)", p.measurements().size());
     CHECK(p.stats().discarded == 2, "and it is counted: %llu", (unsigned long long)p.stats().discarded);
+  }
+
+  // --- a cell with its own cyclic prefix: cell 2 sends normal CP PRS while the serving cell (and cells 1, 3, 4) are extended CP
+  {
+    std::vector<Syn> mixed = {{1, 12.0e-6, 0}, {2, 150.8e-6, 0, true}, {3, -38.4e-6, 0}};
+    auto w = three_subframes(mixed, 40, 30.0, 21);
+    {
+      PrsToa p;
+      auto a = make_assistance({1, 2, 3});
+      a.cells[1].cp = 1;   // the document states normal CP for cell 2
+      CHECK(p.set_assistance(a, why), "%s", why.c_str());
+      CHECK(p.assistance().cells[1].cp == 1 && p.assistance().cells[0].cp == -1, "the cyclic prefix is kept per cell");
+      feed(p, 40, w, cell);
+      CHECK(wait_for(p, 1), "mixed measurement expected");
+      auto ms = p.measurements();
+      if (!ms.empty()) {
+        for (size_t i = 0; i < 3; i++) {
+          CHECK(ms[0].cells[i].present, "mixed: cell %zu present", i + 1);
+          CHECK(std::fabs(ms[0].cells[i].toa_ns - mixed[i].delay_s * 1e9) < 5.0, "mixed: cell %zu toa %.2f ns, truth %.2f ns", i + 1, ms[0].cells[i].toa_ns, mixed[i].delay_s * 1e9);
+        }
+      }
+    }
+    {   // without the override the serving cell's prefix is used for cell 2 and its PRS is not found
+      PrsToa p;
+      CHECK(p.set_assistance(make_assistance({1, 2, 3}), why), "%s", why.c_str());
+      feed(p, 40, w, cell);
+      CHECK(wait_for(p, 1), "measurement expected");
+      auto ms = p.measurements();
+      if (!ms.empty()) {
+        CHECK(ms[0].cells[0].present && ms[0].cells[2].present, "cells with the serving cell's prefix are still found");
+        CHECK(!ms[0].cells[1].present || ms[0].cells[1].ratio < 9.0 || std::fabs(ms[0].cells[1].toa_ns - mixed[1].delay_s * 1e9) > 100.0,
+              "cell 2 must not be measured correctly with the wrong prefix: present %d ratio %.1f toa %.1f", ms[0].cells[1].present, ms[0].cells[1].ratio, ms[0].cells[1].toa_ns);
+      }
+    }
   }
 
   // --- nothing is kept without assistance

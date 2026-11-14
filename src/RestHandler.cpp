@@ -432,7 +432,7 @@ void RestHandler::put(http_request message) {
       message.reply(status_codes::OK, answer);
     } else if (paths[0] == "prs_assistance") {
       /* The PRS information of the reference cell and its neighbours, pushed down from the application layer once it has the assistance data
-       * (slide 15 of the broadcast positioning proposal): {"reference_cell_id": 1, "cells": [{"cell_id": 1, "prs": {"bandwidth_prb": 25,
+       * (slide 15 of the broadcast positioning proposal): {"reference_cell_id": 1, "cells": [{"cell_id": 1, "cp_length": null, "prs": {"bandwidth_prb": 25,
        * "configuration_index": 2435, "num_dl_frames": 1, "prs_id": null, "muting": null}}, ...]}. An empty cell list clears it. */
       value answer = value::object();
       try {
@@ -443,6 +443,12 @@ void RestHandler::put(http_request message) {
           for (const auto& cv : jval.at("cells").as_array()) {
             MBMS_RT::PrsToa::CellInfo ci;
             ci.cell_id = static_cast<uint32_t>(cv.at("cell_id").as_integer());
+            if (cv.has_field("cp_length") && !cv.at("cp_length").is_null()) {
+              const std::string cpl = cv.at("cp_length").as_string();
+              if (cpl == "normal") ci.cp = 1;
+              else if (cpl == "extended") ci.cp = 0;
+              else throw std::runtime_error("cell " + std::to_string(ci.cell_id) + ": cp_length must be \"normal\", \"extended\" or null, not \"" + cpl + "\"");
+            }
             const auto& pv = cv.at("prs");
             ci.prs.enabled       = true;
             ci.prs.config_index  = static_cast<uint32_t>(pv.at("configuration_index").as_integer());
@@ -707,6 +713,7 @@ web::json::value RestHandler::prs_json() {
     for (const auto& c : a.cells) {
       value cv = value::object();
       cv["cell_id"] = value(c.cell_id);
+      cv["cp_length"] = c.cp < 0 ? value::null() : value::string(c.cp == 1 ? "normal" : "extended");
       value pv = value::object();
       pv["bandwidth_prb"]       = value(c.prs.nof_prb);
       pv["configuration_index"] = value(c.prs.config_index);
