@@ -5,7 +5,6 @@
 //   wave <name> <cell_id> <n_rb_dl> <normal_cp> <n_samples> <energy> <count>  then <count> lines "index re im"
 //   window <name> <n_rb_dl> <normal_cp> <n_cells> <n_samples>                then <n_cells> lines "cell_id delay_ns power_db", then <n_samples> lines "re im"
 
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -114,9 +113,7 @@ static void test_noisy_overlap() {
   }
   for (auto& v : window) v += cplx(static_cast<float>(nd(rng)), static_cast<float>(nd(rng)));
   const int half = static_cast<int>(0.75e-3 * fs);
-  const auto t0 = std::chrono::steady_clock::now();
   const auto toa = sync::measure_cells(window, refs, static_cast<int>(sf_len) - half, static_cast<int>(sf_len) + half);
-  printf("four cells at 25 PRB measured in %.1f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
   for (size_t i = 0; i < cells.size(); i++) {
     const double got = (toa[i].lag - sf_len) / fs * 1e9;
     CHECK(toa[i].ok && std::fabs(got - cells[i].delay_ns) < 25.0, "four cells at %.0f dB: cell %u measured %.1f ns, built at %.1f ns", snr_db, cells[i].id, got, cells[i].delay_ns);
