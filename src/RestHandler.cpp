@@ -439,12 +439,6 @@ void RestHandler::put(http_request message) {
         const auto& jval = message.extract_json().get();
         MBMS_RT::PrsToa::Assistance a;
         a.reference_cell_id = jval.has_field("reference_cell_id") ? static_cast<uint32_t>(jval.at("reference_cell_id").as_integer()) : 0;
-        if (jval.has_field("signal") && !jval.at("signal").is_null()) {
-          const std::string sig = jval.at("signal").as_string();
-          if (sig == "prs") a.signal = MBMS_RT::PrsToa::Signal::Prs;
-          else if (sig == "pss_sss") a.signal = MBMS_RT::PrsToa::Signal::PssSss;
-          else throw std::runtime_error("signal must be \"prs\" or \"pss_sss\", not \"" + sig + "\"");
-        }
         if (jval.has_field("cells")) {
           for (const auto& cv : jval.at("cells").as_array()) {
             MBMS_RT::PrsToa::CellInfo ci;
@@ -725,7 +719,6 @@ web::json::value RestHandler::prs_json() {
   if (_phy.prs_toa().has_assistance()) {
     value av = value::object();
     av["reference_cell_id"] = value(a.reference_cell_id);
-    av["signal"] = value::string(a.signal == MBMS_RT::PrsToa::Signal::PssSss ? "pss_sss" : "prs");
     std::vector<value> cells;
     for (const auto& c : a.cells) {
       value cv = value::object();

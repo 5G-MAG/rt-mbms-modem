@@ -59,13 +59,8 @@ class PrsToa {
     uint32_t  sfn_offset = 0;
     int       cp = -1;   // this cell's cyclic prefix (TS 37.355 cpLength of OTDOA assistance data, per cell): 0 extended, 1 normal, -1 the serving cell's
   };
-  /** What the time of arrival of a cell is taken from. Prs: the PRS of the assistance data, at the reference cell's PRS occasions. PssSss: the PSS and SSS of each
-   *  cell's cell acquisition subframe (the proposal's alternative where those subframes are not SFN'ed, slide 13 Note 1), at every cell acquisition subframe of the
-   *  carrier; only on an MBMS-dedicated carrier (the pattern of clauses 6.11.1.2 and 6.11.2.2 is that of such a cell), muting and the search window do not apply. */
-  enum class Signal { Prs, PssSss };
   struct Assistance {
     uint32_t              reference_cell_id = 0;
-    Signal                signal = Signal::Prs;
     std::vector<CellInfo> cells;   // including the reference cell
   };
   struct CellToa {
@@ -88,7 +83,7 @@ class PrsToa {
     uint64_t windows = 0;     // measurements made
     uint64_t dropped = 0;     // occasions skipped because the previous measurement was still running
     uint64_t gaps = 0;        // occasions skipped because the three subframes were not consecutive or differed in length
-    uint64_t unsupported = 0; // occasions skipped because the sampling is not one the correlator handles, or the PSS/SSS signal was asked for on a carrier that is not MBMS-dedicated
+    uint64_t unsupported = 0; // occasions skipped because the sampling is not one the correlator handles
     uint64_t discarded = 0;   // measurements finished after the assistance data had changed, and so dropped
     uint64_t skipped_cells = 0; // cells not measured in an occasion because, in their own numbering, it is not a cell acquisition subframe (MBMS-dedicated carrier)
     double   last_ms = 0.0;   // how long the latest measurement took on the worker thread
@@ -129,7 +124,6 @@ class PrsToa {
 
   void worker_loop();
   Measurement measure(const Job& j) const;
-  Measurement measure_sync(const Job& j, Measurement m) const;   // the PssSss signal
 
   mutable std::mutex      _mutex;
   Assistance              _assistance;
