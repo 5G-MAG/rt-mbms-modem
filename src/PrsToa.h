@@ -41,7 +41,7 @@ namespace MBMS_RT {
  * arrival against the start of the middle subframe on the modem's own grid, which the serving cell's synchronisation defines; the same offset is in every
  * cell's figure, so differences between cells (the RSTD of TS 36.214 clause 5.1.12) do not contain it.
  *
- * Supported: cells whose PRS occasions are the reference cell's own (no slot offset between cells; a subframe offset only in whole cell acquisition periods of 40 subframes) and one subframe per occasion (N_PRS 1),
+ * Supported: cells on the reference cell's carrier, whose PRS occasion overlaps the reference cell's (TS 37.355: within half a subframe), with the subframe offset of the assistance data applied to their own numbering, and one subframe per occasion (N_PRS 1); the slot number offset is only for the CRS and is not used,
  * which is what an MBMS-dedicated cell can have (PRS is defined for 15 kHz only and the cell acquisition subframes are its only 15 kHz subframes).
  */
 class PrsToa {
@@ -53,9 +53,9 @@ class PrsToa {
     // plus the expected RSTD. Both NaN: the whole +-0.75 ms.
     double    expected_rstd_ns = std::nan("");
     double    expected_uncertainty_ns = std::nan("");
-    // Whole subframes by which this cell's subframe numbering runs ahead of the reference cell's (LPPe subframeOffset: SFNnc = SFNref + subframeOffset / 10). Its muting
-    // pattern counts occasions in its own numbering. Only a multiple of 40 is supported: on an MBMS-dedicated carrier PRS is only in the cell acquisition subframes
-    // (15 kHz only), which are in frames n_f mod 4 = 0, so only an offset of whole cell acquisition periods keeps this cell's one at the reference cell's.
+    // Whole subframes by which this cell's subframe numbering runs ahead of the reference cell's (LPPe subframeOffset: SFNnc = SFNref + subframeOffset / 10). The cell's
+    // occasion, muting bit and replica are those of its own subframe number at the reference cell's occasion. On an MBMS-dedicated carrier PRS is only in the cell
+    // acquisition subframes (15 kHz only, frames n_f mod 4 = 0): a cell whose own number is not one of them has no PRS there and is reported as skipped.
     uint32_t  sfn_offset = 0;
     int       cp = -1;   // this cell's cyclic prefix (TS 37.355 cpLength of OTDOA assistance data, per cell): 0 extended, 1 normal, -1 the serving cell's
   };
@@ -67,6 +67,7 @@ class PrsToa {
     uint32_t cell_id   = 0;
     uint32_t prs_id    = 0;
     bool     present   = false;   // false: PRS of this cell muted in this occasion, or the correlation failed
+    bool     skipped   = false;   // MBMS-dedicated carrier: this cell's own subframe number at the reference occasion is not a cell acquisition subframe, so it cannot carry PRS now
     double   toa_ns    = 0.0;     // against the nominal start of the middle subframe
     double   ratio     = 0.0;     // correlation peak over the median elsewhere
     double   coherence = 0.0;     // peak over the norms of the received segment and the reference, 1 for a perfect copy
@@ -84,6 +85,7 @@ class PrsToa {
     uint64_t gaps = 0;        // occasions skipped because the three subframes were not consecutive or differed in length
     uint64_t unsupported = 0; // occasions skipped because the sampling is not one the correlator handles
     uint64_t discarded = 0;   // measurements finished after the assistance data had changed, and so dropped
+    uint64_t skipped_cells = 0; // cells not measured in an occasion because, in their own numbering, it is not a cell acquisition subframe (MBMS-dedicated carrier)
     double   last_ms = 0.0;   // how long the latest measurement took on the worker thread
   };
 

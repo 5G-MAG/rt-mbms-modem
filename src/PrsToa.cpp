@@ -97,12 +97,8 @@ bool PrsToa::set_assistance(const Assistance& a, std::string& why) {
       why = "cell " + std::to_string(c.cell_id) + ": the search window needs both an expected RSTD (within +-1 ms) and a non-negative uncertainty, or neither";
       return false;
     }
-    if (c.sfn_offset % 40 != 0 || c.sfn_offset > 10229) {
-      why = "cell " + std::to_string(c.cell_id) + ": subframeOffset " + std::to_string(c.sfn_offset) + " is not supported: only a multiple of 40 subframes (whole cell acquisition periods), 0..10229";
-      return false;
-    }
-    if (c.prs.config_index != ref->prs.config_index) {
-      why = "cell " + std::to_string(c.cell_id) + ": a PRS configuration index different from the reference cell's (subframe offsets between cells) is not supported";
+    if (c.sfn_offset > 10229) {
+      why = "cell " + std::to_string(c.cell_id) + ": subframeOffset " + std::to_string(c.sfn_offset) + " is outside 0..10229";
       return false;
     }
   }
@@ -215,6 +211,11 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
     out.cell_id = ci.cell_id;
     out.prs_id = (ci.prs.id == prs::kPrsIdFromCell) ? ci.cell_id : ci.prs.id;
     const uint32_t tti_nc = (j.tti + ci.sfn_offset) % prs::kSubframesPerSfnCycle;   // this cell's own subframe numbering at the reference cell's occasion
+    if (j.cell.mbms_dedicated && !(tti_nc % 10 == 0 && prs::cas_frame(j.cell, (tti_nc / 10) % 1024))) {
+      out.skipped = true;       // 15 kHz subframes only, and an MBMS-dedicated cell has them only as cell acquisition subframes
+      results.push_back(out);
+      continue;
+    }
     if (!prs::active(ci.prs, tti_nc) || ci.prs.nof_prb > j.cell.nof_prb) {
       results.push_back(out);   // muted in this occasion
       continue;
@@ -272,6 +273,7 @@ void PrsToa::worker_loop() {
       if (job.generation != _generation) {
         _stats.discarded++;   // made under assistance data that has since been replaced or cleared
       } else {
+        for (const auto& cell_toa : m.cells) _stats.skipped_cells += cell_toa.skipped ? 1 : 0;
         _results.push_back(std::move(m));
         while (_results.size() > kKeptResults) _results.pop_front();
         _stats.windows++;

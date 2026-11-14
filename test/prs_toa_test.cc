@@ -92,7 +92,8 @@ int main() {
     auto dup = make_assistance({1, 2, 2});
     CHECK(!p.set_assistance(dup, why), "a cell listed twice is refused");
     auto other = make_assistance({1, 2}); other.cells[1].prs.config_index = 2436;
-    CHECK(!p.set_assistance(other, why), "a different configuration index (a subframe offset between cells) is refused: %s", why.c_str());
+    CHECK(p.set_assistance(other, why), "a different configuration index is accepted (the cell's occasion is looked for in its own numbering): %s", why.c_str());
+    CHECK(p.set_assistance(make_assistance({1, 2, 3, 4}), why), "back to the good set: %s", why.c_str());
     auto n2 = make_assistance({1, 2}); n2.cells[1].prs.nof_subframes = 2;
     CHECK(!p.set_assistance(n2, why), "N_PRS 2 is refused");
     auto bw = make_assistance({1, 2}); bw.cells[0].prs.nof_prb = 20;
@@ -463,15 +464,49 @@ int main() {
     PrsToa p;
     std::string w;
     auto a = make_assistance({1, 2});
-    a.cells[1].sfn_offset = 20;
-    CHECK(!p.set_assistance(a, w) && w.find("subframeOffset 20") != std::string::npos, "an offset of 20 subframes is refused with its reason: %s", w.c_str());
     a.cells[1].sfn_offset = 10280;
-    CHECK(!p.set_assistance(a, w), "an offset beyond 10229 is refused");
+    CHECK(!p.set_assistance(a, w) && w.find("outside 0..10229") != std::string::npos, "an offset beyond 10229 is refused with its reason: %s", w.c_str());
+    a.cells[1].sfn_offset = 20;
+    CHECK(p.set_assistance(a, w), "an offset of 20 is accepted (its use depends on the cell type): %s", w.c_str());
     a.cells[1].sfn_offset = 80;
     CHECK(p.set_assistance(a, w), "an offset of 80 is accepted: %s", w.c_str());
     CHECK(p.assistance().cells[1].sfn_offset == 80, "and kept");
     auto b = a; b.cells[1].sfn_offset = 120;
     CHECK(p.set_assistance(b, w) && p.measurements().empty(), "a change of the offset is a change of what is measured");
+  }
+
+  // --- an offset that is not whole cell acquisition periods: on an MBMS-dedicated carrier the neighbour's own subframe number at the occasion is not a 15 kHz subframe, so it is
+  // skipped and counted; on an ordinary cell, with a configuration index whose occasion is there, it is measured like any other
+  {
+    {
+      PrsToa p;
+      std::string w;
+      auto a = make_assistance({1, 2});
+      a.cells[1].sfn_offset = 20;
+      CHECK(p.set_assistance(a, w), "%s", w.c_str());
+      feed(p, 40, three_subframes({{1, 12.0e-6, 0}, {2, 150.8e-6, 0}}, 40, 30.0, 61), cell);
+      CHECK(wait_for(p, 1), "measurement with an offset of 20 on a dedicated carrier");
+      auto ms = p.measurements();
+      if (!ms.empty() && ms[0].cells.size() == 2) {
+        CHECK(ms[0].cells[0].present && !ms[0].cells[1].present && ms[0].cells[1].skipped, "dedicated carrier: the neighbour is skipped (present %d skipped %d)", ms[0].cells[1].present, ms[0].cells[1].skipped);
+        CHECK(p.stats().skipped_cells == 1, "and counted: %llu", (unsigned long long)p.stats().skipped_cells);
+      }
+    }
+    {
+      CellParams ordinary = cell;
+      ordinary.mbms_dedicated = false;
+      PrsToa p;
+      std::string w;
+      auto a = make_assistance({1, 2});
+      a.cells[1].sfn_offset = 20;
+      a.cells[1].prs.config_index = 2455;      // T_PRS 40 and an offset of 20: occasions at 20 + 40 n of its own numbering, i.e. at the reference cell's 40 n
+      CHECK(p.set_assistance(a, w), "a different configuration index is accepted: %s", w.c_str());
+      feed(p, 40, three_subframes({{1, 12.0e-6, 0}, {2, 150.8e-6, 0}}, 40, 30.0, 62), ordinary);
+      CHECK(wait_for(p, 1), "measurement of an ordinary cell with an offset of 20");
+      auto ms = p.measurements();
+      if (!ms.empty() && ms[0].cells.size() == 2)
+        CHECK(ms[0].cells[1].present && !ms[0].cells[1].skipped && std::fabs(ms[0].cells[1].toa_ns - 150800.0) < 5.0, "ordinary cell: measured within 5 ns (present %d, %.1f ns)", ms[0].cells[1].present, ms[0].cells[1].toa_ns);
+    }
   }
 
   // --- nothing is kept without assistance

@@ -747,6 +747,7 @@ web::json::value RestHandler::prs_json() {
   sv["dropped"]     = value(static_cast<uint64_t>(st.dropped));
   sv["gaps"]        = value(static_cast<uint64_t>(st.gaps));
   sv["unsupported"] = value(static_cast<uint64_t>(st.unsupported));
+  sv["skipped_cells"] = value(static_cast<uint64_t>(st.skipped_cells));
   sv["discarded"]   = value(static_cast<uint64_t>(st.discarded));
   sv["last_ms"]     = value(st.last_ms);
   root["stats"] = sv;
@@ -763,6 +764,7 @@ web::json::value RestHandler::prs_json() {
       cv["cell_id"]   = value(c.cell_id);
       cv["prs_id"]    = value(c.prs_id);
       cv["present"]   = value::boolean(c.present);
+      cv["skipped"]   = value::boolean(c.skipped);
       cv["toa_ns"]    = value(c.toa_ns);
       cv["ratio"]     = value(c.ratio);
       cv["coherence"] = value(c.coherence);
