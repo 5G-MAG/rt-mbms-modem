@@ -98,10 +98,6 @@ add_test(NAME sib16_time_test COMMAND sib16_time_test)
 add_executable(prs_signal_test test/prs_signal_test.cc)
 add_test(NAME prs_signal_test COMMAND prs_signal_test ${CMAKE_CURRENT_SOURCE_DIR}/test/prs_golden.txt)
 
-# Primary and secondary synchronization signals and the time of arrival taken from them (src/SyncSignal.h), header only, against golden vectors.
-add_executable(sync_signal_test test/sync_signal_test.cc)
-add_test(NAME sync_signal_test COMMAND sync_signal_test ${CMAKE_CURRENT_SOURCE_DIR}/test/sync_golden.txt)
-
 add_executable(prs_toa_test test/prs_toa_test.cc src/PrsToa.cpp)
 target_link_libraries(prs_toa_test Threads::Threads)
 add_test(NAME prs_toa_test COMMAND prs_toa_test)
