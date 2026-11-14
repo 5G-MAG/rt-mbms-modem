@@ -329,6 +329,117 @@ int main() {
     }
   }
 
+  // --- the search window of a neighbour: expectedRSTD +- its uncertainty around the reference cell's arrival
+  {
+    auto with_window = [](PrsToa::Assistance a, size_t i, double expected_ns, double unc_ns) {
+      a.cells[i].expected_rstd_ns = expected_ns;
+      a.cells[i].expected_uncertainty_ns = unc_ns;
+      return a;
+    };
+    auto run_one = [&](const PrsToa::Assistance& a, const std::vector<Syn>& syn, uint32_t seed) {
+      PrsToa p;
+      std::string w;
+      CHECK(p.set_assistance(a, w), "assistance for the window case: %s", w.c_str());
+      auto win = three_subframes(syn, 40, 30.0, seed);
+      feed(p, 40, win, cell);
+      CHECK(wait_for(p, 1), "window case measurement expected");
+      auto ms = p.measurements();
+      return ms.empty() ? PrsToa::Measurement{} : ms[0];
+    };
+    // a window that contains the cell gives the same arrival as the whole range (cell 2 at 150.8 us against cell 1 at 12 us: RSTD 138.8 us)
+    {
+      auto a = with_window(with_window(make_assistance({1, 2, 3}), 1, 138.8e3, 2.0e3), 2, -50.4e3, 2.0e3);
+      std::vector<Syn> syn = {{1, 12.0e-6, 0}, {2, 150.8e-6, 0}, {3, -38.4e-6, 0}};
+      auto m = run_one(a, syn, 31);
+      CHECK(m.cells.size() == 3, "three cells reported in the order of the assistance data");
+      if (m.cells.size() == 3) {
+        for (size_t i = 0; i < 3; i++) {
+          CHECK(m.cells[i].cell_id == i + 1 && m.cells[i].present, "windowed: cell %zu present", i + 1);
+          CHECK(std::fabs(m.cells[i].toa_ns - syn[i].delay_s * 1e9) < 5.0, "windowed: cell %zu toa %.2f ns, truth %.2f ns", i + 1, m.cells[i].toa_ns, syn[i].delay_s * 1e9);
+          CHECK(m.cells[i].ratio > 5.0, "windowed: cell %zu ratio %.1f is judged against the whole range", i + 1, m.cells[i].ratio);
+        }
+      }
+    }
+    // a window that does not contain it: no peak of the cell in it, so a low ratio (the receiver's detection threshold then refuses it)
+    {
+      auto a = with_window(make_assistance({1, 2}), 1, 138.8e3 + 60.0e3, 3.0e3);
+      std::vector<Syn> syn = {{1, 12.0e-6, 0}, {2, 150.8e-6, 0}};
+      auto m = run_one(a, syn, 32);
+      if (m.cells.size() == 2) {
+        CHECK(m.cells[0].present && std::fabs(m.cells[0].toa_ns - 12000.0) < 5.0, "reference still measured over the whole range");
+        CHECK(!m.cells[1].present || m.cells[1].ratio < 6.0, "a window without the cell gives no detection: present %d ratio %.1f", m.cells[1].present, m.cells[1].ratio);
+      }
+    }
+    // two cells whose PRS use the same ID have the same waveform: the window decides which peak is which
+    {
+      std::vector<Syn> syn = {{1, 12.0e-6, 0}, {2, 150.8e-6, 0}, {2, -38.4e-6, 0}};
+      auto a = make_assistance({1, 2, 3});
+      a.cells[2].prs.id = 2;
+      auto w = with_window(with_window(a, 1, 138.8e3, 2.0e3), 2, -50.4e3, 2.0e3);
+      auto m = run_one(w, syn, 33);
+      if (m.cells.size() == 3) {
+        CHECK(std::fabs(m.cells[1].toa_ns - 150800.0) < 8.0, "same waveform, window on 150.8 us: toa %.2f ns", m.cells[1].toa_ns);
+        CHECK(std::fabs(m.cells[2].toa_ns - (-38400.0)) < 8.0, "same waveform, window on -38.4 us: toa %.2f ns", m.cells[2].toa_ns);
+      }
+    }
+    // the reference does not have to come first in the list
+    {
+      auto a = make_assistance({2, 1, 3}, 1);
+      a = with_window(with_window(a, 0, 138.8e3, 2.0e3), 2, -50.4e3, 2.0e3);
+      std::vector<Syn> syn = {{1, 12.0e-6, 0}, {2, 150.8e-6, 0}, {3, -38.4e-6, 0}};
+      auto m = run_one(a, syn, 34);
+      if (m.cells.size() == 3) {
+        CHECK(m.cells[0].cell_id == 2 && m.cells[1].cell_id == 1 && m.cells[2].cell_id == 3, "reported in the order of the assistance data");
+        CHECK(std::fabs(m.cells[0].toa_ns - 150800.0) < 5.0 && std::fabs(m.cells[2].toa_ns + 38400.0) < 5.0, "windows follow the reference cell wherever it is listed");
+      }
+    }
+    // the checks on the window values
+    {
+      PrsToa p;
+      std::string w;
+      auto a = make_assistance({1, 2});
+      a.cells[1].expected_rstd_ns = 1000.0;                       // no uncertainty
+      CHECK(!p.set_assistance(a, w) && !w.empty(), "an expected RSTD without its uncertainty is refused: %s", w.c_str());
+      a = make_assistance({1, 2});
+      a.cells[1].expected_rstd_ns = 1000.0; a.cells[1].expected_uncertainty_ns = -1.0;
+      CHECK(!p.set_assistance(a, w), "a negative uncertainty is refused");
+      a.cells[1].expected_uncertainty_ns = 500.0; a.cells[1].expected_rstd_ns = 2.0e6;
+      CHECK(!p.set_assistance(a, w), "an expected RSTD beyond +-1 ms is refused");
+      a.cells[1].expected_rstd_ns = 1000.0;
+      CHECK(p.set_assistance(a, w), "a good window is accepted: %s", w.c_str());
+      CHECK(std::fabs(p.assistance().cells[1].expected_rstd_ns - 1000.0) < 1e-9 && std::fabs(p.assistance().cells[1].expected_uncertainty_ns - 500.0) < 1e-9, "and kept");
+    }
+  }
+
+  // --- a refresh that changes only the search windows keeps what was measured; any other change drops it
+  {
+    PrsToa p;
+    std::string w;
+    auto a = make_assistance({1, 2});
+    a.cells[1].expected_rstd_ns = 138.8e3; a.cells[1].expected_uncertainty_ns = 2.0e3;
+    CHECK(p.set_assistance(a, w), "%s", w.c_str());
+    auto win = three_subframes({{1, 12.0e-6, 0}, {2, 150.8e-6, 0}}, 40, 30.0, 41);
+    feed(p, 40, win, cell);
+    CHECK(wait_for(p, 1), "measurement before the refresh");
+    a.cells[1].expected_rstd_ns = 138.9e3; a.cells[1].expected_uncertainty_ns = 2.5e3;
+    CHECK(p.set_assistance(a, w), "%s", w.c_str());
+    CHECK(p.measurements().size() == 1 && p.stats().discarded == 0, "a refresh of the windows keeps the measurement (%zu kept, %llu discarded)", p.measurements().size(), (unsigned long long)p.stats().discarded);
+    CHECK(std::fabs(p.assistance().cells[1].expected_rstd_ns - 138.9e3) < 1e-9 && std::fabs(p.assistance().cells[1].expected_uncertainty_ns - 2.5e3) < 1e-9, "and the new window is in use");
+    a.cells[1].prs.id = 77;
+    CHECK(p.set_assistance(a, w), "%s", w.c_str());
+    CHECK(p.measurements().empty(), "a change of the PRS ID drops it");
+    auto b = make_assistance({1, 2});
+    CHECK(p.set_assistance(b, w), "%s", w.c_str());
+    feed(p, 40, three_subframes({{1, 12.0e-6, 0}, {2, 150.8e-6, 0}}, 40, 30.0, 42), cell);
+    CHECK(wait_for(p, 1), "measurement with no windows");
+    auto c = b;
+    c.cells[1].expected_rstd_ns = 138.8e3; c.cells[1].expected_uncertainty_ns = 2.0e3;
+    CHECK(p.set_assistance(c, w) && p.measurements().size() == 1, "adding a window where there was none is also only a window change");
+    auto d = c;
+    d.cells[1].cp = 1;
+    CHECK(p.set_assistance(d, w) && p.measurements().empty(), "a change of the cyclic prefix drops it");
+  }
+
   // --- nothing is kept without assistance
   {
     PrsToa p;

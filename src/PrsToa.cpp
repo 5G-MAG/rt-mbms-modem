@@ -18,6 +18,8 @@
 #include "PrsToa.h"
 
 #include <chrono>
+#include <cmath>
+#include <limits>
 
 namespace MBMS_RT {
 
@@ -90,14 +92,29 @@ bool PrsToa::set_assistance(const Assistance& a, std::string& why) {
         return false;
       }
     }
+    if (std::isfinite(c.expected_rstd_ns) != std::isfinite(c.expected_uncertainty_ns) ||
+        (std::isfinite(c.expected_uncertainty_ns) && (c.expected_uncertainty_ns < 0.0 || std::fabs(c.expected_rstd_ns) > 1e6))) {
+      why = "cell " + std::to_string(c.cell_id) + ": the search window needs both an expected RSTD (within +-1 ms) and a non-negative uncertainty, or neither";
+      return false;
+    }
     if (c.prs.config_index != ref->prs.config_index) {
       why = "cell " + std::to_string(c.cell_id) + ": a PRS configuration index different from the reference cell's (subframe offsets between cells) is not supported";
       return false;
     }
   }
   std::lock_guard<std::mutex> lock(_mutex);
+  // A new set that differs from the current one only in the search windows (the usual refresh: the expected RSTDs follow the RTDs) changes what is looked for where, not
+  // what was measured, so the results and the measurement in progress stay valid.
+  bool windows_only = _have.load() && a.reference_cell_id == _assistance.reference_cell_id && a.cells.size() == _assistance.cells.size();
+  for (size_t i = 0; windows_only && i < a.cells.size(); i++) {
+    const CellInfo &x = a.cells[i], &y = _assistance.cells[i];
+    windows_only = x.cell_id == y.cell_id && x.cp == y.cp && x.prs.config_index == y.prs.config_index && x.prs.nof_prb == y.prs.nof_prb &&
+                   x.prs.nof_subframes == y.prs.nof_subframes && x.prs.id == y.prs.id && x.prs.muting == y.prs.muting;
+  }
+  const bool keep = windows_only && !a.cells.empty();
   _assistance = a;
   for (auto& c : _assistance.cells) c.prs.enabled = true;
+  if (keep) return true;
   _generation++;     // what was measured under the previous data no longer applies
   _results.clear();
   _have.store(true);
@@ -179,27 +196,55 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
   m.sample_rate_hz = fs;
   const int half = static_cast<int>(0.75e-3 * fs);
   const prs::Prepared prepared = prs::prepare(j.window, j.sf_len);   // the window's spectrum, shared by all cells
-  for (const auto& ci : j.assistance.cells) {
+  // The reference cell is measured first: the search window of a neighbour is centred on the reference cell's arrival plus the expected RSTD.
+  std::vector<const CellInfo*> order;
+  for (const auto& ci : j.assistance.cells)
+    if (ci.cell_id == j.assistance.reference_cell_id) order.push_back(&ci);
+  for (const auto& ci : j.assistance.cells)
+    if (ci.cell_id != j.assistance.reference_cell_id) order.push_back(&ci);
+  std::vector<CellToa> results;
+  bool   have_ref = false;
+  double ref_toa_ns = 0.0;
+  for (const CellInfo* cip : order) {
+    const CellInfo& ci = *cip;
     CellToa out;
     out.cell_id = ci.cell_id;
     out.prs_id = (ci.prs.id == prs::kPrsIdFromCell) ? ci.cell_id : ci.prs.id;
     if (!prs::active(ci.prs, j.tti) || ci.prs.nof_prb > j.cell.nof_prb) {
-      m.cells.push_back(out);   // muted in this occasion
+      results.push_back(out);   // muted in this occasion
       continue;
     }
     prs::CellParams cp = j.cell;
     cp.cell_id = ci.cell_id;
     if (ci.cp >= 0) cp.normal_cp = (ci.cp == 1);
     const std::vector<prs::cplx> ref = prs::subframe_waveform(ci.prs, cp, (j.tti / 10) % 1024, j.tti % 10, n_fft);
-    const prs::Toa t = prs::correlate(prepared, j.window, ref, static_cast<int>(j.sf_len) - half, static_cast<int>(j.sf_len) + half);
+    int peak_lo = std::numeric_limits<int>::min(), peak_hi = std::numeric_limits<int>::max();
+    const bool is_ref = ci.cell_id == j.assistance.reference_cell_id;
+    if (!is_ref && have_ref && std::isfinite(ci.expected_rstd_ns) && std::isfinite(ci.expected_uncertainty_ns)) {
+      const double centre_ns = ref_toa_ns + ci.expected_rstd_ns;
+      peak_lo = static_cast<int>(std::floor(static_cast<double>(j.sf_len) + (centre_ns - ci.expected_uncertainty_ns) * 1e-9 * fs));
+      peak_hi = static_cast<int>(std::ceil(static_cast<double>(j.sf_len) + (centre_ns + ci.expected_uncertainty_ns) * 1e-9 * fs));
+    }
+    const prs::Toa t = prs::correlate(prepared, j.window, ref, static_cast<int>(j.sf_len) - half, static_cast<int>(j.sf_len) + half, peak_lo, peak_hi);
     if (t.ok) {
       out.present = true;
       out.toa_ns = (t.lag - static_cast<double>(j.sf_len)) / fs * 1e9;
       out.ratio = t.ratio;
       out.coherence = t.coherence;
+      if (is_ref) {
+        have_ref = true;
+        ref_toa_ns = out.toa_ns;
+      }
     }
-    m.cells.push_back(out);
+    results.push_back(out);
   }
+  // report in the order of the assistance data
+  for (const auto& ci : j.assistance.cells)
+    for (const auto& r : results)
+      if (r.cell_id == ci.cell_id) {
+        m.cells.push_back(r);
+        break;
+      }
   return m;
 }
 

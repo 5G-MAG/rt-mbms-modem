@@ -49,6 +49,10 @@ class PrsToa {
   struct CellInfo {
     uint32_t  cell_id = 0;
     prs::Cfg  prs;
+    // Search window of a neighbour (TS 37.355 expectedRSTD and expectedRSTD-Uncertainty): its PRS is looked for within +-uncertainty of the reference cell's arrival
+    // plus the expected RSTD. Both NaN: the whole +-0.75 ms.
+    double    expected_rstd_ns = std::nan("");
+    double    expected_uncertainty_ns = std::nan("");
     int       cp = -1;   // this cell's cyclic prefix (TS 37.355 cpLength of OTDOA assistance data, per cell): 0 extended, 1 normal, -1 the serving cell's
   };
   struct Assistance {

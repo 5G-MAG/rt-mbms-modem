@@ -432,7 +432,7 @@ void RestHandler::put(http_request message) {
       message.reply(status_codes::OK, answer);
     } else if (paths[0] == "prs_assistance") {
       /* The PRS information of the reference cell and its neighbours, pushed down from the application layer once it has the assistance data
-       * (slide 15 of the broadcast positioning proposal): {"reference_cell_id": 1, "cells": [{"cell_id": 1, "cp_length": null, "prs": {"bandwidth_prb": 25,
+       * (slide 15 of the broadcast positioning proposal): {"reference_cell_id": 1, "cells": [{"cell_id": 1, "cp_length": null, "expected_rstd_ns": null, "expected_rstd_uncertainty_ns": null, "prs": {"bandwidth_prb": 25,
        * "configuration_index": 2435, "num_dl_frames": 1, "prs_id": null, "muting": null}}, ...]}. An empty cell list clears it. */
       value answer = value::object();
       try {
@@ -449,6 +449,11 @@ void RestHandler::put(http_request message) {
               else if (cpl == "extended") ci.cp = 0;
               else throw std::runtime_error("cell " + std::to_string(ci.cell_id) + ": cp_length must be \"normal\", \"extended\" or null, not \"" + cpl + "\"");
             }
+            auto opt_number = [&cv](const char* key) {
+              return (cv.has_field(key) && !cv.at(key).is_null()) ? cv.at(key).as_double() : std::nan("");
+            };
+            ci.expected_rstd_ns = opt_number("expected_rstd_ns");
+            ci.expected_uncertainty_ns = opt_number("expected_rstd_uncertainty_ns");
             const auto& pv = cv.at("prs");
             ci.prs.enabled       = true;
             ci.prs.config_index  = static_cast<uint32_t>(pv.at("configuration_index").as_integer());
@@ -714,6 +719,8 @@ web::json::value RestHandler::prs_json() {
       value cv = value::object();
       cv["cell_id"] = value(c.cell_id);
       cv["cp_length"] = c.cp < 0 ? value::null() : value::string(c.cp == 1 ? "normal" : "extended");
+      cv["expected_rstd_ns"] = std::isfinite(c.expected_rstd_ns) ? value(c.expected_rstd_ns) : value::null();
+      cv["expected_rstd_uncertainty_ns"] = std::isfinite(c.expected_uncertainty_ns) ? value(c.expected_uncertainty_ns) : value::null();
       value pv = value::object();
       pv["bandwidth_prb"]       = value(c.prs.nof_prb);
       pv["configuration_index"] = value(c.prs.config_index);

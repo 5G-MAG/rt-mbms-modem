@@ -31,6 +31,7 @@
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -251,7 +252,8 @@ inline Prepared prepare(const std::vector<cplx>& window, size_t ref_len) {
 /** Correlate the prepared window with `ref` and find the strongest match with the first reference sample between lag_lo and lag_hi (inclusive, in samples).
  *  The coarse peak is found on the integer lags by an FFT correlation; its position between samples is then found by evaluating the correlation at fractional
  *  lags within 0.6 sample of it, in the frequency domain over the bins where the reference has energy, followed by a parabola through the best three points. */
-inline Toa correlate(const Prepared& prep, const std::vector<cplx>& window, const std::vector<cplx>& ref, int lag_lo, int lag_hi) {
+inline Toa correlate(const Prepared& prep, const std::vector<cplx>& window, const std::vector<cplx>& ref, int lag_lo, int lag_hi,
+                     int peak_lo = std::numeric_limits<int>::min(), int peak_hi = std::numeric_limits<int>::max()) {
   Toa out;
   const int n = static_cast<int>(window.size()), r = static_cast<int>(ref.size());
   lag_lo = std::max(lag_lo, 0);
@@ -267,11 +269,13 @@ inline Toa correlate(const Prepared& prep, const std::vector<cplx>& window, cons
   fft(c, true);
   const float inv_m = 1.0f / static_cast<float>(m);
   std::vector<float> mag(lag_hi - lag_lo + 1);
-  int best = 0;
-  for (int lag = lag_lo; lag <= lag_hi; lag++) {
-    mag[lag - lag_lo] = std::abs(c[lag]) * inv_m;
+  // The peak is looked for between peak_lo and peak_hi (a search window narrower than the range), the background it is judged against over the whole range.
+  const int plo = std::max(lag_lo, peak_lo), phi = std::min(lag_hi, peak_hi);
+  if (plo > phi) return out;
+  int best = plo - lag_lo;
+  for (int lag = lag_lo; lag <= lag_hi; lag++) mag[lag - lag_lo] = std::abs(c[lag]) * inv_m;
+  for (int lag = plo; lag <= phi; lag++)
     if (mag[lag - lag_lo] > mag[best]) best = lag - lag_lo;
-  }
   // median of the magnitudes away from the peak
   std::vector<float> rest;
   rest.reserve(mag.size());
