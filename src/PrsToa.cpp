@@ -17,6 +17,8 @@
 
 #include "PrsToa.h"
 
+#include "SyncSignal.h"
+
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -105,7 +107,7 @@ bool PrsToa::set_assistance(const Assistance& a, std::string& why) {
   std::lock_guard<std::mutex> lock(_mutex);
   // A new set that differs from the current one only in the search windows (the usual refresh: the expected RSTDs follow the RTDs) changes what is looked for where, not
   // what was measured, so the results and the measurement in progress stay valid.
-  bool windows_only = _have.load() && a.reference_cell_id == _assistance.reference_cell_id && a.cells.size() == _assistance.cells.size();
+  bool windows_only = _have.load() && a.reference_cell_id == _assistance.reference_cell_id && a.signal == _assistance.signal && a.cells.size() == _assistance.cells.size();
   for (size_t i = 0; windows_only && i < a.cells.size(); i++) {
     const CellInfo &x = a.cells[i], &y = _assistance.cells[i];
     windows_only = x.cell_id == y.cell_id && x.cp == y.cp && x.sfn_offset == y.sfn_offset && x.prs.config_index == y.prs.config_index && x.prs.nof_prb == y.prs.nof_prb &&
@@ -148,15 +150,26 @@ void PrsToa::push(uint32_t tti, uint64_t sample_clock_ns, const std::complex<flo
       const prs::Cfg* rc = nullptr;
       for (const auto& ci : _assistance.cells)
         if (ci.cell_id == _assistance.reference_cell_id) rc = &ci.prs;
-      if (rc && prs::active(*rc, b.tti)) _stats.gaps++;
+      const bool occasion = _assistance.signal == Signal::PssSss ? (cell.mbms_dedicated && b.tti % 10 == 0 && prs::cas_frame(cell, b.tti / 10)) : (rc && prs::active(*rc, b.tti));
+      if (occasion) _stats.gaps++;
       return;
     }
-    const prs::Cfg* ref_cfg = nullptr;
-    for (const auto& ci : _assistance.cells)
-      if (ci.cell_id == _assistance.reference_cell_id) ref_cfg = &ci.prs;
-    if (!ref_cfg || !prs::active(*ref_cfg, b.tti)) return;
-    // an MBMS-dedicated cell has 15 kHz subframes only where it has cell acquisition subframes
-    if (cell.mbms_dedicated && !(b.tti % 10 == 0 && prs::cas_frame(cell, b.tti / 10))) return;
+    if (_assistance.signal == Signal::PssSss) {
+      // every cell acquisition subframe of the carrier is an occasion; the pattern of the signal is that of an MBMS-dedicated cell
+      if (b.tti % 10 != 0) return;
+      if (!cell.mbms_dedicated) {
+        _stats.unsupported++;
+        return;
+      }
+      if (!prs::cas_frame(cell, b.tti / 10)) return;
+    } else {
+      const prs::Cfg* ref_cfg = nullptr;
+      for (const auto& ci : _assistance.cells)
+        if (ci.cell_id == _assistance.reference_cell_id) ref_cfg = &ci.prs;
+      if (!ref_cfg || !prs::active(*ref_cfg, b.tti)) return;
+      // an MBMS-dedicated cell has 15 kHz subframes only where it has cell acquisition subframes
+      if (cell.mbms_dedicated && !(b.tti % 10 == 0 && prs::cas_frame(cell, b.tti / 10))) return;
+    }
     const uint32_t n_fft = sf_len / 15;
     if (sf_len % 15 != 0 || !power_of_two(n_fft) || n_fft < 128 || n_fft > 2048) {
       _stats.unsupported++;
@@ -194,6 +207,7 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
   const uint32_t n_fft = j.sf_len / 15;
   const double fs = 15000.0 * n_fft;
   m.sample_rate_hz = fs;
+  if (j.assistance.signal == Signal::PssSss) return measure_sync(j, std::move(m));
   const int half = static_cast<int>(0.75e-3 * fs);
   const prs::Prepared prepared = prs::prepare(j.window, j.sf_len);   // the window's spectrum, shared by all cells
   // The reference cell is measured first: the search window of a neighbour is centred on the reference cell's arrival plus the expected RSTD.
@@ -251,6 +265,40 @@ PrsToa::Measurement PrsToa::measure(const Job& j) const {
         m.cells.push_back(r);
         break;
       }
+  return m;
+}
+
+PrsToa::Measurement PrsToa::measure_sync(const Job& j, Measurement m) const {
+  const uint32_t n_fft = j.sf_len / 15;
+  const double fs = m.sample_rate_hz;
+  const int half = static_cast<int>(0.75e-3 * fs);
+  std::vector<CellToa> results;
+  std::vector<size_t> measured;                       // indices into `results` of the cells that go into the joint estimate
+  std::vector<std::vector<prs::cplx>> refs;
+  for (const auto& ci : j.assistance.cells) {
+    CellToa out;
+    out.cell_id = ci.cell_id;
+    out.prs_id = (ci.prs.id == prs::kPrsIdFromCell) ? ci.cell_id : ci.prs.id;
+    const uint32_t tti_nc = (j.tti + ci.sfn_offset) % prs::kSubframesPerSfnCycle;   // this cell's own subframe numbering at the reference cell's occasion
+    if (j.cell.mbms_dedicated && !(tti_nc % 10 == 0 && prs::cas_frame(j.cell, (tti_nc / 10) % 1024))) {
+      out.skipped = true;       // no cell acquisition subframe of this cell here, so no PSS and SSS
+    } else {
+      const bool normal_cp = ci.cp >= 0 ? ci.cp == 1 : j.cell.normal_cp;
+      refs.push_back(sync::cas_waveform(ci.cell_id, j.cell.nof_prb, normal_cp, n_fft));
+      measured.push_back(results.size());
+    }
+    results.push_back(out);
+  }
+  const std::vector<prs::Toa> toa = sync::measure_cells(j.window, refs, static_cast<int>(j.sf_len) - half, static_cast<int>(j.sf_len) + half);
+  for (size_t i = 0; i < measured.size(); i++) {
+    CellToa& out = results[measured[i]];
+    if (!toa[i].ok) continue;
+    out.present = true;
+    out.toa_ns = (toa[i].lag - static_cast<double>(j.sf_len)) / fs * 1e9;
+    out.ratio = toa[i].ratio;
+    out.coherence = toa[i].coherence;
+  }
+  m.cells = std::move(results);
   return m;
 }
 

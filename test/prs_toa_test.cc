@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "../src/PrsToa.h"
+#include "../src/SyncSignal.h"
 
 using namespace MBMS_RT;
 using namespace MBMS_RT::prs;
@@ -67,6 +68,23 @@ static bool wait_for(PrsToa& p, size_t n) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   return false;
+}
+
+// three consecutive subframes holding the cells' cell acquisition subframe (PSS and SSS in slot 0) at fractional delays, plus noise
+static std::vector<std::complex<float>> three_sync_subframes(const std::vector<Syn>& cells, double snr_db, uint32_t seed) {
+  const size_t n_win = 3 * kSfLen;
+  size_t m = 1; while (m < n_win + 2 * kSfLen) m <<= 1;
+  std::vector<std::complex<float>> win(n_win, std::complex<float>(0, 0));
+  for (const auto& c : cells) {
+    const auto ref = sync::cas_waveform(c.cell_id, 25, c.normal_cp, kNfft);
+    const auto d = sync::delayed(ref, kSfLen + c.delay_s * kFs, n_win, m);
+    const float a = static_cast<float>(std::pow(10.0, c.power_db / 20.0));
+    for (size_t i = 0; i < n_win; i++) win[i] += a * d[i];
+  }
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> nd(0.0, std::sqrt(std::pow(10.0, -snr_db / 10.0) / 2.0));
+  for (auto& v : win) v += std::complex<float>(static_cast<float>(nd(rng)), static_cast<float>(nd(rng)));
+  return win;
 }
 
 static PrsToa::Assistance make_assistance(const std::vector<uint32_t>& ids, uint32_t ref = 1) {
@@ -526,6 +544,52 @@ int main() {
     feed(p, 40, w, cell);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     CHECK(p.measurements().empty() && p.stats().windows == 0, "no measurement without assistance");
+  }
+
+  // --- the PSS and SSS as the signal (the proposal's alternative, slide 13 Note 1): every cell acquisition subframe is an occasion, whatever the PRS configuration says
+  {
+    auto make_sync = [&](const std::vector<uint32_t>& ids) {
+      auto a = make_assistance(ids);
+      a.signal = PrsToa::Signal::PssSss;
+      a.cells[0].prs.config_index = 2475;   // T_PRS 80: tti 40 is not a PRS occasion of the reference cell, so only the signal choice makes it one
+      return a;
+    };
+    PrsToa p;
+    std::string w;
+    CHECK(p.set_assistance(make_sync({1, 2, 3}), w), "assistance with the PSS/SSS signal: %s", w.c_str());
+    const std::vector<Syn> three = {{1, 12.0e-6, 0}, {2, 150.8e-6, -4}, {3, -38.4e-6, -8}};
+    feed(p, 40, three_sync_subframes(three, 30.0, 61), cell);
+    CHECK(wait_for(p, 1), "a measurement at a cell acquisition subframe that is no PRS occasion");
+    auto ms = p.measurements();
+    if (!ms.empty() && ms[0].cells.size() == 3) {
+      for (size_t i = 0; i < 3; i++)
+        CHECK(ms[0].cells[i].present && std::fabs(ms[0].cells[i].toa_ns - three[i].delay_s * 1e9) < 15.0, "PSS/SSS cell %u: %.1f ns, built at %.1f ns", three[i].cell_id, ms[0].cells[i].toa_ns, three[i].delay_s * 1e9);
+    }
+    feed(p, 50, three_sync_subframes(three, 30.0, 62), cell);   // subframe 50 is not a cell acquisition subframe (frame 5)
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(p.measurements().size() == 1, "no measurement outside the cell acquisition subframes (%zu)", p.measurements().size());
+    auto b = make_sync({1, 2, 3});
+    CHECK(p.set_assistance(b, w) && p.measurements().size() == 1, "a refresh of the same data keeps the results");
+    b.signal = PrsToa::Signal::Prs;
+    CHECK(p.set_assistance(b, w) && p.measurements().empty(), "a change of the signal is a change of what is measured");
+
+    // a neighbour whose own subframe number at the occasion is not a cell acquisition subframe has no PSS/SSS there
+    PrsToa q;
+    auto off = make_sync({1, 2});
+    off.cells[1].sfn_offset = 10;
+    CHECK(q.set_assistance(off, w), "offset 10: %s", w.c_str());
+    feed(q, 40, three_sync_subframes({{1, 12.0e-6, 0}}, 30.0, 63), cell);
+    CHECK(wait_for(q, 1), "measurement with a skipped neighbour");
+    auto mq = q.measurements();
+    if (!mq.empty() && mq[0].cells.size() == 2) CHECK(mq[0].cells[0].present && !mq[0].cells[1].present && mq[0].cells[1].skipped, "the neighbour is skipped, not measured (%d, %d)", mq[0].cells[1].present, mq[0].cells[1].skipped);
+
+    // not on an MBMS-dedicated carrier: the pattern of the signal is that of such a cell
+    PrsToa r;
+    CHECK(r.set_assistance(make_sync({1, 2}), w), "assistance for the carrier check");
+    CellParams plain = cell; plain.mbms_dedicated = false;
+    feed(r, 40, three_sync_subframes(three, 30.0, 64), plain);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(r.measurements().empty() && r.stats().unsupported > 0, "refused on a carrier that is not MBMS-dedicated (%zu measurements, %llu unsupported)", r.measurements().size(), static_cast<unsigned long long>(r.stats().unsupported));
   }
 
   printf("prs_toa_test: %d failures\n", failures);
