@@ -474,6 +474,12 @@ auto Phy::init() -> bool {
     return false;
   }
   srsran_ue_cellsearch_set_nof_valid_frames(&_cell_search, kMaxValidFrames);
+  /* The cell's cyclic prefix is a cell parameter (TS 36.211 clause 6.1: the other subframes use the length of subframe #0), so the search follows it instead of
+   * assuming the preset one: the library's detector compares the cyclic-prefix correlation of the symbols before the PSS for both lengths. It is off by default
+   * in the library's ue_sync, which says it "does not work very well"; modem.phy.detect_cp = false puts the preset (extended) back. */
+  bool detect_cp = true;
+  _cfg.lookupValue("modem.phy.detect_cp", detect_cp);
+  srsran_set_detect_cp(&_cell_search, detect_cp);
 
   if (srsran_ue_sync_init_multi(&_ue_sync, MAX_PRB, false, receive_callback, _rx_channels,
                                 this) != 0) {
