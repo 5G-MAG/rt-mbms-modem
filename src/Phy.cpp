@@ -329,7 +329,6 @@ auto Phy::cell_search() -> bool {
   _cfg.lookupValue("modem.phy.expect_mixed_cell", expect_mixed_cell);
 
   new_cell.mbms_dedicated = !expect_mixed_cell;
-  srsran_cell_t attempt_cell = new_cell;   // the cell as the attempt that succeeds started it, for the confirming decode below
   if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
     spdlog::error("Phy: Error setting UE MIB sync cell");
     return false;
@@ -352,7 +351,6 @@ auto Phy::cell_search() -> bool {
     // frame counter/PBCH state, which srsran_ue_mib_reset() does with no allocation involved.
     srsran_ue_mib_reset(&_mib_sync.ue_mib);
     new_cell.mbms_dedicated = expect_mixed_cell;
-    attempt_cell = new_cell;
     if (srsran_ue_mib_sync_set_cell_prb(&_mib_sync, new_cell, _cs_nof_prb) != 0) {
       spdlog::error("Phy: Error setting UE MIB sync cell");
       return false;
@@ -371,41 +369,6 @@ auto Phy::cell_search() -> bool {
       new_cell.additional_non_mbms_frames = (uint8_t)add_non_mbsfn;
     } else {
       srsran_pbch_mib_unpack(bch_payload.data(), &new_cell, &sfn);
-    }
-    /* Confirm the MIB with a second decode before taking it (modem.phy.confirm_mib, default true). A MIB passes on a 16 bit CRC, so while the decoder keeps failing
-     * (for instance with a carrier offset estimate that overlapping synchronization signals of other cells have pulled away) one false pass in about 65536 attempts per antenna
-     * port hypothesis hands over a nonsense MIB (observed: PRB 6 and 2 ports for a cell of 25 PRB and 1 port, then no system information at all). TS 36.331 clause 5.2.1.2
-     * has the MIB-MBMS repeat ("repetitions made within 160 ms"), and its fields other than the SFN bits are the configuration of the cell, so a true MIB decodes again
-     * with the same bandwidth, number of ports and subframe configuration. No clause requires the second decode: it is an implementation check that only ever refuses
-     * more, and a MIB that is not confirmed sends the search round again. */
-    bool confirm_mib = true;
-    _cfg.lookupValue("modem.phy.confirm_mib", confirm_mib);
-    if (confirm_mib) {
-      srsran_cell_t second = attempt_cell;
-      std::array<uint8_t, SRSRAN_BCH_PAYLOAD_LEN> bch_payload2 = {};
-      int sfn_offset2 = 0;
-      srsran_ue_mib_reset(&_mib_sync.ue_mib);
-      bool same = srsran_ue_mib_sync_set_cell_prb(&_mib_sync, second, _cs_nof_prb) == 0;
-      if (same) {
-        srsran_ue_sync_reset(&_mib_sync.ue_sync);
-        same = srsran_ue_mib_sync_decode_prb(&_mib_sync, kMaxFramesTimeout, bch_payload2.data(), &second.nof_ports, &sfn_offset2, _cs_nof_prb) == 1;
-      }
-      if (same) {
-        uint32_t sfn2 = 0;
-        if (second.mbms_dedicated) {
-          uint32_t add_non_mbsfn2 = 0;
-          srsran_pbch_mib_mbms_unpack(bch_payload2.data(), &second, &sfn2, &add_non_mbsfn2, _override_nof_prb);
-          second.additional_non_mbms_frames = (uint8_t)add_non_mbsfn2;
-        } else {
-          srsran_pbch_mib_unpack(bch_payload2.data(), &second, &sfn2);
-        }
-        same = second.nof_prb == new_cell.nof_prb && second.nof_ports == new_cell.nof_ports && second.additional_non_mbms_frames == new_cell.additional_non_mbms_frames &&
-               second.phich_length == new_cell.phich_length && second.phich_resources == new_cell.phich_resources;
-      }
-      if (!same) {
-        spdlog::warn("Phy: the MIB (PRB {}, ports {}) was not confirmed by a second decode - searching again", new_cell.nof_prb, new_cell.nof_ports);
-        return false;
-      }
     }
     /* MIB-MBMS encodes 6 SFN bits (<<4); each sfn_offset unit = kSfnOffset radio frames.
      * Standard MIB encodes 8 SFN bits (<<2); sfn_offset unit = 1 radio frame. */
