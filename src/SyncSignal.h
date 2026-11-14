@@ -167,34 +167,86 @@ inline std::vector<cplx> delayed(const std::vector<cplx>& ref, double lag, size_
   return out;
 }
 
+/** `spec` is the FFT of a reference zero-padded to `m` points; returns that reference delayed by `lag` samples (not necessarily whole) as its first `n` samples. */
+inline std::vector<cplx> delayed_from_spectrum(const std::vector<cplx>& spec, double lag, size_t n) {
+  const size_t m = spec.size();
+  std::vector<cplx> shifted(m);
+  for (size_t i = 0; i < m; i++) {
+    const double f = (i < m / 2) ? static_cast<double>(i) : static_cast<double>(i) - static_cast<double>(m);
+    const double ph = -2.0 * M_PI * f * lag / static_cast<double>(m);
+    shifted[i] = spec[i] * cplx(static_cast<float>(std::cos(ph)), static_cast<float>(std::sin(ph)));
+  }
+  prs::fft(shifted, true);
+  std::vector<cplx> out(n);
+  const float inv_m = 1.0f / static_cast<float>(m);
+  for (size_t i = 0; i < n; i++) out[i] = shifted[i] * inv_m;
+  return out;
+}
+
 /**
  * The time of arrival of every cell whose synchronization signals overlap in `window`, one result per reference in `refs` (each reference is that cell's
  * cas_waveform). Different cells' sequences are not orthogonal, so correlating each on its own pulls every peak towards the others and a much stronger cell can
  * capture the correlation of a weaker one; cells that share N_ID^(2) also share their PSS. The cells are therefore taken strongest first: the delay and complex
  * amplitude of the strongest are estimated, its signal is subtracted, and the next is looked for in what remains; two passes then redo each cell with the
  * others removed. The first sample of a reference is searched for between `lag_lo` and `lag_hi`. `ratio` and `coherence` of each result are those of its last
- * correlation, against what the others leave.
+ * correlation, against what the others leave (`coherence` is taken over the symbols that carry the signal, not over the whole subframe).
+ *
+ * To keep the work small the reference of each cell is cut to the samples that carry its signal (the PSS and SSS symbols) and the window to the part in which that
+ * can lie for the search range; the lags are given back for the whole reference.
  */
 inline std::vector<prs::Toa> measure_cells(const std::vector<cplx>& window, const std::vector<std::vector<cplx>>& refs, int lag_lo, int lag_hi) {
   const size_t cells = refs.size();
   std::vector<prs::Toa> toa(cells);
   if (cells == 0 || window.empty()) return toa;
+  const int n_window = static_cast<int>(window.size());
+  // each reference cut to the samples that carry its signal
+  std::vector<std::vector<cplx>> cut(cells);
+  std::vector<int> off(cells, 0);
+  for (size_t i = 0; i < cells; i++) {
+    float peak = 0.0f;
+    for (const auto& v : refs[i]) peak = std::max(peak, std::abs(v));
+    int first = 0, last = -1;
+    for (int k = 0; k < static_cast<int>(refs[i].size()); k++)
+      if (std::abs(refs[i][k]) > 1e-4f * peak) {
+        if (last < 0) first = k;
+        last = k;
+      }
+    if (last < first) return toa;   // an empty reference
+    cut[i].assign(refs[i].begin() + first, refs[i].begin() + last + 1);
+    off[i] = first;
+  }
+  // the part of the window in which any cell's cut reference can lie
+  int w0 = n_window, w1 = 0;
+  for (size_t i = 0; i < cells; i++) {
+    w0 = std::min(w0, std::max(0, lag_lo + off[i]));
+    w1 = std::max(w1, std::min(n_window, lag_hi + off[i] + static_cast<int>(cut[i].size())));
+  }
+  if (w1 <= w0) return toa;
+  const std::vector<cplx> cropped(window.begin() + w0, window.begin() + w1);
+  const size_t n = cropped.size();
   size_t longest = 0;
-  for (const auto& r : refs) longest = std::max(longest, r.size());
+  for (const auto& r : cut) longest = std::max(longest, r.size());
+  size_t m = 1;
+  while (m < n + longest) m <<= 1;
+  std::vector<std::vector<cplx>> ref_spec(cells);   // the spectrum of each cut reference, once
+  for (size_t i = 0; i < cells; i++) {
+    ref_spec[i].assign(m, cplx(0, 0));
+    std::copy(cut[i].begin(), cut[i].end(), ref_spec[i].begin());
+    prs::fft(ref_spec[i], false);
+  }
   struct Fit {
-    prs::Toa         toa;
+    prs::Toa          toa;
     std::vector<cplx> contrib;
-    double           strength = 0.0;
+    double            strength = 0.0;
   };
-  const auto fit = [&](size_t i, const std::vector<cplx>& target) {
+  const auto fit = [&](size_t i, const std::vector<cplx>& target, const prs::Prepared& prep) {
     Fit f;
-    const prs::Prepared prep = prs::prepare(target, longest);
-    f.toa = prs::correlate(prep, target, refs[i], lag_lo, lag_hi);
+    f.toa = prs::correlate(prep, target, cut[i], lag_lo + off[i] - w0, lag_hi + off[i] - w0);
     if (!f.toa.ok) return f;
-    const std::vector<cplx> shifted = delayed(refs[i], f.toa.lag, target.size(), prep.m);
+    const std::vector<cplx> shifted = delayed_from_spectrum(ref_spec[i], f.toa.lag, n);
     std::complex<double> num(0, 0);
     double den = 0.0;
-    for (size_t k = 0; k < target.size(); k++) {
+    for (size_t k = 0; k < n; k++) {
       num += std::complex<double>(std::conj(shifted[k])) * std::complex<double>(target[k]);
       den += std::norm(shifted[k]);
     }
@@ -203,34 +255,39 @@ inline std::vector<prs::Toa> measure_cells(const std::vector<cplx>& window, cons
       return f;
     }
     const std::complex<double> amp = num / den;
-    f.contrib.resize(target.size());
-    for (size_t k = 0; k < target.size(); k++) f.contrib[k] = cplx(static_cast<float>(amp.real()), static_cast<float>(amp.imag())) * shifted[k];
+    f.contrib.resize(n);
+    for (size_t k = 0; k < n; k++) f.contrib[k] = cplx(static_cast<float>(amp.real()), static_cast<float>(amp.imag())) * shifted[k];
     f.strength = std::abs(amp) * std::sqrt(den);
     return f;
   };
+  const auto finish = [&](size_t i, prs::Toa t) {
+    if (t.ok) t.lag = t.lag + w0 - off[i];   // the first sample of the whole reference, in the window
+    toa[i] = t;
+  };
   if (cells == 1) {
-    toa[0] = fit(0, window).toa;
+    finish(0, fit(0, cropped, prs::prepare(cropped, longest)).toa);
     return toa;
   }
-  std::vector<std::vector<cplx>> contrib(cells, std::vector<cplx>(window.size(), cplx(0, 0)));
-  std::vector<cplx> residual = window;
+  std::vector<std::vector<cplx>> contrib(cells, std::vector<cplx>(n, cplx(0, 0)));
+  std::vector<cplx> residual = cropped;
   std::vector<bool> done(cells, false);
   const auto subtract = [&](size_t i, bool add) {
-    for (size_t k = 0; k < residual.size(); k++) residual[k] += add ? contrib[i][k] : -contrib[i][k];
+    for (size_t k = 0; k < n; k++) residual[k] += add ? contrib[i][k] : -contrib[i][k];
   };
-  for (size_t round = 0; round < cells; round++) {   // strongest first
+  for (size_t round = 0; round < cells; round++) {   // strongest first; every remaining cell is tried against the same residual
+    const prs::Prepared prep = prs::prepare(residual, longest);
     size_t best = cells;
     Fit best_fit;
     for (size_t i = 0; i < cells; i++) {
       if (done[i]) continue;
-      Fit f = fit(i, residual);
+      Fit f = fit(i, residual, prep);
       if (best == cells || f.strength > best_fit.strength) {
         best = i;
         best_fit = std::move(f);
       }
     }
     done[best] = true;
-    toa[best] = best_fit.toa;
+    finish(best, best_fit.toa);
     if (best_fit.toa.ok) {
       contrib[best] = std::move(best_fit.contrib);
       subtract(best, false);
@@ -240,9 +297,9 @@ inline std::vector<prs::Toa> measure_cells(const std::vector<cplx>& window, cons
     for (size_t i = 0; i < cells; i++) {
       if (!toa[i].ok) continue;
       subtract(i, true);
-      Fit f = fit(i, residual);
+      Fit f = fit(i, residual, prs::prepare(residual, longest));
       if (f.toa.ok) {
-        toa[i] = f.toa;
+        finish(i, f.toa);
         contrib[i] = std::move(f.contrib);
       }
       subtract(i, false);
