@@ -35,6 +35,17 @@
 
 void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buffer_t pdu) {
   char* err_str = nullptr;
+  if (getenv("PMCH_TI_DIAG")) {
+    int proto = -1, ihl = 0;
+    uint32_t dstip = 0;
+    if (pdu->N_bytes >= 20) {
+      auto ih = reinterpret_cast<iphdr*>(pdu->msg);
+      proto = ih->protocol; ihl = ih->ihl; dstip = ih->daddr;
+    }
+    fprintf(stderr, "TI_DIAG_GWMCH mch=%u lcid=%u nbytes=%u ver_ihl_proto=%d/%d dst=%u.%u.%u.%u\n",
+            mch_idx, lcid, pdu->N_bytes, ihl, proto,
+            dstip & 0xff, (dstip >> 8) & 0xff, (dstip >> 16) & 0xff, (dstip >> 24) & 0xff);
+  }
   if (pdu->N_bytes > 2) {
     spdlog::debug("GW: RX MCH PDU ({} B), MCH idx {}. Stack latency: {} us", pdu->N_bytes, mch_idx,  pdu->get_latency_us().count());
 
@@ -43,7 +54,7 @@ void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buff
     } else {
       auto ip_hdr = reinterpret_cast<iphdr*>(pdu->msg);
       if (ip_hdr->protocol == 17 /*UDP*/) {
-        auto udp_hdr = reinterpret_cast<udphdr*>(pdu->msg + 4U * ip_hdr->ihl);
+        auto udp_hdr = reinterpret_cast<udphdr*>(pdu->msg + static_cast<size_t>(4U) * ip_hdr->ihl);
         char dest[INET6_ADDRSTRLEN] = "";   // NOLINT
         inet_ntop(AF_INET, (const void*)&ip_hdr->daddr, dest, sizeof(dest));
 
@@ -73,6 +84,7 @@ void Gw::write_pdu_mch(uint32_t mch_idx, uint32_t lcid, srsran::unique_byte_buff
       }
 
       _wr_mutex.lock();
+//      spdlog::info("GW write: {} bytes to TUN", pdu->N_bytes);
       int n = write(_tun_fd, pdu->msg, pdu->N_bytes);
       _wr_mutex.unlock();
 

@@ -36,6 +36,7 @@ docs
 
 # cmake build directory
 build
+build-*/
 cmake-build-debug
 
 # VIM files
@@ -61,3 +62,8 @@ tags
 
 #Clion
 .idea
+
+# Leftover local test-run artifacts from lib/srsran (formerly a submodule,
+# now vendored in directly)
+/lib/srsran/*.dat
+/lib/srsran/*.bin

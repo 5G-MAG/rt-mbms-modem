@@ -43,7 +43,47 @@ link_directories(
     )
 
 
-set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,modernize*,performance*)
+# Only enable clang-tidy if it's actually installed - this was previously
+# unconditional, making every compile fail with "Error running 'clang-tidy':
+# no such file or directory" on any machine without it (this build was never
+# attempted on such a machine before now).
+#
+# clang-tidy runs its own bundled Clang frontend against every file,
+# separately from whatever compiler (CMAKE_CXX_COMPILER, GCC here) actually
+# builds it. Clang's built-in heuristic for locating a GCC installation's own
+# C++ headers can lag behind very recent GCC releases -- seen with GCC 15 +
+# clang-tidy 21: files fail with "'string'/'cstddef' file not found" because
+# clang-tidy's frontend can't locate libstdc++ at all, even though the real
+# build (GCC) has no such problem. Fix: ask the ACTUAL configured compiler
+# for its real system include search path and hand those to clang-tidy
+# explicitly, rather than relying on its own (version-lagging) auto-detection.
+find_program(CLANG_TIDY_EXE NAMES clang-tidy)
+if(CLANG_TIDY_EXE)
+  set(CLANG_TIDY_EXTRA_ARGS "")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    execute_process(
+      COMMAND ${CMAKE_CXX_COMPILER} -E -x c++ -Wp,-v /dev/null
+      ERROR_VARIABLE _cxx_verbose_includes
+      OUTPUT_QUIET)
+    string(REGEX MATCH "#include <\\.\\.\\.> search starts here:\n(.*)\nEnd of search list"
+           _matched "${_cxx_verbose_includes}")
+    if(_matched)
+      string(REPLACE "\n" ";" _include_lines "${CMAKE_MATCH_1}")
+      foreach(_line ${_include_lines})
+        string(STRIP "${_line}" _path)
+        if(_path)
+          list(APPEND CLANG_TIDY_EXTRA_ARGS "--extra-arg=-isystem${_path}")
+        endif()
+      endforeach()
+    endif()
+  endif()
+  # -modernize-use-scoped-lock: clang-tidy 21 crashes on this file set, taking the build with it:
+  #   UseScopedLockCheck::diagOnSingleLock(...) -> Segmentation fault
+  # while analysing src/main.cpp. The check is disabled rather than the whole analysis, so
+  # everything else clang-tidy reports is still enforced. Remove this once the crash is fixed
+  # upstream. The same exclusion is in 5G-MAG/rt-mbms-modem PR #53, which hit it independently.
+  set(CMAKE_CXX_CLANG_TIDY clang-tidy --format-style=google --checks=clang-diagnostic-*,clang-analyzer-*,-*,bugprone*,modernize*,-modernize-use-scoped-lock,performance* ${CLANG_TIDY_EXTRA_ARGS})
+endif()
 
 add_executable(modem src/main.cpp src/SdrReader.cpp src/Phy.cpp
   src/CasFrameProcessor.cpp src/MbsfnFrameProcessor.cpp src/Rrc.cpp

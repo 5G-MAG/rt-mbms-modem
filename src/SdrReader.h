@@ -129,6 +129,13 @@ public:
     double max_gain() { return _max_gain; }
 
     /**
+     * True if the SDR's hardware/driver AGC is controlling gain - in that case
+     * the last manually-set gain value has no effect and shouldn't be
+     * presented as editable.
+     */
+    bool get_use_agc() { return _use_agc; }
+
+    /**
      * If sample file creation is enabled, writing samples starts after this call
      */
     void enableSampleFileWriting() { _write_samples = true; }
